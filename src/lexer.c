@@ -13,12 +13,12 @@ static char const * program;
 static char const * current;
 
 static void print_error() {
-  printf("lexer failed at offset %ld\n", (size_t)(current-program));
+  printf("lexer failed at offset %zu\n", (size_t)(current-program));
   printf("%s\n",current);
 }
 
 static bool is_at_end() {
-  while (isspace(*current)) {
+  while (isspace((unsigned char)*current)) {
     current += 1;
   }
   if (*current != 0) return false;
@@ -26,7 +26,7 @@ static bool is_at_end() {
 }
 
 static void skip() {
-  while (isspace(*current)) {
+  while (isspace((unsigned char)*current)) {
     current += 1;
   }
 }
@@ -58,7 +58,7 @@ static bool consume_keyword(const char* str) {
     char const found = current[i];
     if (expected == 0) {
       /* survived to the end of the expected string */
-      if (!isalnum(found) && found != '_') {
+      if (!isalnum((unsigned char)found) && found != '_') {
         // word break
         current += i;
         return true;
@@ -77,11 +77,11 @@ static bool consume_keyword(const char* str) {
 
 static bool consume_identifier(struct Token* token) {
   skip();
-  if (isalpha(*current)) {
+  if (isalpha((unsigned char)*current) || *current == '_') {
     char const * start = current;
     do {
       current += 1;
-    } while(isalnum(*current) || *current == '_');
+    } while(isalnum((unsigned char)*current) || *current == '_');
 
     struct Slice* slice = malloc(sizeof(struct Slice));
     slice->start = start;
@@ -97,18 +97,18 @@ static bool consume_identifier(struct Token* token) {
 
 static bool consume_literal(struct Token* token) {
   skip();
-  if (isdigit(*current)) {
+  if (isdigit((unsigned char)*current)) {
     uint64_t v = 0;
     do {
       v = 10*v + ((*current) - '0');
       current += 1;
-    } while (isdigit(*current));
+    } while (isdigit((unsigned char)*current));
 
     token->type = INT_LIT;
     token->data.int_val = v;
     return true;
   } else {
-    return NULL;
+    return false;
   }
 }
 

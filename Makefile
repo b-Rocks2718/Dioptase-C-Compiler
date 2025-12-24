@@ -4,11 +4,20 @@ CFLAGS 		:= -Wall -g
 
 SRC_DIR		:= src
 BUILD_DIR := build
+TEST_PREPROCESS_DIR := tests/preprocess
+TEST_LEXER_DIR := tests/lexer
+TEST_LEXER_INVALID_DIR := tests/lexer_invalid
 
 C_SRCS 		:= $(wildcard $(SRC_DIR)/*.c)
 OBJFILES 	:= $(patsubst %.c, $(BUILD_DIR)/objfiles/%.o, $(notdir $(C_SRCS)))
 
-EXEC 			:= main
+EXEC 			:= bcc
+PREPROCESS_SRCS := $(wildcard $(TEST_PREPROCESS_DIR)/*.c)
+PREPROCESS_TESTS := $(patsubst $(TEST_PREPROCESS_DIR)/%.c,%, $(PREPROCESS_SRCS))
+LEXER_SRCS := $(wildcard $(TEST_LEXER_DIR)/*.c)
+LEXER_TESTS := $(patsubst $(TEST_LEXER_DIR)/%.c,%, $(LEXER_SRCS))
+LEXER_INVALID_SRCS := $(wildcard $(TEST_LEXER_INVALID_DIR)/*.c)
+LEXER_INVALID_TESTS := $(patsubst $(TEST_LEXER_INVALID_DIR)/%.c,%, $(LEXER_INVALID_SRCS))
 
 # Rule to build the main executable
 $(BUILD_DIR)/$(EXEC): $(OBJFILES)
@@ -19,15 +28,72 @@ $(BUILD_DIR)/objfiles/%.o: $(SRC_DIR)/%.c | dirs
 	$(CC) $(CFLAGS) -c $< -o $@
 
 dirs:
-	mkdir -p $(BUILD_DIR)/objfiles
+	@mkdir -p $(BUILD_DIR)/objfiles
 
 # Rule to clean up generated files
 clean:
-	rm -f $(OBJFILES) $(EXEC)
+	rm -f $(OBJFILES) $(BUILD_DIR)/$(EXEC) \
+		$(TEST_PREPROCESS_DIR)/*.out \
+		$(TEST_LEXER_DIR)/*.out \
+		$(TEST_LEXER_INVALID_DIR)/*.out
 
 # Rule to clean up generated files
 purge:
 	rm -rf $(BUILD_DIR)
 
+test: $(BUILD_DIR)/$(EXEC)
+	@GREEN="\033[0;32m"; \
+	RED="\033[0;31m"; \
+	NC="\033[0m"; \
+	passed=0; total=$$(( $(words $(PREPROCESS_TESTS)) + $(words $(LEXER_TESTS)) + $(words $(LEXER_INVALID_TESTS)) )); \
+	echo "Running $(words $(PREPROCESS_TESTS)) preprocess tests:"; \
+	for t in $(PREPROCESS_TESTS); do \
+		printf "%s %-20s " '-' "$$t"; \
+		out="$(TEST_PREPROCESS_DIR)/$$t.out"; \
+		if $(BUILD_DIR)/$(EXEC) -preprocess "$(TEST_PREPROCESS_DIR)/$$t.c" > "$$out" 2>/dev/null; then \
+			if diff -u "$(TEST_PREPROCESS_DIR)/$$t.ok" "$$out" >/dev/null 2>&1; then \
+				echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
+			else \
+				echo "$$RED FAIL $$NC"; \
+			fi; \
+		else \
+			echo "$$RED FAIL $$NC"; \
+		fi; \
+	done; \
+	echo "\nRunning $(words $(LEXER_TESTS)) lexer tests:"; \
+	for t in $(LEXER_TESTS); do \
+		printf "%s %-20s " '-' "$$t"; \
+		out="$(TEST_LEXER_DIR)/$$t.out"; \
+		if $(BUILD_DIR)/$(EXEC) -tokens "$(TEST_LEXER_DIR)/$$t.c" > "$$out" 2>/dev/null; then \
+			if diff -u "$(TEST_LEXER_DIR)/$$t.ok" "$$out" >/dev/null 2>&1; then \
+				echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
+			else \
+				echo "$$RED FAIL $$NC"; \
+			fi; \
+		else \
+			echo "$$RED FAIL $$NC"; \
+		fi; \
+	done; \
+	echo "\nRunning $(words $(LEXER_INVALID_TESTS)) invalid lexer tests:"; \
+	for t in $(LEXER_INVALID_TESTS); do \
+		printf "%s %-20s " '-' "$$t"; \
+		out="$(TEST_LEXER_INVALID_DIR)/$$t.out"; \
+		if $(BUILD_DIR)/$(EXEC) -tokens "$(TEST_LEXER_INVALID_DIR)/$$t.c" > "$$out" 2>/dev/null; then \
+			echo "$$RED FAIL $$NC"; \
+		else \
+			if [ -f "$(TEST_LEXER_INVALID_DIR)/$$t.ok" ]; then \
+				if diff -u "$(TEST_LEXER_INVALID_DIR)/$$t.ok" "$$out" >/dev/null 2>&1; then \
+					echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
+				else \
+					echo "$$RED FAIL $$NC"; \
+				fi; \
+			else \
+				echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
+			fi; \
+		fi; \
+	done; \
+	echo; \
+	echo "Summary: $$passed / $$total tests passed.";
+
 # Phony targets
-.PHONY: clean
+.PHONY: clean test
