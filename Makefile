@@ -20,6 +20,8 @@ LEXER_INVALID_SRCS := $(wildcard $(TEST_LEXER_INVALID_DIR)/*.c)
 LEXER_INVALID_TESTS := $(patsubst $(TEST_LEXER_INVALID_DIR)/%.c,%, $(LEXER_INVALID_SRCS))
 
 # Rule to build the main executable
+all: $(BUILD_DIR)/$(EXEC)
+
 $(BUILD_DIR)/$(EXEC): $(OBJFILES)
 	$(CC) $(CFLAGS) -o $@ $(OBJFILES)
 
