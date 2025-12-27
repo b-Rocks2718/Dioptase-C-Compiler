@@ -78,6 +78,7 @@ int main(int argc, const char *const *const argv) {
     int fd = open(filename,O_RDONLY);
     if (fd < 0) {
         perror("open");
+        free(cli_defines);
         exit(1);
     }
 
