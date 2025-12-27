@@ -3,6 +3,7 @@
 #include <stdio.h>
 
 #include "AST.h"
+#include "arena.h"
 #include "parser.h"
 #include "token.h"
 #include "token_array.h"
@@ -10,6 +11,16 @@
 static struct Token * program;
 static size_t prog_size;
 static struct Token * current;
+static struct Arena* parser_arena;
+
+static void* parser_alloc(size_t size) {
+  void* ptr = arena_alloc(parser_arena, size);
+  if (ptr == NULL) {
+    fprintf(stderr, "Parser memory error\n");
+    exit(1);
+  }
+  return ptr;
+}
 
 static void print_error() {
   printf("parser failed at offset %ld\n", (size_t)(current-program));
@@ -83,7 +94,6 @@ struct Expr* parse_paren_var(){
       return NULL;
     } else if (!consume(CLOSE_P)){
       current = old_current;
-      destroy_expr(inner);
       return NULL;
     }
     return inner;
@@ -99,13 +109,13 @@ struct Expr* parse_pre_op(){
     }
     union ConstVariant const_data = {.int_val = 1};
     struct LitExpr one = {INT_CONST, const_data};
-    struct Expr* lit_expr = malloc(sizeof(struct Expr));
+    struct Expr* lit_expr = parser_alloc(sizeof(struct Expr));
     lit_expr->type = LIT;
     lit_expr->expr.lit_expr = one;
 
     struct BinaryExpr add_one = {PLUS_EQ_OP, inner, lit_expr};
 
-    struct Expr* result = malloc(sizeof(struct Expr));
+    struct Expr* result = parser_alloc(sizeof(struct Expr));
     result->type = BINARY;
     result->expr.bin_expr = add_one;
     return result;
@@ -117,13 +127,13 @@ struct Expr* parse_pre_op(){
     }
     union ConstVariant const_data = {.int_val = 1};
     struct LitExpr one = {INT_CONST, const_data};
-    struct Expr* lit_expr = malloc(sizeof(struct Expr));
+    struct Expr* lit_expr = parser_alloc(sizeof(struct Expr));
     lit_expr->type = LIT;
     lit_expr->expr.lit_expr = one;
 
     struct BinaryExpr sub_one = {MINUS_EQ_OP, inner, lit_expr};
 
-    struct Expr* result = malloc(sizeof(struct Expr));
+    struct Expr* result = parser_alloc(sizeof(struct Expr));
     result->type = BINARY;
     result->expr.bin_expr = sub_one;
     return result;
@@ -137,7 +147,7 @@ struct Expr* parse_var(){
   if ((data = consume_with_data(IDENT))){
     struct VarExpr var_expr = { data->ident_name };
 
-    struct Expr* expr = malloc(sizeof(struct Expr));
+    struct Expr* expr = parser_alloc(sizeof(struct Expr));
     expr->expr.var_expr = var_expr;
     expr->type = VAR;
     return expr;
@@ -155,7 +165,7 @@ enum TypeSpecifier parse_type_spec(){
 struct TypeSpecList* parse_type_specs(){
   enum TypeSpecifier spec = parse_type_spec();
   if (spec == 0) return NULL;
-  struct TypeSpecList* specs = malloc(sizeof(struct TypeSpecList));
+  struct TypeSpecList* specs = parser_alloc(sizeof(struct TypeSpecList));
   specs->spec = spec;
   specs->next = parse_type_specs();
   return specs;
@@ -202,23 +212,19 @@ struct Type* parse_param_type(){
   if (types == NULL) return NULL;
   else if (spec_list_has_duplicates(types)) {
     printf("Parse Error: Duplicate type specifiers");
-    destroy_type_spec_list(types);
     return NULL;
   } else if (spec_list_contains(types, SINT_SPEC) &&
              spec_list_contains(types, UINT_SPEC)){
     printf("Parse Error: Invalid type specifiers");
-    destroy_type_spec_list(types);
     return NULL;
   } else if (spec_list_contains(types, UINT_SPEC)){
     // ignoring long types for now
-    destroy_type_spec_list(types);
-    struct Type* type = malloc(sizeof(struct Type));
+    struct Type* type = parser_alloc(sizeof(struct Type));
     type->type = UINT_TYPE;
     return type;
   } else {
     // ignoring long types for now
-    destroy_type_spec_list(types);
-    struct Type* type = malloc(sizeof(struct Type));
+    struct Type* type = parser_alloc(sizeof(struct Type));
     type->type = INT_TYPE;
     return type;
   }
@@ -243,7 +249,7 @@ struct AbstractDeclarator* parse_abstract_declarator(){
       current = old_current;
       return NULL;
     }
-    struct AbstractDeclarator* result = malloc(sizeof(struct AbstractDeclarator));
+    struct AbstractDeclarator* result = parser_alloc(sizeof(struct AbstractDeclarator));
     result->type = ABSTRACT_POINTER;
     result->data = declarator;
     return result;
@@ -252,7 +258,7 @@ struct AbstractDeclarator* parse_abstract_declarator(){
   if (declarator != NULL){
     return declarator;
   } else {
-    struct AbstractDeclarator* declarator = malloc(sizeof(struct AbstractDeclarator));
+    struct AbstractDeclarator* declarator = parser_alloc(sizeof(struct AbstractDeclarator));
     declarator->type = ABSTRACT_BASE;
     return declarator;
   }
@@ -267,7 +273,7 @@ struct Type* process_abstract_declarator(
       result = base_type;
       break;
     case ABSTRACT_POINTER:
-      struct Type* ptr_type = malloc(sizeof(struct Type));
+      struct Type* ptr_type = parser_alloc(sizeof(struct Type));
       ptr_type->type = POINTER_TYPE;
       ptr_type->type_data.pointer_type.referenced_type = base_type;
       result = process_abstract_declarator(declarator->data, ptr_type);
@@ -295,10 +301,9 @@ struct Expr* parse_cast(){
     return NULL;
   }
   struct Type* derived_type = process_abstract_declarator(declarator, base_type);
-  destroy_abstract_declarator(declarator);
 
   struct CastExpr cast = {derived_type, expr};
-  struct Expr* result = malloc(sizeof(struct Expr));
+  struct Expr* result = parser_alloc(sizeof(struct Expr));
   result->type = CAST;
   result->expr.cast_expr = cast;
   return result;
@@ -310,19 +315,18 @@ struct Expr* parse_post_op(){
   if ((inner = parse_paren_var())){
     if (consume(INC_TOK)){
       struct PostAssignExpr add_one = {POST_INC, inner};
-      struct Expr* result = malloc(sizeof(struct Expr));
+      struct Expr* result = parser_alloc(sizeof(struct Expr));
       result->type = POST_ASSIGN;
       result->expr.post_assign_expr = add_one;
       return result;
     } else if (consume(DEC_TOK)){
       struct PostAssignExpr sub_one = {POST_DEC, inner};
-      struct Expr* result = malloc(sizeof(struct Expr));
+      struct Expr* result = parser_alloc(sizeof(struct Expr));
       result->type = POST_ASSIGN;
       result->expr.post_assign_expr = sub_one;
       return result;
     } else {
       current = old_current;
-      destroy_expr(inner);
       return NULL;
     }
   } else return NULL;
@@ -337,7 +341,6 @@ struct Expr* parse_parens(){
       return NULL;
     } else if (!consume(CLOSE_P)){
       current = old_current;
-      destroy_expr(inner);
       return NULL;
     }
     return inner;
@@ -350,14 +353,12 @@ struct ArgList* parse_args(){
   struct Expr* arg;
   struct Token* old_current = current;
   if ((arg = parse_expr())){
-    struct ArgList* args = malloc(sizeof(struct ArgList));
+    struct ArgList* args = parser_alloc(sizeof(struct ArgList));
     args->arg = *arg;
-    free(arg); // DONT RECURSIVELY DESTROY!!
     if (consume(COMMA)) args->next = parse_args();
     else if (consume(CLOSE_P)) args->next = NULL;
     else {
       current = old_current;
-      free(args);
       return NULL;
     }
     return args;
@@ -383,7 +384,7 @@ struct Expr* parse_func_call(){
     }
     struct FunctionCallExpr call = {data->ident_name, args};
 
-    struct Expr* expr = malloc(sizeof(struct Expr));
+    struct Expr* expr = parser_alloc(sizeof(struct Expr));
     expr->type = FUNCTION_CALL;
     expr->expr.fun_call_expr = call;
     return expr;
@@ -400,7 +401,7 @@ struct Expr* parse_unary(){
       return NULL;
     }
     struct UnaryExpr expr = {op, inner};
-    struct Expr* result = malloc(sizeof(struct Expr));
+    struct Expr* result = parser_alloc(sizeof(struct Expr));
     result->expr.un_expr = expr;
     result->type = UNARY;
     return result;
@@ -417,7 +418,7 @@ struct Expr* parse_unary(){
       return NULL;
     }
     struct DereferenceExpr expr = {inner};
-    struct Expr* result = malloc(sizeof(struct Expr));
+    struct Expr* result = parser_alloc(sizeof(struct Expr));
     result->expr.deref_expr = expr;
     result->type = DEREFERENCE;
     return result;
@@ -429,7 +430,7 @@ struct Expr* parse_unary(){
       return NULL;
     }
     struct AddrOfExpr expr = {inner};
-    struct Expr* result = malloc(sizeof(struct Expr));
+    struct Expr* result = parser_alloc(sizeof(struct Expr));
     result->expr.addr_of_expr = expr;
     result->type = ADDR_OF;
     return result;
@@ -443,7 +444,7 @@ struct Expr* parse_factor(){
     union ConstVariant const_data = {.int_val = data->int_val};
     struct LitExpr lit_expr = {INT_CONST, const_data};
 
-    struct Expr* expr = malloc(sizeof(struct Expr));
+    struct Expr* expr = parser_alloc(sizeof(struct Expr));
     expr->expr.lit_expr = lit_expr;
     expr->type = LIT;
     return expr;
@@ -451,7 +452,7 @@ struct Expr* parse_factor(){
     union ConstVariant const_data = {.uint_val = data->uint_val};
     struct LitExpr lit_expr = {UINT_CONST, const_data};
 
-    struct Expr* expr = malloc(sizeof(struct Expr));
+    struct Expr* expr = parser_alloc(sizeof(struct Expr));
     expr->expr.lit_expr = lit_expr;
     expr->type = LIT;
     return expr;
@@ -459,7 +460,7 @@ struct Expr* parse_factor(){
     union ConstVariant const_data  = {.long_val = data->long_val};
     struct LitExpr lit_expr = {LONG_CONST, const_data};
 
-    struct Expr* expr = malloc(sizeof(struct Expr));
+    struct Expr* expr = parser_alloc(sizeof(struct Expr));
     expr->expr.lit_expr = lit_expr;
     expr->type = LIT;
     return expr;
@@ -467,7 +468,7 @@ struct Expr* parse_factor(){
     union ConstVariant const_data = {.ulong_val = data->ulong_val};
     struct LitExpr lit_expr = {U_LONG_LIT, const_data};
 
-    struct Expr* expr = malloc(sizeof(struct Expr));
+    struct Expr* expr = parser_alloc(sizeof(struct Expr));
     expr->expr.lit_expr = lit_expr;
     expr->type = LIT;
     return expr;
@@ -556,22 +557,18 @@ struct Expr* parse_bin_expr(unsigned min_prec){
       struct Expr* middle = parse_expr();
       if (middle == NULL) {
         current = old_current;
-        destroy_expr(lhs);
         return NULL;
       }
       if (!consume(COLON)){
-        destroy_expr(lhs);
         return NULL;
       }
       struct Expr* rhs = parse_bin_expr(prec);
       if (rhs == NULL) {
         current = old_current;
-        destroy_expr(lhs);
-        destroy_expr(middle);
         return NULL;
       }
       struct ConditionalExpr conditional_expr = {lhs, middle, rhs};
-      lhs = malloc(sizeof(struct Expr));
+      lhs = parser_alloc(sizeof(struct Expr));
       lhs->type = CONDITIONAL;
       lhs->expr.conditional_expr = conditional_expr;
       continue;
@@ -583,18 +580,17 @@ struct Expr* parse_bin_expr(unsigned min_prec){
 
     if (rhs == NULL){
       current--;
-      destroy_expr(lhs);
       return NULL;
     }
 
     if (op == ASSIGN_OP){
       struct AssignExpr assign_expr = {lhs, rhs};
-      lhs = malloc(sizeof(struct Expr));
+      lhs = parser_alloc(sizeof(struct Expr));
       lhs->type = ASSIGN;
       lhs->expr.assign_expr = assign_expr;
     } else {
       struct BinaryExpr bin_expr = {op, lhs, rhs};
-      lhs = malloc(sizeof(struct Expr));
+      lhs = parser_alloc(sizeof(struct Expr));
       lhs->type = BINARY;
       lhs->expr.bin_expr = bin_expr;
     }
@@ -617,12 +613,11 @@ struct Statement* parse_return_stmt(){
     return NULL;
   }
   if (!consume(SEMI)){
-    destroy_expr(expr);
     current = old_current;
     return NULL;
   }
   struct ReturnStmt ret_stmt = {expr, NULL};
-  struct Statement* result = malloc(sizeof(struct Statement));
+  struct Statement* result = parser_alloc(sizeof(struct Statement));
   result->type = RETURN_STMT;
   result->statement.ret_stmt = ret_stmt;
   return result;
@@ -633,12 +628,11 @@ struct Statement* parse_expr_stmt(){
   struct Expr* expr = parse_expr();
   if (expr == NULL) return NULL;
   if (!consume(SEMI)){
-    destroy_expr(expr);
     current = old_current;
     return NULL;
   }
   struct ExprStmt expr_stmt = {expr};
-  struct Statement* result = malloc(sizeof(struct Statement));
+  struct Statement* result = parser_alloc(sizeof(struct Statement));
   result->type = EXPR_STMT;
   result->statement.expr_stmt = expr_stmt;
   return result;
@@ -658,17 +652,15 @@ struct Statement* parse_if_stmt(){
   }
   if (!consume(CLOSE_P)) {
     current = old_current;
-    destroy_expr(condition);
     return NULL;
   }
   struct Statement* left = parse_statement();
   if (left == NULL) {
     current = old_current;
-    destroy_expr(condition);
     return NULL;
   }
   struct IfStmt if_stmt = {condition, left, NULL};
-  struct Statement* result = malloc(sizeof(struct Statement));
+  struct Statement* result = parser_alloc(sizeof(struct Statement));
   result->type = IF_STMT;
   result->statement.if_stmt = if_stmt;
   old_current = current;
@@ -676,8 +668,6 @@ struct Statement* parse_if_stmt(){
     struct Statement* right = parse_statement();
     if (right == NULL){
       current = old_current;
-      destroy_expr(condition);
-      destroy_stmt(left);
       return NULL;
     } else {
       result->statement.if_stmt.else_stmt = right;
@@ -702,7 +692,7 @@ struct Statement* parse_labeled_stmt(){
   }
 
   struct LabeledStmt labeled_stmt = {label, stmt};
-  struct Statement* result = malloc(sizeof(struct Statement));
+  struct Statement* result = parser_alloc(sizeof(struct Statement));
   result->type = LABELED_STMT;
   result->statement.labeled_stmt = labeled_stmt;
   return result;
@@ -715,7 +705,7 @@ struct Statement* parse_goto_stmt(){
   if ((data = consume_with_data(IDENT)) && consume(SEMI)){
     struct GotoStmt goto_stmt = { data->ident_name };
 
-    struct Statement* result = malloc(sizeof(struct Statement));
+    struct Statement* result = parser_alloc(sizeof(struct Statement));
     result->type = GOTO_STMT;
     result->statement.goto_stmt = goto_stmt;
     return result;
@@ -728,14 +718,14 @@ struct Statement* parse_goto_stmt(){
 struct BlockItem* parse_block_item(){
   struct Statement* stmt = parse_statement();
   if (stmt != NULL){
-    struct BlockItem* item = malloc(sizeof(struct BlockItem));
+    struct BlockItem* item = parser_alloc(sizeof(struct BlockItem));
     item->type = STMT_ITEM;
     item->item.stmt = stmt;
     return item;
   }
   struct Declaration* dclr = parse_declaration();
   if (dclr != NULL){
-    struct BlockItem* item = malloc(sizeof(struct BlockItem));
+    struct BlockItem* item = parser_alloc(sizeof(struct BlockItem));
     item->type = DCLR_ITEM;
     item->item.dclr = dclr;
     return item;
@@ -757,13 +747,13 @@ struct Block* parse_block(bool* success){
   struct BlockItem* item = parse_block_item();
 
   if (item != NULL){
-    block = malloc(sizeof(struct Block));
+    block = parser_alloc(sizeof(struct Block));
     block->item = item;
     block->next = NULL;
     struct Block* prev_block = block;
     struct Block* cur_block;
     while ((item = parse_block_item()) != NULL){
-      cur_block = malloc(sizeof(struct Block));
+      cur_block = parser_alloc(sizeof(struct Block));
       cur_block->item = item;
       cur_block->next = NULL;
       prev_block->next = cur_block;
@@ -773,7 +763,6 @@ struct Block* parse_block(bool* success){
 
   if (!consume(CLOSE_B)){
     current = old_current;
-    if (block != NULL) destroy_block(block);
     *success = false;
     return NULL;
   }
@@ -786,7 +775,7 @@ struct Statement* parse_compound_stmt(){
   struct Block* block = parse_block(&success);
   if (!success) return NULL;
   struct CompoundStmt compound_stmt = { block };
-  struct Statement* result = malloc(sizeof(struct Statement));
+  struct Statement* result = parser_alloc(sizeof(struct Statement));
   result->type = COMPOUND_STMT;
   result->statement.compound_stmt = compound_stmt;
   return result;
@@ -796,7 +785,7 @@ struct Statement* parse_break_stmt(){
   struct Token* old_current = current;
   if (consume(BREAK_TOK) && consume(SEMI)){
     struct BreakStmt break_stmt = {NULL};
-    struct Statement* result = malloc(sizeof(struct Statement));
+    struct Statement* result = parser_alloc(sizeof(struct Statement));
     result->type = BREAK_STMT;
     result->statement.break_stmt = break_stmt;
     return result;
@@ -810,7 +799,7 @@ struct Statement* parse_continue_stmt(){
   struct Token* old_current = current;
   if (consume(CONTINUE_TOK) && consume(SEMI)){
     struct ContinueStmt continue_stmt = {NULL};
-    struct Statement* result = malloc(sizeof(struct Statement));
+    struct Statement* result = parser_alloc(sizeof(struct Statement));
     result->type = CONTINUE_STMT;
     result->statement.continue_stmt = continue_stmt;
     return result;
@@ -834,18 +823,16 @@ struct Statement* parse_while_stmt(){
   }
   if (!consume(CLOSE_P)){
     current = old_current;
-    destroy_expr(condition);
     return NULL;
   }
   struct Statement* stmt = parse_statement();
   if (stmt == NULL){
     current = old_current;
-    destroy_expr(condition);
     return NULL;
   }
 
   struct WhileStmt while_stmt = {condition, stmt, NULL};
-  struct Statement* result = malloc(sizeof(struct Statement));
+  struct Statement* result = parser_alloc(sizeof(struct Statement));
   result->type = WHILE_STMT;
   result->statement.while_stmt = while_stmt;
   return result;
@@ -861,29 +848,24 @@ struct Statement* parse_do_while_stmt(){
   }
   if (!consume(WHILE_TOK)){
     current = old_current;
-    destroy_stmt(stmt);
     return NULL;
   }
   if (!consume(OPEN_P)){
     current = old_current;
-    destroy_stmt(stmt);
     return NULL;
   }
   struct Expr* condition = parse_expr();
   if (condition == NULL){
     current = old_current;
-    destroy_stmt(stmt);
     return NULL;
   }
   if (!consume(CLOSE_P) || !consume(SEMI)){
     current = old_current;
-    destroy_stmt(stmt);
-    destroy_expr(condition);
     return NULL;
   }
 
   struct DoWhileStmt do_while_stmt = {stmt, condition, NULL};
-  struct Statement* result = malloc(sizeof(struct Statement));
+  struct Statement* result = parser_alloc(sizeof(struct Statement));
   result->type = DO_WHILE_STMT;
   result->statement.do_while_stmt = do_while_stmt;
   return result;
@@ -895,7 +877,6 @@ struct VariableDclr* parse_for_dclr(){
   if (type == NULL) return NULL;
   union TokenVariant* data = consume_with_data(IDENT);
   if (data == NULL) {
-    destroy_type(type);
     current = old_current;
     return NULL;
   }
@@ -905,17 +886,14 @@ struct VariableDclr* parse_for_dclr(){
     expr = parse_expr();
     if (expr == NULL){
       current = old_current;
-      destroy_type(type);
       return NULL;
     }
   }
   if (!consume(SEMI)) {
-    destroy_type(type);
-    if (expr != NULL) destroy_expr(expr);
     current = old_current;
     return NULL;
   }
-  struct VariableDclr* var_dclr = malloc(sizeof(struct VariableDclr));
+  struct VariableDclr* var_dclr = parser_alloc(sizeof(struct VariableDclr));
   var_dclr->name = name;
   var_dclr->init = expr;
   var_dclr->type = type;
@@ -927,7 +905,7 @@ struct ForInit* parse_for_init(){
   struct Token* old_current = current;
   struct VariableDclr* var_dclr = parse_for_dclr();
   if (var_dclr != NULL){
-    struct ForInit* init = malloc(sizeof(struct ForInit));
+    struct ForInit* init = parser_alloc(sizeof(struct ForInit));
     init->type = DCLR_INIT;
     init->init.dclr_init = var_dclr;
     return init;
@@ -935,10 +913,9 @@ struct ForInit* parse_for_init(){
     struct Expr* expr_init = parse_expr();
     if (!consume(SEMI)){
       current = old_current;
-      if (expr_init != NULL) destroy_expr(expr_init);
       return NULL;
     }
-    struct ForInit* init = malloc(sizeof(struct ForInit));
+    struct ForInit* init = parser_alloc(sizeof(struct ForInit));
     init->type = EXPR_INIT;
     init->init.expr_init = expr_init;
     return init;
@@ -960,28 +937,21 @@ struct Statement* parse_for_stmt(){
   struct Expr* condition = parse_expr();
   if (!consume(SEMI)){
     current = old_current;
-    if (condition != NULL) destroy_expr(condition);
-    destroy_for_init(init);
     return NULL;
   }
   struct Expr* end = parse_expr();
   if (!consume(CLOSE_P)){
     current = old_current;
-    if (condition != NULL) destroy_expr(condition);
-    destroy_for_init(init);
     return NULL;
   }
   struct Statement* stmt = parse_statement();
   if (stmt == NULL){
     current = old_current;
-    if (condition != NULL) destroy_expr(condition);
-    if (end != NULL) destroy_expr(end);
-    destroy_for_init(init);
     return NULL;
   }
 
   struct ForStmt for_stmt = {init, condition, end, stmt, NULL};
-  struct Statement* result = malloc(sizeof(struct Statement));
+  struct Statement* result = parser_alloc(sizeof(struct Statement));
   result->type = FOR_STMT;
   result->statement.for_stmt = for_stmt;
   return result;
@@ -1001,17 +971,15 @@ struct Statement* parse_switch_stmt(){
   }
   if (!consume(CLOSE_P)){
     current = old_current;
-    destroy_expr(condition);
     return NULL;
   }
   struct Statement* stmt = parse_statement();
   if (stmt == NULL){
     current = old_current;
-    destroy_expr(condition);
     return NULL;
   }
   struct SwitchStmt switch_stmt = {condition, stmt, NULL, NULL};
-  struct Statement* result = malloc(sizeof(struct Statement));
+  struct Statement* result = parser_alloc(sizeof(struct Statement));
   result->type = SWITCH_STMT;
   result->statement.switch_stmt = switch_stmt;
   return result;
@@ -1026,7 +994,6 @@ struct Statement* parse_case_stmt(){
     return NULL;
   }
   if (!consume(COLON)){
-    destroy_expr(expr);
     current = old_current;
     return NULL;
   }
@@ -1036,7 +1003,7 @@ struct Statement* parse_case_stmt(){
     return NULL;
   }
   struct CaseStmt case_stmt = {expr, stmt, NULL};
-  struct Statement* result = malloc(sizeof(struct Statement));
+  struct Statement* result = parser_alloc(sizeof(struct Statement));
   result->type = CASE_STMT;
   result->statement.case_stmt = case_stmt;
   return result;
@@ -1055,7 +1022,7 @@ struct Statement* parse_default_stmt(){
     return NULL;
   }
   struct DefaultStmt default_stmt = {stmt, NULL};
-  struct Statement* result = malloc(sizeof(struct Statement));
+  struct Statement* result = parser_alloc(sizeof(struct Statement));
   result->type = DEFAULT_STMT;
   result->statement.default_stmt = default_stmt;
   return result;
@@ -1064,7 +1031,7 @@ struct Statement* parse_default_stmt(){
 struct Statement* parse_null_stmt(){
   if (consume(SEMI)){
     struct NullStmt null_stmt;
-    struct Statement* result = malloc(sizeof(struct Statement));
+    struct Statement* result = parser_alloc(sizeof(struct Statement));
     result->type = NULL_STMT;
     result->statement.null_stmt = null_stmt;
     return result;
@@ -1091,7 +1058,12 @@ struct Statement* parse_statement(){
   else return NULL;
 }
 
-struct Statement* parse_test(struct TokenArray* arr){
+struct Statement* parse_test(struct TokenArray* arr, struct Arena* arena){
+  if (arena == NULL) {
+    fprintf(stderr, "Parser requires an arena\n");
+    return NULL;
+  }
+  parser_arena = arena;
   program = arr->tokens;
   current = program;
   prog_size = arr->size;
@@ -1102,7 +1074,6 @@ struct Statement* parse_test(struct TokenArray* arr){
   }
   if (current - program != prog_size) {
     print_error();
-    destroy_stmt(result);
     return NULL;
   }
   return result;
@@ -1118,7 +1089,7 @@ struct VariableDclr* parse_var_dclr(struct Type* type, enum StorageClass storage
       return NULL;
     }
   }
-  struct VariableDclr* var_dclr = malloc(sizeof(struct VariableDclr));
+  struct VariableDclr* var_dclr = parser_alloc(sizeof(struct VariableDclr));
   var_dclr->init = expr;
   var_dclr->name = name;
   var_dclr->type = type;
@@ -1128,37 +1099,37 @@ struct VariableDclr* parse_var_dclr(struct Type* type, enum StorageClass storage
 
 struct DclrPrefix* parse_type_or_storage_class(){
   if (consume(INT_TOK)) {
-    struct DclrPrefix* dclr_prefix = malloc(sizeof(struct DclrPrefix));
+    struct DclrPrefix* dclr_prefix = parser_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = TYPE_PREFIX;
     dclr_prefix->prefix.type_spec = INT_SPEC;
     return dclr_prefix;
   }
   else if (consume(SIGNED_TOK)) {
-    struct DclrPrefix* dclr_prefix = malloc(sizeof(struct DclrPrefix));
+    struct DclrPrefix* dclr_prefix = parser_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = TYPE_PREFIX;
     dclr_prefix->prefix.type_spec = SINT_SPEC;
     return dclr_prefix;
   }
   else if (consume(UNSIGNED_TOK)) {
-    struct DclrPrefix* dclr_prefix = malloc(sizeof(struct DclrPrefix));
+    struct DclrPrefix* dclr_prefix = parser_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = TYPE_PREFIX;
     dclr_prefix->prefix.type_spec = UINT_SPEC;
     return dclr_prefix;
   }
   else if (consume(LONG_TOK)) {
-    struct DclrPrefix* dclr_prefix = malloc(sizeof(struct DclrPrefix));
+    struct DclrPrefix* dclr_prefix = parser_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = TYPE_PREFIX;
     dclr_prefix->prefix.type_spec = LONG_SPEC;
     return dclr_prefix;
   }
   else if (consume(STATIC_TOK)){
-    struct DclrPrefix* dclr_prefix = malloc(sizeof(struct DclrPrefix));
+    struct DclrPrefix* dclr_prefix = parser_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = STORAGE_PREFIX;
     dclr_prefix->prefix.type_spec = STATIC;
     return dclr_prefix;
   }
   else if (consume(EXTERN_TOK)){
-    struct DclrPrefix* dclr_prefix = malloc(sizeof(struct DclrPrefix));
+    struct DclrPrefix* dclr_prefix = parser_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = STORAGE_PREFIX;
     dclr_prefix->prefix.type_spec = EXTERN;
     return dclr_prefix;
@@ -1176,7 +1147,7 @@ void parse_types_and_storage_classes(struct StorageClassList** storages_result, 
   while ((prefix = parse_type_or_storage_class())){
     switch(prefix->type){
       case STORAGE_PREFIX:
-        struct StorageClassList* next_storage = malloc(sizeof(struct StorageClassList));
+        struct StorageClassList* next_storage = parser_alloc(sizeof(struct StorageClassList));
         next_storage->spec = prefix->prefix.storage_class;
         next_storage->next = NULL;
         if (prev_storages != NULL){
@@ -1185,7 +1156,7 @@ void parse_types_and_storage_classes(struct StorageClassList** storages_result, 
         prev_storages = next_storage;
         break;
       case TYPE_PREFIX:
-        struct TypeSpecList* next_spec = malloc(sizeof(struct TypeSpecList));
+        struct TypeSpecList* next_spec = parser_alloc(sizeof(struct TypeSpecList));
         next_spec->spec = prefix->prefix.type_spec;
         next_spec->next = NULL;
         if (prev_specs != NULL){
@@ -1227,22 +1198,22 @@ void parse_type_and_storage_class(struct Type** type, enum StorageClass* class){
     return;
   } else if (spec_list_contains(specs, UINT_SPEC) &&
              spec_list_contains(specs, LONG_SPEC)){
-    *type = malloc(sizeof(struct Type));
+    *type = parser_alloc(sizeof(struct Type));
     (*type)->type = ULONG_TYPE;
     *class = storage;
     return;
   } else if (spec_list_contains(specs, UINT_SPEC)){
-    *type = malloc(sizeof(struct Type));
+    *type = parser_alloc(sizeof(struct Type));
     (*type)->type = UINT_TYPE;
     *class = storage;
     return;
   } else if (spec_list_contains(specs, LONG_SPEC)) {
-    *type = malloc(sizeof(struct Type));
+    *type = parser_alloc(sizeof(struct Type));
     (*type)->type = LONG_TYPE;
     *class = storage;
     return;
   } else {
-    *type = malloc(sizeof(struct Type));
+    *type = parser_alloc(sizeof(struct Type));
     (*type)->type = INT_TYPE;
     *class = storage;
     return;
@@ -1254,7 +1225,7 @@ struct Declarator* parse_declarator(){
   if (consume(ASTERISK)){
     struct Declarator* decl = parse_declarator();
     if (decl != NULL){
-      struct Declarator* result = malloc(sizeof(struct Declarator));
+      struct Declarator* result = parser_alloc(sizeof(struct Declarator));
       result->type = POINTER_DEC;
       result->declarator.pointer_dec.decl = decl;
       return result;
@@ -1271,7 +1242,7 @@ struct Declarator* parse_simple_declarator(){
   union TokenVariant* data = consume_with_data(IDENT);
   if (data != NULL){
     // function or variable name
-    struct Declarator* result = malloc(sizeof(struct Declarator));
+    struct Declarator* result = parser_alloc(sizeof(struct Declarator));
     result->type = IDENT_DEC;
     result->declarator.ident_dec.name = data->ident_name;
     return result;
@@ -1284,7 +1255,6 @@ struct Declarator* parse_simple_declarator(){
     }
     if (!consume(CLOSE_P)){
       current = old_current;
-      destroy_declarator(result);
       return NULL;
     }
     return result;
@@ -1316,7 +1286,7 @@ struct Declarator* parse_direct_declarator(){
   struct ParamInfoList* params = parse_params();
   if (params == NULL) return decl;
   struct FunDec fun_dec = {params, decl};
-  struct Declarator* result = malloc(sizeof(struct Declarator));
+  struct Declarator* result = parser_alloc(sizeof(struct Declarator));
   result->type = FUN_DEC;
   result->declarator.fun_dec = fun_dec;
   return result;
@@ -1380,11 +1350,11 @@ struct Block* parse_end_of_func(bool* success){
 
 struct FunctionDclr* parse_function(struct Type* ret_type, enum StorageClass storage, 
                                     struct Slice* name, struct ParamList* params){
-  struct Type* fun_type = malloc(sizeof(struct Type));
+  struct Type* fun_type = parser_alloc(sizeof(struct Type));
   fun_type->type = FUN_TYPE;
   fun_type->type_data.fun_type.return_type = ret_type;
   fun_type->type_data.fun_type.param_types = params_to_types(params);
-  struct FunctionDclr* result = malloc(sizeof(struct FunctionDclr));
+  struct FunctionDclr* result = parser_alloc(sizeof(struct FunctionDclr));
   result->name = name;
   result->params = params;
   result->storage = storage;
@@ -1426,8 +1396,8 @@ struct Program* parse_prog(struct TokenArray* arr){
   current = program;
   prog_size = arr->size;
 
-  struct Program* prog = malloc(sizeof(struct Program));
-  struct DeclarationList* dclrs = malloc(sizeof(struct DeclarationList));
+  struct Program* prog = parser_alloc(sizeof(struct Program));
+  struct DeclarationList* dclrs = parser_alloc(sizeof(struct DeclarationList));
 
   prog->dclrs = dclrs;
 
@@ -1438,20 +1408,18 @@ struct Program* parse_prog(struct TokenArray* arr){
   if (dclr == NULL) {
     // there were 0 declarations
     prog->dclrs = NULL;
-    free(dclrs);
     return prog;
   }
 
   while (dclr != NULL){
     // TODO: this order is wrong
-    struct DeclarationList* next_dclr = malloc(sizeof(struct DeclarationList));
+    struct DeclarationList* next_dclr = parser_alloc(sizeof(struct DeclarationList));
     next_dclr->dclr = *dclr;
     next_dclr->next = NULL;
 
     current_dclr->next = next_dclr;
     current_dclr = next_dclr;
 
-    free(dclr);
     dclr = parse_declaration();
   }
 

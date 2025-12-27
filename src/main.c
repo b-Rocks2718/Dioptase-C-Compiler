@@ -9,6 +9,7 @@
 #include "token_array.h"
 #include "lexer.h"
 #include "parser.h"
+#include "arena.h"
 
 int main(int argc, const char *const *const argv) {
 
@@ -132,10 +133,13 @@ int main(int argc, const char *const *const argv) {
     }
 
     if (print_ast) {
-        struct Statement* stmt = parse_test(tokens);
+        struct Arena arena;
+        arena_init(&arena, 16384);
+        struct Statement* stmt = parse_test(tokens, &arena);
         if (stmt == NULL) {
            free(preprocessed);
            destroy_token_array(tokens);
+           arena_destroy(&arena);
            return 2;
         };
 
@@ -143,7 +147,7 @@ int main(int argc, const char *const *const argv) {
         print_stmt(stmt, 0);
         printf("\n");
 
-        destroy_stmt(stmt);
+        arena_destroy(&arena);
     }
     destroy_token_array(tokens);
     free(preprocessed);

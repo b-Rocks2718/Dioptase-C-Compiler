@@ -4,7 +4,9 @@
 #include "AST.h"
 #include "token_array.h"
 
-struct Statement* parse_test(struct TokenArray* arr);
+struct Arena;
+
+struct Statement* parse_test(struct TokenArray* arr, struct Arena* arena);
 
 struct Statement* parse_statement();
 
