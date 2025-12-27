@@ -22,6 +22,20 @@ struct Macro {
   struct Macro* next;
 };
 
+// Track nested conditional state and the currently active output region.
+struct IfState {
+  bool parent_active;
+  bool condition_true;
+  bool in_else;
+};
+
+struct IfStack {
+  struct IfState* items;
+  size_t count;
+  size_t cap;
+  bool current_active;
+};
+
 // Initialize a buffer with the requested capacity.
 static bool buffer_init(struct Buffer* buf, size_t cap) {
   buf->data = malloc(cap);
@@ -132,6 +146,45 @@ static void destroy_macros(struct Macro* macros) {
     free(macros);
     macros = next;
   }
+}
+
+// Push a new conditional state.
+static bool ifstack_push(struct IfStack* stack, bool condition_true) {
+  if (stack->count == stack->cap) {
+    size_t new_cap = stack->cap == 0 ? 8 : stack->cap * 2;
+    struct IfState* next = realloc(stack->items, new_cap * sizeof(struct IfState));
+    if (next == NULL) return false;
+    stack->items = next;
+    stack->cap = new_cap;
+  }
+
+  struct IfState state = {stack->current_active, condition_true, false};
+  stack->items[stack->count++] = state;
+  stack->current_active = state.parent_active && state.condition_true;
+  return true;
+}
+
+// Toggle to the #else branch of the current conditional.
+static bool ifstack_else(struct IfStack* stack) {
+  if (stack->count == 0) return false;
+  struct IfState* state = &stack->items[stack->count - 1];
+  if (state->in_else) return false;
+  state->in_else = true;
+  stack->current_active = state->parent_active && !state->condition_true;
+  return true;
+}
+
+// Pop the current conditional state.
+static bool ifstack_pop(struct IfStack* stack) {
+  if (stack->count == 0) return false;
+  stack->count--;
+  if (stack->count == 0) {
+    stack->current_active = true;
+  } else {
+    struct IfState* state = &stack->items[stack->count - 1];
+    stack->current_active = state->parent_active && (state->in_else ? !state->condition_true : state->condition_true);
+  }
+  return true;
 }
 
 // First pass: remove // and /* */ comments while preserving strings/chars.
@@ -463,14 +516,19 @@ static bool handle_include_line(const char* line, const char* line_end, const ch
   return ok;
 }
 
-// Basic validation for #ifdef/#ifndef names.
-static bool parse_ifdef_name(const char* line, const char* line_end, const char* directive) {
+// Basic validation for #ifdef/#ifndef names with parsed output.
+static bool parse_ifdef_name(const char* line, const char* line_end, const char* directive, const char** name_start, size_t* name_len) {
   const char* p = line;
   while (p < line_end && isspace((unsigned char)*p)) p++;
   if (p >= line_end || !is_ident_start(*p)) {
     fprintf(stderr, "Invalid #%s directive\n", directive);
     return false;
   }
+  const char* start = p;
+  p++;
+  while (p < line_end && is_ident_char(*p)) p++;
+  *name_start = start;
+  *name_len = (size_t)(p - start);
   return true;
 }
 
@@ -482,8 +540,7 @@ static bool preprocess_directive(
     const char* filename,
     struct Macro** macros,
     struct Buffer* out,
-    int* if_depth,
-    int* inactive_depth) {
+    struct IfStack* if_stack) {
   const char* p = line_start;
   while (p < line_end && isspace((unsigned char)*p)) p++;
   const char* word_start = p;
@@ -495,7 +552,7 @@ static bool preprocess_directive(
     return false;
   }
 
-  bool is_active = (*inactive_depth == 0);
+  bool is_active = if_stack->current_active;
 
   if (word_len == 7 && strncmp(word_start, "include", 7) == 0) {
     if (!is_active) return true;
@@ -508,48 +565,48 @@ static bool preprocess_directive(
   }
 
   if (word_len == 5 && strncmp(word_start, "ifdef", 5) == 0) {
-    (*if_depth)++;
-    if (*inactive_depth > 0) {
-      (*inactive_depth)++;
-      return true;
+    const char* name_start = NULL;
+    size_t name_len = 0;
+    if (!parse_ifdef_name(p, line_end, "ifdef", &name_start, &name_len)) return false;
+    bool condition_true = false;
+    if (if_stack->current_active) {
+      condition_true = (macro_find(*macros, name_start, name_len) != NULL);
     }
-    if (!parse_ifdef_name(p, line_end, "ifdef")) return false;
-    while (p < line_end && isspace((unsigned char)*p)) p++;
-    const char* name_start = p;
-    p++;
-    while (p < line_end && is_ident_char(*p)) p++;
-    size_t name_len = (size_t)(p - name_start);
-    if (macro_find(*macros, name_start, name_len) == NULL) {
-      *inactive_depth = 1;
+    if (!ifstack_push(if_stack, condition_true)) {
+      fprintf(stderr, "Preprocessor memory error\n");
+      return false;
     }
     return true;
   }
 
   if (word_len == 6 && strncmp(word_start, "ifndef", 6) == 0) {
-    (*if_depth)++;
-    if (*inactive_depth > 0) {
-      (*inactive_depth)++;
-      return true;
+    const char* name_start = NULL;
+    size_t name_len = 0;
+    if (!parse_ifdef_name(p, line_end, "ifndef", &name_start, &name_len)) return false;
+    bool condition_true = false;
+    if (if_stack->current_active) {
+      condition_true = (macro_find(*macros, name_start, name_len) == NULL);
     }
-    if (!parse_ifdef_name(p, line_end, "ifndef")) return false;
-    while (p < line_end && isspace((unsigned char)*p)) p++;
-    const char* name_start = p;
-    p++;
-    while (p < line_end && is_ident_char(*p)) p++;
-    size_t name_len = (size_t)(p - name_start);
-    if (macro_find(*macros, name_start, name_len) != NULL) {
-      *inactive_depth = 1;
+    if (!ifstack_push(if_stack, condition_true)) {
+      fprintf(stderr, "Preprocessor memory error\n");
+      return false;
+    }
+    return true;
+  }
+
+  if (word_len == 4 && strncmp(word_start, "else", 4) == 0) {
+    if (!ifstack_else(if_stack)) {
+      fprintf(stderr, "Unexpected #else\n");
+      return false;
     }
     return true;
   }
 
   if (word_len == 5 && strncmp(word_start, "endif", 5) == 0) {
-    if (*if_depth <= 0) {
+    if (!ifstack_pop(if_stack)) {
       fprintf(stderr, "Unexpected #endif\n");
       return false;
     }
-    (*if_depth)--;
-    if (*inactive_depth > 0) (*inactive_depth)--;
     return true;
   }
 
@@ -571,9 +628,12 @@ static char* preprocess_buffer(const char* prog, const char* filename, struct Ma
     return NULL;
   }
 
-  // Track nesting and whether we're currently skipping inactive blocks.
-  int if_depth = 0;
-  int inactive_depth = 0;
+  // Track nesting and whether we're currently emitting active regions.
+  struct IfStack if_stack;
+  if_stack.items = NULL;
+  if_stack.count = 0;
+  if_stack.cap = 0;
+  if_stack.current_active = true;
 
   const char* cursor = no_comments;
   while (*cursor != '\0') {
@@ -587,40 +647,45 @@ static char* preprocess_buffer(const char* prog, const char* filename, struct Ma
     while (p < line_end && isspace((unsigned char)*p)) p++;
     // Directive lines are recognized even when indented.
     if (p < line_end && *p == '#') {
-      if (!preprocess_directive(p + 1, line_end, has_newline, filename, macros, &out, &if_depth, &inactive_depth)) {
+      if (!preprocess_directive(p + 1, line_end, has_newline, filename, macros, &out, &if_stack)) {
         free(no_comments);
         free(out.data);
+        free(if_stack.items);
         return NULL;
       }
       continue;
     }
 
     // Only emit non-directive lines from active regions.
-    if (inactive_depth == 0) {
+    if (if_stack.current_active) {
       if (!expand_macros_in_line(line_start, (size_t)(line_end - line_start), *macros, &out)) {
         fprintf(stderr, "Preprocessor memory error\n");
         free(no_comments);
         free(out.data);
+        free(if_stack.items);
         return NULL;
       }
       if (has_newline && !buffer_append_char(&out, '\n')) {
         fprintf(stderr, "Preprocessor memory error\n");
         free(no_comments);
         free(out.data);
+        free(if_stack.items);
         return NULL;
       }
     }
   }
 
   // Unterminated #ifdef/#ifndef should be reported as an error.
-  if (if_depth != 0) {
+  if (if_stack.count != 0) {
     fprintf(stderr, "Unterminated #ifdef/#ifndef block\n");
     free(no_comments);
     free(out.data);
+    free(if_stack.items);
     return NULL;
   }
 
   free(no_comments);
+  free(if_stack.items);
   if (!buffer_finish(&out)) {
     fprintf(stderr, "Preprocessor memory error\n");
     free(out.data);

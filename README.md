@@ -19,6 +19,19 @@ Run the compiler with:
 
 The first command runs the preprocessor on `example.c` and outputs the result to stdout. The second command lexes the preprocessed output and prints the tokens. I'm in the process of implementing the parser.
 
+## Supported Features
+
+### Preprocessor
+
+- `#define` (object-like macros. no function-like macros yet)
+- `#include` (only supports `""` includes for now)
+- `#ifdef`, `#ifndef`, `#else`, `#endif`
+- comments (`//` and `/* ... */`)
+
+### C Subset
+
+None yet, only the preprocessor and lexer have been ported.
+
 ## Tests
 
 Tests live in `tests/preprocess`, `tests/lexer`, and `tests/lexer_invalid`. Each case is a `.c` file with a matching `.ok` file for expected output. Running `make test` writes `test.out` files next to each case and diffs them against the `.ok` files.
