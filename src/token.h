@@ -1,4 +1,5 @@
-#pragma once
+#ifndef TOKEN_H
+#define TOKEN_H
 
 enum TokenType {
   // tokens with data
@@ -87,3 +88,5 @@ struct Token {
 void free_token(struct Token* token);
 
 void print_token(struct Token token);
+
+#endif // TOKEN_H

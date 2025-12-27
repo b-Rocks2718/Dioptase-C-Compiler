@@ -1,4 +1,5 @@
-#pragma once
+#ifndef HASHMAP_H
+#define HASHMAP_H
 
 #include <stdint.h>
 
@@ -22,3 +23,5 @@ void hash_map_insert(struct HashMap* hmap, struct Slice* key, uint64_t value);
 uint64_t hash_map_get(struct HashMap* hmap, struct Slice* key);
 
 void destroy_hash_map(struct HashMap* hmap);
+
+#endif // HASHMAP_H

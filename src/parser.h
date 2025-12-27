@@ -1,4 +1,5 @@
-#pragma once
+#ifndef PARSER_H
+#define PARSER_H
 
 #include "AST.h"
 #include "token_array.h"
@@ -28,3 +29,5 @@ struct Declarator* parse_declarator();
 struct Declarator* parse_simple_declarator();
 
 struct Declarator* parse_direct_declarator();
+
+#endif

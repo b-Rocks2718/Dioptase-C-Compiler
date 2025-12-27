@@ -1,4 +1,5 @@
-#pragma once
+#ifndef TOKEN_ARRAY_H
+#define TOKEN_ARRAY_H
 
 #include <stddef.h>
 
@@ -19,3 +20,5 @@ struct Token token_array_get(struct TokenArray* arr, size_t i);
 void destroy_token_array(struct TokenArray* arr);
 
 void print_token_array(struct TokenArray* arr);
+
+#endif // TOKEN_ARRAY_H

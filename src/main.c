@@ -17,6 +17,8 @@ int main(int argc, const char *const *const argv) {
     int print_preprocess = 0;
     int saw_output_flag = 0;
     const char *filename = NULL;
+    const char **cli_defines = malloc(argc * sizeof(char*));
+    int num_defines = 0;
 
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
@@ -35,9 +37,20 @@ int main(int argc, const char *const *const argv) {
             saw_output_flag = 1;
             continue;
         }
+        if (strncmp(arg, "-D", 2) == 0) {
+            const char *def = arg + 2;
+            if (def[0] == '\0') {
+                fprintf(stderr, "Invalid -D definition (expected -DNAME or -DNAME=value)\n");
+                free(cli_defines);
+                exit(1);
+            }
+            cli_defines[num_defines++] = def;
+            continue;
+        }
         if (arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] <file name>\n", argv[0]);
+            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-DNAME[=value]] <file name>\n", argv[0]);
+            free(cli_defines);
             exit(1);
         }
         if (filename == NULL) {
@@ -45,12 +58,14 @@ int main(int argc, const char *const *const argv) {
             continue;
         }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-DNAME[=value]] <file name>\n", argv[0]);
+        free(cli_defines);
         exit(1);
     }
 
     if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-DNAME[=value]] <file name>\n", argv[0]);
+        free(cli_defines);
         exit(1);
     }
 
@@ -87,7 +102,11 @@ int main(int argc, const char *const *const argv) {
         exit(1);
     }
 
-    char* preprocessed = preprocess(prog);
+    char* preprocessed = preprocess(prog, filename, num_defines, cli_defines);
+    free(cli_defines);
+    if (preprocessed == NULL) {
+        return 1;
+    }
     size_t preprocessed_len = strlen(preprocessed);
 
     if (print_preprocess) {

@@ -1,4 +1,5 @@
-#pragma once
+#ifndef SLICE_H
+#define SLICE_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -17,3 +18,5 @@ bool is_identifier(const struct Slice* slice);
 void print_slice(struct Slice* slice);
 
 size_t hash_slice(const struct Slice* key);
+
+#endif // SLICE_H

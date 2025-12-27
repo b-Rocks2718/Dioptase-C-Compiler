@@ -1,4 +1,5 @@
-#pragma once
+#ifndef AST_H
+#define AST_H
 
 #include <stddef.h>
 
@@ -571,3 +572,5 @@ void destroy_var_dclr(struct VariableDclr* var_dclr);
 void destroy_block(struct Block* block);
 
 void destroy_declaration(struct Declaration* declaration);
+
+#endif // AST_H
