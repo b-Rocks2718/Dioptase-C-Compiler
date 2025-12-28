@@ -1,0 +1,13 @@
+AST:
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            VarDclr(none, int, x, LitExpr(int, 1):untyped);
+            VarDclr(none, int, y, LitExpr(int, 2):untyped);
+            Return(ConditionalExpr(BoolAnd(BoolLe(Var(x):untyped, Var(y):untyped):untyped, BoolLe(Var(y):untyped, LitExpr(int, 5):untyped):untyped):untyped, BitOr(Var(x):untyped, Var(y):untyped):untyped, BitXor(Var(x):untyped, Var(y):untyped):untyped):untyped);
+    );
+)
+

@@ -6,7 +6,7 @@
 
 struct Arena;
 
-struct Statement* parse_test(struct TokenArray* arr, struct Arena* arena);
+struct Program* parse_prog(struct TokenArray* tokens, struct Arena* arena);
 
 struct Statement* parse_statement();
 

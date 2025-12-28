@@ -1,0 +1,12 @@
+AST:
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            VarDclr(none, int, x, LitExpr(int, 1):untyped);
+            Return(AddOp(Var(x):untyped, LitExpr(int, 2):untyped):untyped);
+    );
+)
+

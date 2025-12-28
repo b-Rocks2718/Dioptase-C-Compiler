@@ -1,0 +1,15 @@
+AST:
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            VarDclr(none, int, x, LitExpr(int, 1):untyped);
+            VarDclr(none, int*, p, AddrOf(Var(x):untyped):untyped);
+            ExprStmt(Assign(Var(p):untyped, AddrOf(Var(x):untyped):untyped):untyped);
+            ExprStmt(Assign(Var(x):untyped, Cast(int, Var(x):untyped):untyped):untyped);
+            Return(Dereference(Var(p):untyped):untyped);
+    );
+)
+

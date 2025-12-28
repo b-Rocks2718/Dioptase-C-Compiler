@@ -1,0 +1,28 @@
+AST:
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            VarDclr(none, int, x, LitExpr(int, 2):untyped);
+            SwitchStmt(
+                label=null
+                Var(x):untyped,
+                CompoundStmt(
+                    CaseStmt(
+                        LitExpr(int, 1):untyped,
+                        Return(LitExpr(int, 10):untyped);
+                    );
+                    CaseStmt(
+                        LitExpr(int, 2):untyped,
+                        Return(LitExpr(int, 20):untyped);
+                    );
+                    DefaultStmt(
+                        Return(LitExpr(int, 30):untyped);
+                    );
+                );
+            );
+    );
+)
+

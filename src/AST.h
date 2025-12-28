@@ -3,8 +3,6 @@
 
 #include <stddef.h>
 
-// TODO: add type fields to every expr struct
-
 /* AST data structures */
 
 struct Program {
@@ -231,6 +229,7 @@ union ExprVariant {
 };
 
 struct Expr {
+  struct Type* value_type;
   enum ExprType type;
   union ExprVariant expr;
 };
@@ -438,7 +437,7 @@ struct Declarator {
 };
 
 struct ParamInfo {
-  struct type* type;
+  struct Type* type;
   struct Declarator decl;
 };
 
@@ -447,7 +446,7 @@ struct ParamInfoList {
   struct ParamInfoList* next;
 };
 
-// yeah this is just the natural number right now, but it'll allow for
+// yeah this is just the natural numbers right now, but it'll allow for
 // array declarators later
 enum AbstractDeclaratorType {
   ABSTRACT_POINTER,
@@ -527,50 +526,6 @@ void print_declaration(struct Declaration* declaration, unsigned tabs);
 
 void print_var_dclr(struct VariableDclr* var_dclr);
 
-/*-------------------------------------------------------------------------------------------------------*/
-
-/* destructors */
-
-void destroy_expr(struct Expr* expr);
-
-void destroy_bin_expr(struct BinaryExpr* expr);
-
-void destroy_un_expr(struct UnaryExpr* expr);
-
-void destroy_assign_expr(struct AssignExpr* expr);
-
-void destroy_post_assign_expr(struct PostAssignExpr* expr);
-
-void destroy_conditional_expr(struct ConditionalExpr* expr);
-
-void destroy_lit_expr(struct LitExpr* expr);
-
-void destroy_var_expr(struct VarExpr* expr);
-
-void destroy_fun_call_expr(struct FunctionCallExpr* expr);
-
-void destroy_cast_expr(struct CastExpr* expr);
-
-void destroy_addr_of_expr(struct AddrOfExpr* expr);
-
-void destroy_dereference_expr(struct DereferenceExpr* expr);
-
-void destroy_type(struct Type* type);
-
-void destroy_type_spec_list(struct TypeSpecList* specs);
-
-void destroy_abstract_declarator(struct AbstractDeclarator* declarator);
-
-void destroy_declarator(struct Declarator* declarator);
-
-void destroy_stmt(struct Statement* stmt);
-
-void destroy_for_init(struct ForInit* for_init);
-
-void destroy_var_dclr(struct VariableDclr* var_dclr);
-
-void destroy_block(struct Block* block);
-
-void destroy_declaration(struct Declaration* declaration);
+void print_prog(struct Program* prog);
 
 #endif // AST_H

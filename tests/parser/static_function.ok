@@ -1,0 +1,18 @@
+AST:
+Program(
+    FunDclr(
+        helper,
+        storage=static
+        params=[]
+        body=
+            Return(LitExpr(int, 42):untyped);
+    );
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            Return(FunCallExpr(helper, []):untyped);
+    );
+)
+

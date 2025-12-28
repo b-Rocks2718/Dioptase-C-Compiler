@@ -1,0 +1,23 @@
+AST:
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            VarDclr(none, int, x, LitExpr(int, 1):untyped);
+            IfStmt(
+                c=BoolLe(Var(x):untyped, LitExpr(int, 0):untyped):untyped, 
+                left=
+                    CompoundStmt(
+                        ExprStmt(Assign(Var(x):untyped, LitExpr(int, 2):untyped):untyped);
+                    );
+                right=
+                    CompoundStmt(
+                        ExprStmt(Assign(Var(x):untyped, AddOp(Var(x):untyped, LitExpr(int, 3):untyped):untyped):untyped);
+                    );
+            );
+            Return(Var(x):untyped);
+    );
+)
+

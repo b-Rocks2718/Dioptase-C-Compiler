@@ -1,0 +1,21 @@
+AST:
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            VarDclr(none, int, x, LitExpr(int, 0):untyped);
+            LabeledStmt(
+                start,
+                ExprStmt(Assign(Var(x):untyped, AddOp(Var(x):untyped, LitExpr(int, 1):untyped):untyped):untyped);
+            );
+            IfStmt(
+                c=BoolLe(Var(x):untyped, LitExpr(int, 3):untyped):untyped, 
+                left=
+                    GotoStmt(start);
+            );
+            Return(Var(x):untyped);
+    );
+)
+

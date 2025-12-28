@@ -1,0 +1,35 @@
+AST:
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            VarDclr(none, int, i, LitExpr(int, 0):untyped);
+            WhileStmt(
+                BoolLe(Var(i):untyped, LitExpr(int, 3):untyped):untyped,
+                CompoundStmt(
+                    ExprStmt(Assign(Var(i):untyped, AddOp(Var(i):untyped, LitExpr(int, 1):untyped):untyped):untyped);
+                    IfStmt(
+                        c=BoolEq(Var(i):untyped, LitExpr(int, 2):untyped):untyped, 
+                        left=
+                            BreakStmt(label=null);
+                    );
+                );
+            );
+            DoWhileStmt(
+                CompoundStmt(
+                    ExprStmt(Assign(Var(i):untyped, SubOp(Var(i):untyped, LitExpr(int, 1):untyped):untyped):untyped);
+                );
+                BoolGe(Var(i):untyped, LitExpr(int, 0):untyped):untyped,
+            );
+            ForStmt(
+                Assign(Var(i):untyped, LitExpr(int, 0):untyped):untyped,
+                BoolLe(Var(i):untyped, LitExpr(int, 2):untyped):untyped,
+                Assign(Var(i):untyped, AddOp(Var(i):untyped, LitExpr(int, 1):untyped):untyped):untyped,
+                NullStmt;
+            );
+            Return(Var(i):untyped);
+    );
+)
+

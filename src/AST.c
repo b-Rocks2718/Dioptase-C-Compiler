@@ -45,6 +45,20 @@ void print_type(struct Type* type){
   }
 }
 
+static void print_storage_class(enum StorageClass storage){
+  switch (storage){
+    case NONE:
+      printf("none");
+      break;
+    case STATIC:
+      printf("static");
+      break;
+    case EXTERN:
+      printf("extern");
+      break;
+  }
+}
+
 void print_expr(struct Expr* expr){
   switch (expr->type){
     case BINARY:
@@ -80,6 +94,12 @@ void print_expr(struct Expr* expr){
     case DEREFERENCE:
       print_dereference_expr(&expr->expr.deref_expr);
       break;
+  }
+  if (expr->value_type == NULL){
+    printf(":untyped");
+  } else {
+    printf(":");
+    print_type(expr->value_type);
   }
 }
 
@@ -506,6 +526,7 @@ void print_stmt(struct Statement* stmt, unsigned tabs){
 
 void print_var_dclr(struct VariableDclr* var_dclr){
   printf("VarDclr(");
+  print_storage_class(var_dclr->storage); printf(", ");
   print_type(var_dclr->type); printf(", ");
   print_slice(var_dclr->name);
   if (var_dclr->init != NULL) {
@@ -514,301 +535,48 @@ void print_var_dclr(struct VariableDclr* var_dclr){
   printf(")");
 }
 
+void print_param_list(struct ParamList* params){
+  if (params == NULL) return;
+  print_var_dclr(&params->param);
+  printf(", ");
+  print_param_list(params->next);
+}
+
 void print_declaration(struct Declaration* declaration, unsigned tabs){
-  
-}
-
-/*-------------------------------------------------------------------------------------------------------*/
-
-/* destructors */
-
-void destroy_expr(struct Expr* expr){
-  switch (expr->type){
-    case BINARY:
-      destroy_bin_expr(&expr->expr.bin_expr);
+  print_tabs(tabs);
+  switch (declaration->type){
+    case VAR_DCLR:
+      print_var_dclr(&declaration->dclr.var_dclr);
+      printf(";\n");
       break;
-    case UNARY:
-      destroy_un_expr(&expr->expr.un_expr);
-      break;
-    case ASSIGN:
-      destroy_assign_expr(&expr->expr.assign_expr);
-      break;
-    case POST_ASSIGN:
-      destroy_post_assign_expr(&expr->expr.post_assign_expr);
-      break;
-    case CONDITIONAL:
-      destroy_conditional_expr(&expr->expr.conditional_expr);
-      break;
-    case LIT:
-      destroy_lit_expr(&expr->expr.lit_expr);
-      break;
-    case VAR:
-      destroy_var_expr(&expr->expr.var_expr);
-      break;
-    case FUNCTION_CALL:
-      destroy_fun_call_expr(&expr->expr.fun_call_expr);
-      break;
-    case CAST:
-      destroy_cast_expr(&expr->expr.cast_expr);
-      break;
-    case ADDR_OF:
-      destroy_addr_of_expr(&expr->expr.addr_of_expr);
-      break;
-    case DEREFERENCE:
-      destroy_dereference_expr(&expr->expr.deref_expr);
-      break;
-  }
-  free(expr);
-}
-
-void destroy_bin_expr(struct BinaryExpr* expr){
-  destroy_expr(expr->left);
-  destroy_expr(expr->right);
-}
-
-void destroy_un_expr(struct UnaryExpr* expr){
-  destroy_expr(expr->expr);
-}
-
-void destroy_assign_expr(struct AssignExpr* expr){
-  destroy_expr(expr->left);
-  destroy_expr(expr->right);
-}
-
-void destroy_post_assign_expr(struct PostAssignExpr* expr){
-  destroy_expr(expr->expr);
-}
-
-void destroy_conditional_expr(struct ConditionalExpr* expr){
-  destroy_expr(expr->condition);
-  destroy_expr(expr->left);
-  destroy_expr(expr->right);
-}
-
-void destroy_lit_expr(struct LitExpr* expr){}
-
-void destroy_var_expr(struct VarExpr* expr){}
-
-void destroy_arg_list(struct ArgList* args){
-  if (args->next != NULL) destroy_arg_list(args->next);
-  destroy_expr(&args->arg);
-}
-
-void destroy_fun_call_expr(struct FunctionCallExpr* expr){
-  if (expr->args != NULL) destroy_arg_list(expr->args);
-}
-
-void destroy_cast_expr(struct CastExpr* expr){
-  destroy_type(expr->target);
-  destroy_expr(expr->expr);
-}
-
-void destroy_addr_of_expr(struct AddrOfExpr* expr){
-  destroy_expr(expr->expr);
-}
-
-void destroy_dereference_expr(struct DereferenceExpr* expr){
-  destroy_expr(expr->expr);
-}
-
-void destroy_param_list(struct ParamTypeList* params){
-  if (params->next != NULL) free(params->next);
-  free(params);
-}
-
-void destroy_type(struct Type* type){
-  switch (type->type){
-    case INT_TYPE:
-    case LONG_TYPE:
-    case UINT_TYPE:
-    case ULONG_TYPE:
-      free(type);
-      break;
-    case POINTER_TYPE:
-      destroy_type(type->type_data.pointer_type.referenced_type);
-      free(type);
-      break;
-    case FUN_TYPE:
-      destroy_type(type->type_data.fun_type.return_type);
-      destroy_param_list(type->type_data.fun_type.param_types);
-      free(type);
+    case FUN_DCLR:
+      printf("FunDclr(\n");
+      print_tabs(tabs + 1); 
+      print_slice(declaration->dclr.fun_dclr.name);
+      printf(",\n");
+      print_tabs(tabs + 1);
+      printf("storage=");
+      print_storage_class(declaration->dclr.fun_dclr.storage);
+      printf("\n");
+      print_tabs(tabs + 1);
+      printf("params=[");
+      print_param_list(declaration->dclr.fun_dclr.params);
+      printf("]\n");
+      if (declaration->dclr.fun_dclr.body != NULL){
+        print_tabs(tabs + 1); printf("body=\n");
+        print_block(declaration->dclr.fun_dclr.body, tabs + 2);
+      } else {
+        print_tabs(tabs + 1); printf("body=null\n");
+      }
+      print_tabs(tabs); printf(");\n");
       break;
   }
 }
 
-void destroy_type_spec_list(struct TypeSpecList* specs){
-  if (specs->next != NULL) destroy_type_spec_list(specs->next);
-  free(specs);
-}
-
-void destroy_abstract_declarator(struct AbstractDeclarator* declarator){
-  if (declarator->type == ABSTRACT_BASE) free(declarator);
-  else {
-    destroy_abstract_declarator(declarator->data);
-    free(declarator);
+void print_prog(struct Program* prog){
+  printf("Program(\n");
+  for (struct DeclarationList* cur = prog->dclrs; cur != NULL; cur = cur->next){
+    print_declaration(&cur->dclr, 1);
   }
-}
-
-void destroy_block_item(struct BlockItem* item){
-  switch (item->type){
-    case DCLR_ITEM:
-      destroy_declaration(item->item.dclr);
-      break;
-    case STMT_ITEM:
-      destroy_stmt(item->item.stmt);
-      break;
-  }
-  free(item);
-}
-
-void destroy_block(struct Block* block){
-  if (block == NULL) return;
-  if (block->next != NULL) destroy_block(block->next);
-  destroy_block_item(block->item);
-  free(block);
-}
-
-void destroy_for_init(struct ForInit* for_init){
-  switch(for_init->type){
-    case DCLR_INIT:
-      destroy_var_dclr(for_init->init.dclr_init);
-      break;
-    case EXPR_INIT:
-      if (for_init->init.expr_init != NULL)
-        destroy_expr(for_init->init.expr_init);
-      break;
-  }
-  free(for_init);
-}
-
-void destroy_case_list(struct CaseList* case_list){
-  if (case_list->next != NULL) destroy_case_list(case_list->next);
-  free(case_list);
-}
-
-void destroy_return_stmt(struct ReturnStmt* ret_stmt){
-  destroy_expr(ret_stmt->expr);
-}
-
-void destroy_expr_stmt(struct ExprStmt* expr_stmt){
-  destroy_expr(expr_stmt->expr);
-}
-
-void destroy_if_stmt(struct IfStmt* if_stmt){
-  destroy_expr(if_stmt->condition);
-  destroy_stmt(if_stmt->if_stmt);
-  if (if_stmt->else_stmt != NULL) destroy_stmt(if_stmt->else_stmt);
-}
-
-void destroy_goto_stmt(struct GotoStmt* goto_stmt){}
-
-void destroy_labeled_stmt(struct LabeledStmt* labeled_stmt){
-  destroy_stmt(labeled_stmt->stmt);
-}
-
-void destroy_compound_stmt(struct CompoundStmt* compound_stmt){
-  destroy_block(compound_stmt->block);
-}
-
-void destroy_break_stmt(struct BreakStmt* break_stmt){}
-
-void destroy_continue_stmt(struct ContinueStmt* continue_stmt){}
-
-void destroy_while_stmt(struct WhileStmt* while_stmt){
-  destroy_expr(while_stmt->condition);
-  destroy_stmt(while_stmt->statement);
-}
-
-void destroy_do_while_stmt(struct DoWhileStmt* do_while_stmt){
-  destroy_stmt(do_while_stmt->statement);
-  destroy_expr(do_while_stmt->condition);
-}
-
-void destroy_for_stmt(struct ForStmt* for_stmt){
-  if (for_stmt->init != NULL) destroy_for_init(for_stmt->init);
-  if (for_stmt->condition != NULL) destroy_expr(for_stmt->condition);
-  if (for_stmt->end != NULL) destroy_expr(for_stmt->end);
-  destroy_stmt(for_stmt->statement);
-}
-
-void destroy_switch_stmt(struct SwitchStmt* switch_stmt){
-  destroy_expr(switch_stmt->condition);
-  destroy_stmt(switch_stmt->statement);
-  if (switch_stmt->cases != NULL) destroy_case_list(switch_stmt->cases);
-}
-
-void destroy_case_stmt(struct CaseStmt* case_stmt){
-  destroy_expr(case_stmt->expr);
-  destroy_stmt(case_stmt->statement);
-}
-
-void destroy_default_stmt(struct DefaultStmt* default_stmt){
-  destroy_stmt(default_stmt->statement);
-}
-
-void destroy_null_stmt(struct NullStmt* null_stmt){}
-
-void destroy_stmt(struct Statement* stmt){
-  switch (stmt->type){
-    case RETURN_STMT:
-      destroy_return_stmt(&stmt->statement.ret_stmt);
-      break;
-    case EXPR_STMT:
-      destroy_expr_stmt(&stmt->statement.expr_stmt); 
-      break;
-    case IF_STMT:
-      destroy_if_stmt(&stmt->statement.if_stmt);
-      break;
-    case GOTO_STMT:
-      destroy_goto_stmt(&stmt->statement.goto_stmt);
-      break;
-    case LABELED_STMT:
-      destroy_labeled_stmt(&stmt->statement.labeled_stmt);
-      break;
-    case COMPOUND_STMT:
-      destroy_compound_stmt(&stmt->statement.compound_stmt);
-      break;
-    case BREAK_STMT:
-      destroy_break_stmt(&stmt->statement.break_stmt);
-      break;
-    case CONTINUE_STMT:
-      destroy_continue_stmt(&stmt->statement.continue_stmt);
-      break;
-    case WHILE_STMT:
-      destroy_while_stmt(&stmt->statement.while_stmt);
-      break;
-    case DO_WHILE_STMT:
-      destroy_do_while_stmt(&stmt->statement.do_while_stmt);
-      break;
-    case FOR_STMT:
-      destroy_for_stmt(&stmt->statement.for_stmt);
-      break;
-    case SWITCH_STMT:
-      destroy_switch_stmt(&stmt->statement.switch_stmt);
-      break;
-    case CASE_STMT:
-      destroy_case_stmt(&stmt->statement.case_stmt);
-      break;
-    case DEFAULT_STMT:
-      destroy_default_stmt(&stmt->statement.default_stmt);
-      break;
-    case NULL_STMT:
-      destroy_null_stmt(&stmt->statement.null_stmt);
-      break;
-  }
-  free(stmt);
-}
-
-void destroy_var_dclr(struct VariableDclr* var_dclr){
-  if (var_dclr->init != NULL) destroy_expr(var_dclr->init);
-  destroy_type(var_dclr->type);
-  free(var_dclr);
-}
-
-void destroy_declarator(struct Declarator* declarator){
-  
-}
-
-void destroy_declaration(struct Declaration* declaration){
-  
+  printf(")\n");
 }

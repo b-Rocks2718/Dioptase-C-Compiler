@@ -110,12 +110,14 @@ struct Expr* parse_pre_op(){
     union ConstVariant const_data = {.int_val = 1};
     struct LitExpr one = {INT_CONST, const_data};
     struct Expr* lit_expr = parser_alloc(sizeof(struct Expr));
+    lit_expr->value_type = NULL;
     lit_expr->type = LIT;
     lit_expr->expr.lit_expr = one;
 
     struct BinaryExpr add_one = {PLUS_EQ_OP, inner, lit_expr};
 
     struct Expr* result = parser_alloc(sizeof(struct Expr));
+    result->value_type = NULL;
     result->type = BINARY;
     result->expr.bin_expr = add_one;
     return result;
@@ -128,12 +130,14 @@ struct Expr* parse_pre_op(){
     union ConstVariant const_data = {.int_val = 1};
     struct LitExpr one = {INT_CONST, const_data};
     struct Expr* lit_expr = parser_alloc(sizeof(struct Expr));
+    lit_expr->value_type = NULL;
     lit_expr->type = LIT;
     lit_expr->expr.lit_expr = one;
 
     struct BinaryExpr sub_one = {MINUS_EQ_OP, inner, lit_expr};
 
     struct Expr* result = parser_alloc(sizeof(struct Expr));
+    result->value_type = NULL;
     result->type = BINARY;
     result->expr.bin_expr = sub_one;
     return result;
@@ -148,6 +152,7 @@ struct Expr* parse_var(){
     struct VarExpr var_expr = { data->ident_name };
 
     struct Expr* expr = parser_alloc(sizeof(struct Expr));
+    expr->value_type = NULL;
     expr->expr.var_expr = var_expr;
     expr->type = VAR;
     return expr;
@@ -211,11 +216,11 @@ struct Type* parse_param_type(){
   struct TypeSpecList* types = parse_type_specs();
   if (types == NULL) return NULL;
   else if (spec_list_has_duplicates(types)) {
-    printf("Parse Error: Duplicate type specifiers");
+    printf("Parse Error: Duplicate type specifiers\n");
     return NULL;
   } else if (spec_list_contains(types, SINT_SPEC) &&
              spec_list_contains(types, UINT_SPEC)){
-    printf("Parse Error: Invalid type specifiers");
+    printf("Parse Error: Invalid type specifiers\n");
     return NULL;
   } else if (spec_list_contains(types, UINT_SPEC)){
     // ignoring long types for now
@@ -304,6 +309,7 @@ struct Expr* parse_cast(){
 
   struct CastExpr cast = {derived_type, expr};
   struct Expr* result = parser_alloc(sizeof(struct Expr));
+  result->value_type = NULL;
   result->type = CAST;
   result->expr.cast_expr = cast;
   return result;
@@ -316,12 +322,14 @@ struct Expr* parse_post_op(){
     if (consume(INC_TOK)){
       struct PostAssignExpr add_one = {POST_INC, inner};
       struct Expr* result = parser_alloc(sizeof(struct Expr));
+      result->value_type = NULL;
       result->type = POST_ASSIGN;
       result->expr.post_assign_expr = add_one;
       return result;
     } else if (consume(DEC_TOK)){
       struct PostAssignExpr sub_one = {POST_DEC, inner};
       struct Expr* result = parser_alloc(sizeof(struct Expr));
+      result->value_type = NULL;
       result->type = POST_ASSIGN;
       result->expr.post_assign_expr = sub_one;
       return result;
@@ -385,12 +393,14 @@ struct Expr* parse_func_call(){
     struct FunctionCallExpr call = {data->ident_name, args};
 
     struct Expr* expr = parser_alloc(sizeof(struct Expr));
+    expr->value_type = NULL;
     expr->type = FUNCTION_CALL;
     expr->expr.fun_call_expr = call;
     return expr;
   } else return NULL;
 }
 
+// Prefix unary operators and address/deref.
 struct Expr* parse_unary(){
   enum UnOp op;
   struct Token* old_current = current;
@@ -402,6 +412,7 @@ struct Expr* parse_unary(){
     }
     struct UnaryExpr expr = {op, inner};
     struct Expr* result = parser_alloc(sizeof(struct Expr));
+    result->value_type = NULL;
     result->expr.un_expr = expr;
     result->type = UNARY;
     return result;
@@ -419,6 +430,7 @@ struct Expr* parse_unary(){
     }
     struct DereferenceExpr expr = {inner};
     struct Expr* result = parser_alloc(sizeof(struct Expr));
+    result->value_type = NULL;
     result->expr.deref_expr = expr;
     result->type = DEREFERENCE;
     return result;
@@ -431,6 +443,7 @@ struct Expr* parse_unary(){
     }
     struct AddrOfExpr expr = {inner};
     struct Expr* result = parser_alloc(sizeof(struct Expr));
+    result->value_type = NULL;
     result->expr.addr_of_expr = expr;
     result->type = ADDR_OF;
     return result;
@@ -438,6 +451,7 @@ struct Expr* parse_unary(){
   return NULL;
 }
 
+// Parse a primary expression or literal.
 struct Expr* parse_factor(){
   union TokenVariant* data;
   if ((data = consume_with_data(INT_LIT))){
@@ -445,6 +459,7 @@ struct Expr* parse_factor(){
     struct LitExpr lit_expr = {INT_CONST, const_data};
 
     struct Expr* expr = parser_alloc(sizeof(struct Expr));
+    expr->value_type = NULL;
     expr->expr.lit_expr = lit_expr;
     expr->type = LIT;
     return expr;
@@ -453,6 +468,7 @@ struct Expr* parse_factor(){
     struct LitExpr lit_expr = {UINT_CONST, const_data};
 
     struct Expr* expr = parser_alloc(sizeof(struct Expr));
+    expr->value_type = NULL;
     expr->expr.lit_expr = lit_expr;
     expr->type = LIT;
     return expr;
@@ -461,6 +477,7 @@ struct Expr* parse_factor(){
     struct LitExpr lit_expr = {LONG_CONST, const_data};
 
     struct Expr* expr = parser_alloc(sizeof(struct Expr));
+    expr->value_type = NULL;
     expr->expr.lit_expr = lit_expr;
     expr->type = LIT;
     return expr;
@@ -469,6 +486,7 @@ struct Expr* parse_factor(){
     struct LitExpr lit_expr = {U_LONG_LIT, const_data};
 
     struct Expr* expr = parser_alloc(sizeof(struct Expr));
+    expr->value_type = NULL;
     expr->expr.lit_expr = lit_expr;
     expr->type = LIT;
     return expr;
@@ -484,6 +502,7 @@ struct Expr* parse_factor(){
   else return NULL;
 }
 
+// Operator precedence table for Pratt parsing.
 static unsigned get_prec(enum BinOp op){
   switch (op){
     case DIV_OP:
@@ -532,7 +551,8 @@ static unsigned get_prec(enum BinOp op){
   return 0;
 }
 
-// pratt parsing W
+// Pratt parser for binary/ternary operators with precedence and associativity.
+// min_prec is the current binding power threshold for extending the LHS.
 struct Expr* parse_bin_expr(unsigned min_prec){
   struct Token* old_current = current;
   struct Expr* lhs = parse_factor();
@@ -554,6 +574,7 @@ struct Expr* parse_bin_expr(unsigned min_prec){
     }
 
     if (op == TERNARY_OP){
+      // Ternary is parsed as: lhs ? middle : rhs
       struct Expr* middle = parse_expr();
       if (middle == NULL) {
         current = old_current;
@@ -562,6 +583,7 @@ struct Expr* parse_bin_expr(unsigned min_prec){
       if (!consume(COLON)){
         return NULL;
       }
+      // RHS binds at the same precedence as the ternary operator.
       struct Expr* rhs = parse_bin_expr(prec);
       if (rhs == NULL) {
         current = old_current;
@@ -569,12 +591,13 @@ struct Expr* parse_bin_expr(unsigned min_prec){
       }
       struct ConditionalExpr conditional_expr = {lhs, middle, rhs};
       lhs = parser_alloc(sizeof(struct Expr));
+      lhs->value_type = NULL;
       lhs->type = CONDITIONAL;
       lhs->expr.conditional_expr = conditional_expr;
       continue;
     }
 
-    // assignment/compound ops are right-associative, everything else is left-associative
+    // Assignment/compound ops are right-associative, everything else is left-associative.
     unsigned next_prec = (ASSIGN_OP <= op && op <= SHR_EQ_OP) ? prec : prec + 1;
     struct Expr* rhs = parse_bin_expr(next_prec);
 
@@ -586,11 +609,13 @@ struct Expr* parse_bin_expr(unsigned min_prec){
     if (op == ASSIGN_OP){
       struct AssignExpr assign_expr = {lhs, rhs};
       lhs = parser_alloc(sizeof(struct Expr));
+      lhs->value_type = NULL;
       lhs->type = ASSIGN;
       lhs->expr.assign_expr = assign_expr;
     } else {
       struct BinaryExpr bin_expr = {op, lhs, rhs};
       lhs = parser_alloc(sizeof(struct Expr));
+      lhs->value_type = NULL;
       lhs->type = BINARY;
       lhs->expr.bin_expr = bin_expr;
     }
@@ -715,6 +740,7 @@ struct Statement* parse_goto_stmt(){
   }
 }
 
+// Block items are either a statement or a declaration.
 struct BlockItem* parse_block_item(){
   struct Statement* stmt = parse_statement();
   if (stmt != NULL){
@@ -733,6 +759,7 @@ struct BlockItem* parse_block_item(){
   return NULL; 
 }
 
+// Parse a { ... } block into a linked list of items.
 struct Block* parse_block(bool* success){
   *success = true;
   struct Token* old_current = current;
@@ -901,6 +928,7 @@ struct VariableDclr* parse_for_dclr(){
   return var_dclr;
 }
 
+// Parse for-loop initializer, preferring a declaration when possible.
 struct ForInit* parse_for_init(){
   struct Token* old_current = current;
   struct VariableDclr* var_dclr = parse_for_dclr();
@@ -1038,6 +1066,7 @@ struct Statement* parse_null_stmt(){
   } else return NULL;
 }
 
+// Statement dispatcher; order matters to resolve ambiguities.
 struct Statement* parse_statement(){
   struct Statement* stmt;
   if ((stmt = parse_return_stmt())) return stmt;
@@ -1056,27 +1085,6 @@ struct Statement* parse_statement(){
   else if ((stmt = parse_default_stmt())) return stmt;
   else if ((stmt = parse_null_stmt())) return stmt;
   else return NULL;
-}
-
-struct Statement* parse_test(struct TokenArray* arr, struct Arena* arena){
-  if (arena == NULL) {
-    fprintf(stderr, "Parser requires an arena\n");
-    return NULL;
-  }
-  parser_arena = arena;
-  program = arr->tokens;
-  current = program;
-  prog_size = arr->size;
-  struct Statement* result = parse_statement();
-  if (result == NULL) {
-    print_error();
-    return NULL;
-  }
-  if (current - program != prog_size) {
-    print_error();
-    return NULL;
-  }
-  return result;
 }
 
 struct VariableDclr* parse_var_dclr(struct Type* type, enum StorageClass storage, struct Slice* name){
@@ -1137,6 +1145,7 @@ struct DclrPrefix* parse_type_or_storage_class(){
   else return NULL;
 }
 
+// Collect a sequence of type and storage keywords into lists.
 void parse_types_and_storage_classes(struct StorageClassList** storages_result, struct TypeSpecList** type_specs_result){
   struct DclrPrefix* prefix;
   struct TypeSpecList* specs = NULL;
@@ -1152,6 +1161,8 @@ void parse_types_and_storage_classes(struct StorageClassList** storages_result, 
         next_storage->next = NULL;
         if (prev_storages != NULL){
           prev_storages->next = next_storage;
+        } else {
+          storages = next_storage;
         }
         prev_storages = next_storage;
         break;
@@ -1161,6 +1172,8 @@ void parse_types_and_storage_classes(struct StorageClassList** storages_result, 
         next_spec->next = NULL;
         if (prev_specs != NULL){
           prev_specs->next = next_spec;
+        } else {
+          specs = next_spec;
         }
         prev_specs = next_spec;
         break;
@@ -1170,29 +1183,30 @@ void parse_types_and_storage_classes(struct StorageClassList** storages_result, 
   *type_specs_result = specs;
 }
 
+// Validate specifiers and build the base type + storage class.
 void parse_type_and_storage_class(struct Type** type, enum StorageClass* class){
   struct StorageClassList* storages = NULL;
   struct TypeSpecList* specs = NULL;
   parse_types_and_storage_classes(&storages, &specs);
   enum StorageClass storage = (storages == NULL) ? NONE : storages->spec;
   if (spec_list_has_duplicates(specs)){
-    printf("Parse Error: duplicate type specifiers");
+    printf("Parse Error: duplicate type specifiers\n");
     *type = NULL;
     *class = NONE;
     return;
   } else if (specs == NULL){
-    // ?????
+    printf("Parse Error: missing type specifier\n");
     *type = NULL;
     *class = NONE;
     return;
   } else if (storages != NULL && storages->next != NULL){
-    printf("Parse Error: invalid storage class");
+    printf("Parse Error: invalid storage class\n");
     *type = NULL;
     *class = NONE;
     return;
   } else if (spec_list_contains(specs, SINT_SPEC) &&
              spec_list_contains(specs, UINT_SPEC)){
-    printf("Parse Error: invalid type specifiers");
+    printf("Parse Error: invalid type specifiers\n");
     *type = NULL;
     *class = NONE;
     return;
@@ -1220,6 +1234,8 @@ void parse_type_and_storage_class(struct Type** type, enum StorageClass* class){
   }
 }
 
+// Parse a declarator (possibly pointer-qualified).
+// Recurses on leading '*' to build nested pointer declarators.
 struct Declarator* parse_declarator(){
   struct Token* old_current = current;
   if (consume(ASTERISK)){
@@ -1237,6 +1253,7 @@ struct Declarator* parse_declarator(){
   return parse_direct_declarator();
 }
 
+// Parse an identifier or parenthesized declarator for grouping.
 struct Declarator* parse_simple_declarator(){
   struct Token* old_current = current;
   union TokenVariant* data = consume_with_data(IDENT);
@@ -1262,24 +1279,59 @@ struct Declarator* parse_simple_declarator(){
   return NULL;
 }
 
-/*
-parseParams :: Parser Token [ParamInfo]
-parseParams = char OpenP *>
-    ([] <$ char Void <* char CloseP <|> -- parses f(void) -- parses f(void)
-     -- parses f(void)
-    [] <$ char CloseP <|>               -- parses f()
-    some parseParam)                    -- parses f([params]) 
-
-parseParam :: Parser Token ParamInfo
-parseParam = do
-  type_ <- parseParamType
-  declarator <- parseDeclarator <* (char Comma <|> char CloseP)
-  return (Param type_ declarator)
-*/
+// Parse function parameter list into ParamInfo nodes.
+// "(void)" and "()" both map to an empty parameter list sentinel.
 struct ParamInfoList* parse_params(){
-
+  struct Token* old_current = current;
+  if (!consume(OPEN_P)) return NULL;
+  if (consume(VOID_TOK)){
+    if (!consume(CLOSE_P)){
+      current = old_current;
+      return NULL;
+    }
+    struct ParamInfoList* empty = parser_alloc(sizeof(struct ParamInfoList));
+    empty->info.type = NULL;
+    empty->info.decl.type = IDENT_DEC;
+    empty->info.decl.declarator.ident_dec.name = NULL;
+    empty->next = NULL;
+    return empty;
+  }
+  if (consume(CLOSE_P)){
+    struct ParamInfoList* empty = parser_alloc(sizeof(struct ParamInfoList));
+    empty->info.type = NULL;
+    empty->info.decl.type = IDENT_DEC;
+    empty->info.decl.declarator.ident_dec.name = NULL;
+    empty->next = NULL;
+    return empty;
+  }
+  struct ParamInfoList* head = NULL;
+  struct ParamInfoList** tail = &head;
+  while (true){
+    struct Type* type_ = parse_param_type();
+    if (type_ == NULL){
+      current = old_current;
+      return NULL;
+    }
+    struct Declarator* declarator = parse_declarator();
+    if (declarator == NULL){
+      current = old_current;
+      return NULL;
+    }
+    struct ParamInfoList* node = parser_alloc(sizeof(struct ParamInfoList));
+    node->info.type = type_;
+    node->info.decl = *declarator;
+    node->next = NULL;
+    *tail = node;
+    tail = &node->next;
+    if (consume(COMMA)) continue;
+    if (consume(CLOSE_P)) break;
+    current = old_current;
+    return NULL;
+  }
+  return head;
 }
 
+// Parse direct declarators and wrap in FUN_DEC when params follow.
 struct Declarator* parse_direct_declarator(){
   struct Declarator* decl = parse_simple_declarator();
   if (decl == NULL) return NULL;
@@ -1292,60 +1344,134 @@ struct Declarator* parse_direct_declarator(){
   return result;
 }
 
-/*
--- converts declarators and base types into actual types
-processDeclarator :: Declarator -> Type_ -> Result (String, Type_, [VariableDclr])
-processDeclarator decl baseType = case decl of
-  IdentDec name -> Ok (name, baseType, [])
-  PointerDec d -> processDeclarator d (PointerType baseType)
-  FunDec params d -> case d of
-    IdentDec name -> do
-      (paramNames, types) <- unzip <$> processParamsInfo params
-      let derivedType = FunType types baseType
-      -- convert list of names and types to list of 'VariableDclr's
-      let dclrs = getZipList $ (\n t -> VariableDclr n t Nothing Nothing)
-                  <$> ZipList paramNames <*> ZipList types
-      return (name, derivedType, dclrs)
-    _ -> Err "Parse Error: Can't apply additional type derivations to a function type"
-
-processParamInfo :: ParamInfo -> Result (String, Type_)
-processParamInfo (Param type_ d) = do
-  case d of
-    FunDec _ _ -> Err "Parse Error: Function pointers in parameters aren't supported"
-    _ -> return ()
-  (paramName, paramType_, _) <- processDeclarator d type_
-  return (paramName, paramType_)
-
--- converts declarators and base types into actual types, 
--- but for function parameters
-processParamsInfo :: [ParamInfo] -> Result [(String, Type_)]
-processParamsInfo =
-  foldr (\p ps -> case processParamInfo p of
-  Ok p' -> liftA2 (:) (Ok p') ps
-  Err s -> Err s
-  Fail -> Fail) (Ok [])
-*/
-void process_declarator(){
-
+struct ParamTypeList* params_to_types(struct ParamList* params){
+  struct ParamTypeList* head = NULL;
+  struct ParamTypeList* tail = head;
+  for (struct ParamList* cur = params; cur != NULL; cur = cur->next){
+    struct ParamTypeList* node = parser_alloc(sizeof(struct ParamTypeList));
+    node->type = *cur->param.type;
+    node->next = NULL;
+    if (head == NULL) {
+      head = node;
+      tail = node;
+    } else {
+      tail->next = node;
+      tail = node;
+    }
+  }
+  return head;
 }
 
-/*
-parseEndOfFunc :: Parser Token (Maybe Block)
-parseEndOfFunc = do
-  body <- optional parseBlock
-  case body of
-    Just _ -> return body -- function definition
-    Nothing -> Nothing <$ char Semi -- function declaration
-*/
+// Apply declarator structure to a base type, producing name/type/params.
+// Walks the declarator tree and constructs the derived type in order.
+bool process_declarator(struct Declarator* decl, struct Type* base_type,
+                        struct Slice** name_out, struct Type** derived_type_out,
+                        struct ParamList** params_out);
 
-struct ParamTypeList* params_to_types(struct ParamList* params){
+static bool process_param_info(struct ParamInfo* param, struct Slice** name_out,
+                               struct Type** type_out){
+  if (param->decl.type == FUN_DEC){
+    print_error();
+    printf("Parse Error: Function pointers in parameters aren't supported\n");
+    return false;
+  }
+  struct ParamList* ignored_params = NULL;
+  return process_declarator(&param->decl, param->type, name_out, type_out,
+                            &ignored_params);
+}
 
+bool process_params_info(struct ParamInfoList* params, struct ParamList** params_out){
+  if (params == NULL){
+    *params_out = NULL;
+    return true;
+  }
+  // Sentinel for empty parameter list produced by parse_params().
+  if (params->info.type == NULL &&
+      params->info.decl.type == IDENT_DEC &&
+      params->info.decl.declarator.ident_dec.name == NULL){
+    *params_out = NULL;
+    return true;
+  }
+  struct ParamList* head = NULL;
+  struct ParamList* tail = head;
+  for (struct ParamInfoList* cur = params; cur != NULL; cur = cur->next){
+    struct Slice* name = NULL;
+    struct Type* type_ = NULL;
+    if (!process_param_info(&cur->info, &name, &type_)){
+      return false;
+    }
+    struct ParamList* node = parser_alloc(sizeof(struct ParamList));
+    node->param.name = name;
+    node->param.type = type_;
+    node->param.init = NULL;
+    node->param.storage = NONE;
+    node->next = NULL;
+    if (head == NULL){
+      head = node;
+      tail = node;
+    } else {
+      tail->next = node;
+      tail = node;
+    }
+  }
+  *params_out = head;
+  return true;
+}
+
+bool process_declarator(struct Declarator* decl, struct Type* base_type,
+                        struct Slice** name_out, struct Type** derived_type_out,
+                        struct ParamList** params_out){
+  switch (decl->type){
+    case IDENT_DEC:
+      *name_out = decl->declarator.ident_dec.name;
+      *derived_type_out = base_type;
+      *params_out = NULL;
+      return true;
+    case POINTER_DEC: {
+      // Build a pointer type and recurse inward for further derivations.
+      struct Type* ptr_type = parser_alloc(sizeof(struct Type));
+      ptr_type->type = POINTER_TYPE;
+      ptr_type->type_data.pointer_type.referenced_type = base_type;
+      return process_declarator(decl->declarator.pointer_dec.decl, ptr_type,
+                                name_out, derived_type_out, params_out);
+    }
+    case FUN_DEC: {
+      // Function declarators only allow identifiers at the core.
+      struct Declarator* inner_decl = decl->declarator.fun_dec.decl;
+      if (inner_decl->type != IDENT_DEC){
+        printf("Parse Error: Can't apply additional type derivations to a function type\n");
+        return false;
+      }
+      struct ParamList* params = NULL;
+      if (!process_params_info(decl->declarator.fun_dec.params, &params)){
+        return false;
+      }
+      struct Type* fun_type = parser_alloc(sizeof(struct Type));
+      fun_type->type = FUN_TYPE;
+      fun_type->type_data.fun_type.return_type = base_type;
+      fun_type->type_data.fun_type.param_types = params_to_types(params);
+      *name_out = inner_decl->declarator.ident_dec.name;
+      *derived_type_out = fun_type;
+      *params_out = params;
+      return true;
+    }
+  }
+  return false;
 }
 
 struct Block* parse_end_of_func(bool* success){
-  bool* success2;
-  struct Block* body = parse_block(success2);
-
+  bool success2;
+  struct Block* body = parse_block(&success2);
+  if (success2){
+    *success = true;
+    return body;
+  }
+  if (consume(SEMI)){
+    *success = true;
+    return NULL;
+  }
+  *success = false;
+  return NULL;
 }
 
 struct FunctionDclr* parse_function(struct Type* ret_type, enum StorageClass storage, 
@@ -1358,69 +1484,119 @@ struct FunctionDclr* parse_function(struct Type* ret_type, enum StorageClass sto
   result->name = name;
   result->params = params;
   result->storage = storage;
-  bool* success;
-  result->body = parse_end_of_func(success);
-  if (success){
-
-  } else {
-    
+  bool success;
+  result->body = parse_end_of_func(&success);
+  if (!success){
+    return NULL;
   }
   return result;
 }
 
-/*
-parseDclr :: Parser Token Declaration
-parseDclr = do
-  -- base type and storage specifiers are the first part of a declaration
-  (baseType, mStorage) <- parseTypeAndStorageClass
-  -- next is the declarator
-  declarator <- parseDeclarator
-  -- base type and declarator must be parsed to work out the derived type
-  (name, declType, params) <-
-    case processDeclarator declarator baseType of
-      Ok x -> return x
-      Err msg -> errorParse msg
-      Fail -> failParse
-  -- the rest of the declaration is either a function body or expression
-  case declType of
-    FunType _ retType -> FunDclr <$> parseFunction retType mStorage name params
-    _ -> VarDclr <$> parseVariableDclr declType mStorage name
-*/
+// Parse a full declaration (function or variable).
 struct Declaration* parse_declaration(){
-  return NULL;
+  struct Token* old_current = current;
+  if ((size_t)(current - program) >= prog_size) return NULL;
+  switch (current->type){
+    case INT_TOK:
+    case SIGNED_TOK:
+    case UNSIGNED_TOK:
+    case LONG_TOK:
+    case STATIC_TOK:
+    case EXTERN_TOK:
+      break;
+    default:
+      return NULL;
+  }
+  
+  struct Type* base_type = NULL;
+  enum StorageClass storage = NONE;
+  parse_type_and_storage_class(&base_type, &storage);
+  if (base_type == NULL){
+    current = old_current;
+    return NULL;
+  }
+
+  struct Declarator* declarator = parse_declarator();
+  if (declarator == NULL){
+    current = old_current;
+    return NULL;
+  }
+
+  struct Slice* name = NULL;
+  struct Type* decl_type = NULL;
+  struct ParamList* params = NULL;
+  if (!process_declarator(declarator, base_type, &name, &decl_type, &params)){
+    current = old_current;
+    return NULL;
+  }
+
+  struct Declaration* result = parser_alloc(sizeof(struct Declaration));
+  if (decl_type->type == FUN_TYPE){
+    struct Type* ret_type = decl_type->type_data.fun_type.return_type;
+    struct FunctionDclr* fun_dclr = parse_function(ret_type, storage, name, params);
+    if (fun_dclr == NULL){
+      current = old_current;
+      return NULL;
+    }
+    result->type = FUN_DCLR;
+    result->dclr.fun_dclr = *fun_dclr;
+    return result;
+  }
+
+  struct VariableDclr* var_dclr = parse_var_dclr(decl_type, storage, name);
+  if (var_dclr == NULL || !consume(SEMI)){
+    current = old_current;
+    return NULL;
+  }
+  result->type = VAR_DCLR;
+  result->dclr.var_dclr = *var_dclr;
+  return result;
 }
 
-struct Program* parse_prog(struct TokenArray* arr){
+// Top-level parser entry; consumes all declarations in the token stream.
+struct Program* parse_prog(struct TokenArray* arr, struct Arena* arena){
+  if (arena == NULL) {
+    fprintf(stderr, "Parser requires an arena\n");
+    return NULL;
+  }
+  parser_arena = arena;
+
   // parse declarations and put them in a linked list
   program = arr->tokens;
   current = program;
   prog_size = arr->size;
 
   struct Program* prog = parser_alloc(sizeof(struct Program));
-  struct DeclarationList* dclrs = parser_alloc(sizeof(struct DeclarationList));
-
-  prog->dclrs = dclrs;
-
-  struct DeclarationList* current_dclr = dclrs;
-
   struct Declaration* dclr = parse_declaration();
 
   if (dclr == NULL) {
+    if ((size_t)(current - program) < prog_size) {
+      print_error();
+      return NULL;
+    }
     // there were 0 declarations
     prog->dclrs = NULL;
     return prog;
   }
 
-  while (dclr != NULL){
-    // TODO: this order is wrong
+  struct DeclarationList* head = parser_alloc(sizeof(struct DeclarationList));
+  head->dclr = *dclr;
+  head->next = NULL;
+  prog->dclrs = head;
+
+  struct DeclarationList* tail = head;
+  while ((dclr = parse_declaration()) != NULL){
     struct DeclarationList* next_dclr = parser_alloc(sizeof(struct DeclarationList));
     next_dclr->dclr = *dclr;
     next_dclr->next = NULL;
+    tail->next = next_dclr;
+    tail = next_dclr;
+  }
 
-    current_dclr->next = next_dclr;
-    current_dclr = next_dclr;
-
-    dclr = parse_declaration();
+  // ensure the entire token array has been consumed
+  if (current - program != prog_size) {
+    print_error();
+    return NULL;
   }
 
   return prog;

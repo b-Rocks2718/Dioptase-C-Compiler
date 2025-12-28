@@ -135,8 +135,8 @@ int main(int argc, const char *const *const argv) {
     if (print_ast) {
         struct Arena arena;
         arena_init(&arena, 16384);
-        struct Statement* stmt = parse_test(tokens, &arena);
-        if (stmt == NULL) {
+        struct Program* prog = parse_prog(tokens, &arena);
+        if (prog == NULL) {
            free(preprocessed);
            destroy_token_array(tokens);
            arena_destroy(&arena);
@@ -144,7 +144,7 @@ int main(int argc, const char *const *const argv) {
         };
 
         printf("AST:\n");
-        print_stmt(stmt, 0);
+        print_prog(prog);
         printf("\n");
 
         arena_destroy(&arena);
