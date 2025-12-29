@@ -6,8 +6,6 @@
 static struct IdentStack* global_ident_stack = NULL;
 static int unique_id_counter = 0;
 
-/* test comment */
-
 bool resolve_args(struct ArgList* args){
   for (struct ArgList* arg = args; arg != NULL; arg = arg->next) {
     if (!resolve_expr(&arg->arg)) {
