@@ -1532,6 +1532,7 @@ struct Declaration* parse_declaration(){
 
   struct Declaration* result = parser_alloc(sizeof(struct Declaration));
   if (decl_type->type == FUN_TYPE){
+    // function declaration
     struct Type* ret_type = decl_type->type_data.fun_type.return_type;
     struct FunctionDclr* fun_dclr = parse_function(ret_type, storage, name, params);
     if (fun_dclr == NULL){
@@ -1543,6 +1544,7 @@ struct Declaration* parse_declaration(){
     return result;
   }
 
+  // variable declaration
   struct VariableDclr* var_dclr = parse_var_dclr(decl_type, storage, name);
   if (var_dclr == NULL || !consume(SEMI)){
     current = old_current;
