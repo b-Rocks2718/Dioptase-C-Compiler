@@ -1,47 +1,10 @@
 #include "identifier_resolution.h"
 #include "identifier_map.h"
+#include "unique_name.h"
 
 #include <stdio.h>
 
 static struct IdentStack* global_ident_stack = NULL;
-static int unique_id_counter = 0;
-
-// helper function to calculate length of counter when converted to string
-unsigned counter_len(int counter) {
-  unsigned len = 0;
-  do {
-    len++;
-    counter /= 10;
-  } while (counter != 0);
-  return len;
-}
-
-// create a unique name by appending a unique id to the original name
-struct Slice* make_unique(struct Slice* original_name) {
-  unsigned id_len = counter_len(unique_id_counter);
-  size_t new_len = original_name->len + 1 + id_len; // +1 for period
-
-  char* new_str = (char*)arena_alloc(new_len);
-  for (size_t i = 0; i < original_name->len; i++) {
-    new_str[i] = original_name->start[i];
-  }
-  new_str[original_name->len] = '.';
-
-  // append unique id
-  int id = unique_id_counter;
-  for (unsigned i = 0; i < id_len; i++) {
-    new_str[new_len - 1 - i] = '0' + (id % 10);
-    id /= 10;
-  }
-
-  unique_id_counter++;
-
-  struct Slice* unique_name = (struct Slice*)arena_alloc(sizeof(struct Slice));
-  unique_name->start = new_str;
-  unique_name->len = new_len;
-
-  return unique_name;
-}
 
 // resolve each declaration in the program
 bool resolve_prog(struct Program* prog) {
@@ -277,7 +240,6 @@ bool resolve_stmt(struct Statement* stmt) {
       }
       return resolve_stmt(stmt->statement.switch_stmt.statement);
     case CASE_STMT:
-      // TODO: ensure expr is constant
       return resolve_stmt(stmt->statement.case_stmt.statement);
     case DEFAULT_STMT:
       return resolve_stmt(stmt->statement.default_stmt.statement);

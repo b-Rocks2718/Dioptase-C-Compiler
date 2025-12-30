@@ -1,4 +1,3 @@
-AST:
 Program(
     FunDclr(
         main,
@@ -18,4 +17,3 @@ Program(
             Return(Var(x):untyped);
     );
 )
-

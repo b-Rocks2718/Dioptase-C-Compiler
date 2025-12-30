@@ -1,4 +1,3 @@
-AST:
 Program(
     VarDclr(none, int*, ptr);
     FunDclr(
@@ -16,4 +15,3 @@ Program(
             Return(FunCallExpr(add, [LitExpr(int, 1):untyped, LitExpr(int, 2):untyped, ]):untyped);
     );
 )
-

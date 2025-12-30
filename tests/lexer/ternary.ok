@@ -1,3 +1,4 @@
 [
     a, ?, b, :, c, ;
 ]
+parser failed at offset 0

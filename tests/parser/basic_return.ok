@@ -1,4 +1,3 @@
-AST:
 Program(
     FunDclr(
         main,
@@ -9,4 +8,3 @@ Program(
             Return(AddOp(Var(x):untyped, LitExpr(int, 2):untyped):untyped);
     );
 )
-

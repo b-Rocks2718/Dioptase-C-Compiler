@@ -1,0 +1,17 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            WhileStmt(
+                main.while.0,
+                LitExpr(int, 1):untyped,
+                CompoundStmt(
+                    ContinueStmt(label=main.while.0);
+                    BreakStmt(label=main.while.0);
+                );
+            );
+            Return(LitExpr(int, 0):untyped, main);
+    );
+)

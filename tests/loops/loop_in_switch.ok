@@ -1,0 +1,31 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            SwitchStmt(
+                label=main.switch.0
+                LitExpr(int, 1):untyped,
+                CompoundStmt(
+                    CaseStmt(
+                        LitExpr(int, 1):untyped,
+                        CompoundStmt(
+                            WhileStmt(
+                                main.while.1,
+                                LitExpr(int, 1):untyped,
+                                CompoundStmt(
+                                    BreakStmt(label=main.while.1);
+                                );
+                            );
+                            BreakStmt(label=main.switch.0);
+                        );
+                    );
+                    DefaultStmt(
+                        BreakStmt(label=main.switch.0);
+                    );
+                );
+            );
+            Return(LitExpr(int, 0):untyped, main);
+    );
+)

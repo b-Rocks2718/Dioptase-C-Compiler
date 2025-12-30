@@ -10,6 +10,7 @@
 #include "lexer.h"
 #include "parser.h"
 #include "identifier_resolution.h"
+#include "loop_resolution.h"
 #include "arena.h"
 
 int main(int argc, const char *const *const argv) {
@@ -18,7 +19,7 @@ int main(int argc, const char *const *const argv) {
     int print_ast = 0;
     int print_preprocess = 0;
     int print_idents = 0;
-    int saw_output_flag = 0;
+    int print_loops = 0;
     const char *filename = NULL;
     const char **cli_defines = malloc(argc * sizeof(char*));
     int num_defines = 0;
@@ -27,22 +28,22 @@ int main(int argc, const char *const *const argv) {
         const char *arg = argv[i];
         if (strcmp(arg, "-tokens") == 0) {
             print_tokens = 1;
-            saw_output_flag = 1;
             continue;
         }
         if (strcmp(arg, "-preprocess") == 0) {
             print_preprocess = 1;
-            saw_output_flag = 1;
             continue;
         }
         if (strcmp(arg, "-ast") == 0) {
             print_ast = 1;
-            saw_output_flag = 1;
             continue;
         }
         if (strcmp(arg, "-idents") == 0) {
             print_idents = 1;
-            saw_output_flag = 1;
+            continue;
+        }
+        if (strcmp(arg, "-loops") == 0) {
+            print_loops = 1;
             continue;
         }
         if (strncmp(arg, "-D", 2) == 0) {
@@ -57,7 +58,7 @@ int main(int argc, const char *const *const argv) {
         }
         if (arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-DNAME[=value]] <file name>\n", argv[0]);
+            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-loops] [-DNAME[=value]] <file name>\n", argv[0]);
             free(cli_defines);
             exit(1);
         }
@@ -66,20 +67,15 @@ int main(int argc, const char *const *const argv) {
             continue;
         }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-loops] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
 
     if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-loops] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
-    }
-
-    if (!saw_output_flag) {
-        print_tokens = 0;
-        print_ast = 0;
     }
 
     // open the file
@@ -99,19 +95,19 @@ int main(int argc, const char *const *const argv) {
     }
 
     // map the file in my address space
-    char const* prog = (char const *)mmap(
+    char const* text = (char const *)mmap(
         0,
         file_stats.st_size,
         PROT_READ,
         MAP_PRIVATE,
         fd,
         0);
-    if (prog == MAP_FAILED) {
+    if (text == MAP_FAILED) {
         perror("mmap");
         exit(1);
     }
 
-    char* preprocessed = preprocess(prog, filename, num_defines, cli_defines);
+    char* preprocessed = preprocess(text, filename, num_defines, cli_defines);
     free(cli_defines);
     if (preprocessed == NULL) {
         return 1;
@@ -139,38 +135,41 @@ int main(int argc, const char *const *const argv) {
         print_token_array(tokens);
     }
 
-    if (print_ast || print_idents) {
+    arena_init(16384);
+    struct Program* prog = parse_prog(tokens);
+    if (prog == NULL) {
+       free(preprocessed);
+       destroy_token_array(tokens);
+       arena_destroy();
+       return 2;
+    };
 
-        arena_init(16384);
-        struct Program* prog = parse_prog(tokens);
-        if (prog == NULL) {
-           free(preprocessed);
-           destroy_token_array(tokens);
-           arena_destroy();
-           return 2;
-        };
-
-        if (print_ast)  {
-            printf("AST:\n");
-            print_prog(prog);
-            printf("\n");
-        }
-
-        if (print_idents) {
-            // perform identifier resolution
-            if (!resolve_prog(prog)) {
-                fprintf(stderr, "Identifier resolution failed\n");
-                free(preprocessed);
-                destroy_token_array(tokens);
-                arena_destroy();
-                return 3;
-            } else {
-                print_prog(prog);
-            }
-        }
-
-        arena_destroy();
+    if (print_ast)  {
+        print_prog(prog);
     }
+
+    // perform identifier resolution
+    if (!resolve_prog(prog)) {
+        fprintf(stderr, "Identifier resolution failed\n");
+        free(preprocessed);
+        destroy_token_array(tokens);
+        arena_destroy();
+        return 3;
+    } else  if (print_idents) {
+        print_prog(prog);
+    }
+
+    if (!label_loops(prog)) {
+        fprintf(stderr, "Loop labeling failed\n");
+        free(preprocessed);
+        destroy_token_array(tokens);
+        arena_destroy();
+        return 4;
+    } else if (print_loops) {
+        print_prog(prog);
+    }
+    
+    arena_destroy();
     destroy_token_array(tokens);
     free(preprocessed);
     

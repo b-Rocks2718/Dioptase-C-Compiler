@@ -1,4 +1,3 @@
-AST:
 Program(
     FunDclr(
         ext,
@@ -14,4 +13,3 @@ Program(
             Return(FunCallExpr(ext, [LitExpr(int, 1):untyped, LitExpr(int, 2):untyped, ]):untyped);
     );
 )
-

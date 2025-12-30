@@ -5,8 +5,6 @@
 #include "AST.h"
 #include "arena.h"
 
-struct Slice* make_unique(struct Slice* original_name);
-
 bool resolve_expr(struct Expr* expr);
 
 bool resolve_local_dclr(struct Declaration* dclr);

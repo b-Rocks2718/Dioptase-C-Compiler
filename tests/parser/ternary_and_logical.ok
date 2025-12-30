@@ -1,4 +1,3 @@
-AST:
 Program(
     FunDclr(
         main,
@@ -10,4 +9,3 @@ Program(
             Return(ConditionalExpr(BoolAnd(BoolLe(Var(x):untyped, Var(y):untyped):untyped, BoolLe(Var(y):untyped, LitExpr(int, 5):untyped):untyped):untyped, BitOr(Var(x):untyped, Var(y):untyped):untyped, BitXor(Var(x):untyped, Var(y):untyped):untyped):untyped);
     );
 )
-

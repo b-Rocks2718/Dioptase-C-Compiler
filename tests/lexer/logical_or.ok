@@ -1,3 +1,4 @@
 [
     if, (, a, ||, b, ), return, ;
 ]
+parser failed at offset 0

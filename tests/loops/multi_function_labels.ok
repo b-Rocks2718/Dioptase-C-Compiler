@@ -1,0 +1,30 @@
+Program(
+    FunDclr(
+        first,
+        storage=none
+        params=[]
+        body=
+            WhileStmt(
+                first.while.0,
+                LitExpr(int, 1):untyped,
+                CompoundStmt(
+                    BreakStmt(label=first.while.0);
+                );
+            );
+            Return(LitExpr(int, 0):untyped, first);
+    );
+    FunDclr(
+        second,
+        storage=none
+        params=[]
+        body=
+            DoWhileStmt(
+                second.do_while.1,
+                CompoundStmt(
+                    BreakStmt(label=second.do_while.1);
+                );
+                LitExpr(int, 1):untyped,
+            );
+            Return(LitExpr(int, 0):untyped, second);
+    );
+)

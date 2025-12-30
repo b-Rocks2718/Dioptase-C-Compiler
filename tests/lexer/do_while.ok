@@ -1,3 +1,4 @@
 [
     do, {, break, ;, }, while, (, 0, ), ;
 ]
+parser failed at offset 0
