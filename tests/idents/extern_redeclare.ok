@@ -1,0 +1,12 @@
+Program(
+    VarDclr(none, int, g);
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            VarDclr(extern, int, g);
+            ExprStmt(Assign(Var(g):untyped, LitExpr(int, 1):untyped):untyped);
+            Return(Var(g):untyped);
+    );
+)

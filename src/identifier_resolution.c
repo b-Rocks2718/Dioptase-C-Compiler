@@ -6,6 +6,59 @@
 static struct IdentStack* global_ident_stack = NULL;
 static int unique_id_counter = 0;
 
+// helper function to calculate length of counter when converted to string
+unsigned counter_len(int counter) {
+  unsigned len = 0;
+  do {
+    len++;
+    counter /= 10;
+  } while (counter != 0);
+  return len;
+}
+
+// create a unique name by appending a unique id to the original name
+struct Slice* make_unique(struct Slice* original_name) {
+  unsigned id_len = counter_len(unique_id_counter);
+  size_t new_len = original_name->len + 1 + id_len; // +1 for period
+
+  char* new_str = (char*)arena_alloc(new_len);
+  for (size_t i = 0; i < original_name->len; i++) {
+    new_str[i] = original_name->start[i];
+  }
+  new_str[original_name->len] = '.';
+
+  // append unique id
+  int id = unique_id_counter;
+  for (unsigned i = 0; i < id_len; i++) {
+    new_str[new_len - 1 - i] = '0' + (id % 10);
+    id /= 10;
+  }
+
+  unique_id_counter++;
+
+  struct Slice* unique_name = (struct Slice*)arena_alloc(sizeof(struct Slice));
+  unique_name->start = new_str;
+  unique_name->len = new_len;
+
+  return unique_name;
+}
+
+// resolve each declaration in the program
+bool resolve_prog(struct Program* prog) {
+  global_ident_stack = init_scope();
+
+  for (struct DeclarationList* decl = prog->dclrs; decl != NULL; decl = decl->next) {
+    if (!resolve_file_scope_dclr(&decl->dclr)) {
+      printf("Identifier Resolution Error: Failed to resolve declaration\n");
+      return false;
+    }
+  }
+
+  destroy_ident_stack(global_ident_stack);
+
+  return true;
+}
+
 bool resolve_args(struct ArgList* args){
   for (struct ArgList* arg = args; arg != NULL; arg = arg->next) {
     if (!resolve_expr(&arg->arg)) {
@@ -16,52 +69,6 @@ bool resolve_args(struct ArgList* args){
   return true;
 }
 
-/*
-resolveExpr :: Expr -> MapState Expr
-resolveExpr expr = case expr of
-  Assign left right -> do
-    rsltLeft <- resolveExpr left
-    rsltRight <- resolveExpr right
-    return (Assign rsltLeft rsltRight)
-  PostAssign expr' op -> do
-    rsltExpr <- resolveExpr expr'
-    return (PostAssign rsltExpr op)
-  Binary PlusEqOp left right -> do
-    rsltLeft <- resolveExpr left
-    rsltRight <- resolveExpr right
-    return (Binary PlusEqOp rsltLeft rsltRight)
-  Binary MinusEqOp left right -> do
-    rsltLeft <- resolveExpr left
-    rsltRight <- resolveExpr right
-    return (Binary MinusEqOp rsltLeft rsltRight)
-  Binary op left right -> do
-    rsltLeft <- resolveExpr left
-    rsltRight <- resolveExpr right
-    return (Binary op rsltLeft rsltRight)
-  Conditional condition left right -> do
-    rsltCondition <- resolveExpr condition
-    rsltLeft <- resolveExpr left
-    rsltRight <- resolveExpr right
-    return (Conditional rsltCondition rsltLeft rsltRight)
-  Lit n -> return (Lit n)
-  Unary op expr' -> Unary op <$> resolveExpr expr'
-  Var name -> do
-    maps <- getFst
-    case lookup name maps of
-      Just (MapEntry newName _ _) -> return (Var newName)
-      Nothing -> lift (Err $ "Semantics Error: No declaration for variable " ++ show name)
-  FunctionCall name args -> do
-    maps <- getFst
-    case lookup name maps of
-      Just entry -> do
-        newArgs <- resolveArgs args
-        return (FunctionCall (entryName entry) newArgs)
-      Nothing -> lift (Err $ "Semantics Error: Function " ++ show name ++ " has not been declared")
-  Cast target expr' -> Cast target <$> resolveExpr expr'
-  AddrOf expr' -> AddrOf <$> resolveExpr expr'
-  Dereference expr' -> Dereference <$> resolveExpr expr'
-  Subscript left right -> Subscript <$> resolveExpr left <*> resolveExpr right
-*/
 bool resolve_expr(struct Expr* expr) {
   switch (expr->type) {
     case ASSIGN:
@@ -92,6 +99,7 @@ bool resolve_expr(struct Expr* expr) {
       bool from_current_scope = false;
       struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, expr->expr.var_expr.name, &from_current_scope);
       if (entry != NULL) {
+        // substitute in unique name for local var
         expr->expr.var_expr.name = entry->entry_name;
         return true;
       } else {
@@ -103,7 +111,6 @@ bool resolve_expr(struct Expr* expr) {
       bool from_current_scope = false;
       struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, expr->expr.fun_call_expr.func_name, &from_current_scope);
       if (entry != NULL) {
-        expr->expr.fun_call_expr.func_name = entry->entry_name;
         return resolve_args(expr->expr.fun_call_expr.args);
       } else {
         printf("Identifier Resolution Error: Function has not been declared\n");
@@ -122,48 +129,15 @@ bool resolve_expr(struct Expr* expr) {
   }
 }
 
-/*
-resolveLocalVarDclr :: VariableDclr -> MapState VariableDclr
-resolveLocalVarDclr (VariableDclr name type_ mStorage mInit) = do
-  maps <- getFst
-  case lookup name maps of
-    (Just (MapEntry _ True True)) ->
-      case mStorage of
-        Just Extern -> return (VariableDclr name type_ mStorage mInit)
-          -- previous declaration has linkage and so does this one; we're good
-        _ -> lift (Err $ "Semantics Error: Multiple declarations for variable " ++ show name)
-    (Just (MapEntry _ True False)) ->
-      lift (Err $ "Semantics Error: Multiple declarations for variable " ++ show name)
-    (Just (MapEntry _ False _)) ->
-      case mStorage of
-        Just Extern -> do
-          let newMaps = replace name (MapEntry name True True) maps
-          putFst newMaps
-          return (VariableDclr name type_ mStorage mInit) -- no need to resolve mExpr, extern => it's a constant 
-        _ -> do
-          newName <- makeUnique name
-          let newMaps = replace name (MapEntry newName True False) maps
-          putFst newMaps
-          newInit <- liftMaybe resolveVarInit mInit
-          return (VariableDclr newName type_ mStorage newInit)
-    Nothing ->
-      case mStorage of
-        Just Extern -> do
-          let newMaps = (name, MapEntry name True False) : maps
-          putFst newMaps
-          return (VariableDclr name type_ mStorage mInit) -- no need to resolve mExpr, extern => it's a constant 
-        _ -> do
-          newName <- makeUnique name
-          let newMaps = (name, MapEntry newName True False) : maps
-          putFst newMaps
-          newInit <- liftMaybe resolveVarInit mInit
-          return (VariableDclr newName type_ mStorage newInit)
-*/
 bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, var_dclr->name, &from_current_scope);
   if (entry != NULL) {
     if (from_current_scope) {
+      if (entry->has_linkage && var_dclr->storage == EXTERN) {
+        // redeclaration with extern linkage
+        return true;
+      }
       // already declared in this scope
       printf("Identifier Resolution Error: Multiple declarations for variable\n");
       return false;
@@ -174,13 +148,13 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
         return true;
       } else {
         // need to create a new unique name
-        char unique_name_buf[64];
-        snprintf(unique_name_buf, sizeof(unique_name_buf), "%.*s_%d", 
-            (int)var_dclr->name->length, var_dclr->name->data, unique_id_counter++);
-        struct Slice* unique_name = create_slice_from_cstr(unique_name_buf);
-        ident_stack_insert(global_ident_stack, unique_name,
-            unique_name, var_dclr->storage != STATIC);
+        struct Slice* unique_name = make_unique(var_dclr->name);
+        ident_stack_insert(global_ident_stack, var_dclr->name,
+            unique_name, false);
         var_dclr->name = unique_name;
+        if (var_dclr->init != NULL) {
+          return resolve_expr(var_dclr->init);
+        }
         return true;
       }
     }
@@ -191,13 +165,13 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
           var_dclr->name, true);
       return true;
     } else {
-      char unique_name_buf[64];
-      snprintf(unique_name_buf, sizeof(unique_name_buf), "%.*s_%d", 
-          (int)var_dclr->name->length, var_dclr->name->data, unique_id_counter++);
-      struct Slice* unique_name = create_slice_from_cstr(unique_name_buf);
-      ident_stack_insert(global_ident_stack, unique_name,
-          unique_name, var_dclr->storage != STATIC);
+      struct Slice* unique_name = make_unique(var_dclr->name);
+      ident_stack_insert(global_ident_stack, var_dclr->name,
+          unique_name, false);
       var_dclr->name = unique_name;
+      if (var_dclr->init != NULL) {
+        return resolve_expr(var_dclr->init);
+      }
       return true;
     }
   }
@@ -441,19 +415,5 @@ bool resolve_file_scope_dclr(struct Declaration* dclr) {
       printf("Identifier Resolution Error: Unknown declaration type\n");
       return false;
   }
-}
-
-// resolve each declaration in the program
-bool resolve_prog(struct Program* prog) {
-  global_ident_stack = init_scope();
-
-  for (struct DeclarationList* decl = prog->dclrs; decl != NULL; decl = decl->next) {
-    if (!resolve_file_scope_dclr(&decl->dclr)) {
-      printf("Identifier Resolution Error: Failed to resolve declaration\n");
-      return false;
-    }
-  }
-
-  return true;
 }
 

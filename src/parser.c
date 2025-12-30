@@ -11,16 +11,6 @@
 static struct Token * program;
 static size_t prog_size;
 static struct Token * current;
-static struct Arena* parser_arena;
-
-static void* parser_alloc(size_t size) {
-  void* ptr = arena_alloc(parser_arena, size);
-  if (ptr == NULL) {
-    fprintf(stderr, "Parser memory error\n");
-    exit(1);
-  }
-  return ptr;
-}
 
 static void print_error() {
   printf("parser failed at offset %ld\n", (size_t)(current-program));
@@ -109,14 +99,14 @@ struct Expr* parse_pre_op(){
     }
     union ConstVariant const_data = {.int_val = 1};
     struct LitExpr one = {INT_CONST, const_data};
-    struct Expr* lit_expr = parser_alloc(sizeof(struct Expr));
+    struct Expr* lit_expr = arena_alloc(sizeof(struct Expr));
     lit_expr->value_type = NULL;
     lit_expr->type = LIT;
     lit_expr->expr.lit_expr = one;
 
     struct BinaryExpr add_one = {PLUS_EQ_OP, inner, lit_expr};
 
-    struct Expr* result = parser_alloc(sizeof(struct Expr));
+    struct Expr* result = arena_alloc(sizeof(struct Expr));
     result->value_type = NULL;
     result->type = BINARY;
     result->expr.bin_expr = add_one;
@@ -129,14 +119,14 @@ struct Expr* parse_pre_op(){
     }
     union ConstVariant const_data = {.int_val = 1};
     struct LitExpr one = {INT_CONST, const_data};
-    struct Expr* lit_expr = parser_alloc(sizeof(struct Expr));
+    struct Expr* lit_expr = arena_alloc(sizeof(struct Expr));
     lit_expr->value_type = NULL;
     lit_expr->type = LIT;
     lit_expr->expr.lit_expr = one;
 
     struct BinaryExpr sub_one = {MINUS_EQ_OP, inner, lit_expr};
 
-    struct Expr* result = parser_alloc(sizeof(struct Expr));
+    struct Expr* result = arena_alloc(sizeof(struct Expr));
     result->value_type = NULL;
     result->type = BINARY;
     result->expr.bin_expr = sub_one;
@@ -151,7 +141,7 @@ struct Expr* parse_var(){
   if ((data = consume_with_data(IDENT))){
     struct VarExpr var_expr = { data->ident_name };
 
-    struct Expr* expr = parser_alloc(sizeof(struct Expr));
+    struct Expr* expr = arena_alloc(sizeof(struct Expr));
     expr->value_type = NULL;
     expr->expr.var_expr = var_expr;
     expr->type = VAR;
@@ -170,7 +160,7 @@ enum TypeSpecifier parse_type_spec(){
 struct TypeSpecList* parse_type_specs(){
   enum TypeSpecifier spec = parse_type_spec();
   if (spec == 0) return NULL;
-  struct TypeSpecList* specs = parser_alloc(sizeof(struct TypeSpecList));
+  struct TypeSpecList* specs = arena_alloc(sizeof(struct TypeSpecList));
   specs->spec = spec;
   specs->next = parse_type_specs();
   return specs;
@@ -224,12 +214,12 @@ struct Type* parse_param_type(){
     return NULL;
   } else if (spec_list_contains(types, UINT_SPEC)){
     // ignoring long types for now
-    struct Type* type = parser_alloc(sizeof(struct Type));
+    struct Type* type = arena_alloc(sizeof(struct Type));
     type->type = UINT_TYPE;
     return type;
   } else {
     // ignoring long types for now
-    struct Type* type = parser_alloc(sizeof(struct Type));
+    struct Type* type = arena_alloc(sizeof(struct Type));
     type->type = INT_TYPE;
     return type;
   }
@@ -254,7 +244,7 @@ struct AbstractDeclarator* parse_abstract_declarator(){
       current = old_current;
       return NULL;
     }
-    struct AbstractDeclarator* result = parser_alloc(sizeof(struct AbstractDeclarator));
+    struct AbstractDeclarator* result = arena_alloc(sizeof(struct AbstractDeclarator));
     result->type = ABSTRACT_POINTER;
     result->data = declarator;
     return result;
@@ -263,7 +253,7 @@ struct AbstractDeclarator* parse_abstract_declarator(){
   if (declarator != NULL){
     return declarator;
   } else {
-    struct AbstractDeclarator* declarator = parser_alloc(sizeof(struct AbstractDeclarator));
+    struct AbstractDeclarator* declarator = arena_alloc(sizeof(struct AbstractDeclarator));
     declarator->type = ABSTRACT_BASE;
     return declarator;
   }
@@ -278,7 +268,7 @@ struct Type* process_abstract_declarator(
       result = base_type;
       break;
     case ABSTRACT_POINTER:
-      struct Type* ptr_type = parser_alloc(sizeof(struct Type));
+      struct Type* ptr_type = arena_alloc(sizeof(struct Type));
       ptr_type->type = POINTER_TYPE;
       ptr_type->type_data.pointer_type.referenced_type = base_type;
       result = process_abstract_declarator(declarator->data, ptr_type);
@@ -308,7 +298,7 @@ struct Expr* parse_cast(){
   struct Type* derived_type = process_abstract_declarator(declarator, base_type);
 
   struct CastExpr cast = {derived_type, expr};
-  struct Expr* result = parser_alloc(sizeof(struct Expr));
+  struct Expr* result = arena_alloc(sizeof(struct Expr));
   result->value_type = NULL;
   result->type = CAST;
   result->expr.cast_expr = cast;
@@ -321,14 +311,14 @@ struct Expr* parse_post_op(){
   if ((inner = parse_paren_var())){
     if (consume(INC_TOK)){
       struct PostAssignExpr add_one = {POST_INC, inner};
-      struct Expr* result = parser_alloc(sizeof(struct Expr));
+      struct Expr* result = arena_alloc(sizeof(struct Expr));
       result->value_type = NULL;
       result->type = POST_ASSIGN;
       result->expr.post_assign_expr = add_one;
       return result;
     } else if (consume(DEC_TOK)){
       struct PostAssignExpr sub_one = {POST_DEC, inner};
-      struct Expr* result = parser_alloc(sizeof(struct Expr));
+      struct Expr* result = arena_alloc(sizeof(struct Expr));
       result->value_type = NULL;
       result->type = POST_ASSIGN;
       result->expr.post_assign_expr = sub_one;
@@ -361,7 +351,7 @@ struct ArgList* parse_args(){
   struct Expr* arg;
   struct Token* old_current = current;
   if ((arg = parse_expr())){
-    struct ArgList* args = parser_alloc(sizeof(struct ArgList));
+    struct ArgList* args = arena_alloc(sizeof(struct ArgList));
     args->arg = *arg;
     if (consume(COMMA)) args->next = parse_args();
     else if (consume(CLOSE_P)) args->next = NULL;
@@ -392,7 +382,7 @@ struct Expr* parse_func_call(){
     }
     struct FunctionCallExpr call = {data->ident_name, args};
 
-    struct Expr* expr = parser_alloc(sizeof(struct Expr));
+    struct Expr* expr = arena_alloc(sizeof(struct Expr));
     expr->value_type = NULL;
     expr->type = FUNCTION_CALL;
     expr->expr.fun_call_expr = call;
@@ -411,7 +401,7 @@ struct Expr* parse_unary(){
       return NULL;
     }
     struct UnaryExpr expr = {op, inner};
-    struct Expr* result = parser_alloc(sizeof(struct Expr));
+    struct Expr* result = arena_alloc(sizeof(struct Expr));
     result->value_type = NULL;
     result->expr.un_expr = expr;
     result->type = UNARY;
@@ -429,7 +419,7 @@ struct Expr* parse_unary(){
       return NULL;
     }
     struct DereferenceExpr expr = {inner};
-    struct Expr* result = parser_alloc(sizeof(struct Expr));
+    struct Expr* result = arena_alloc(sizeof(struct Expr));
     result->value_type = NULL;
     result->expr.deref_expr = expr;
     result->type = DEREFERENCE;
@@ -442,7 +432,7 @@ struct Expr* parse_unary(){
       return NULL;
     }
     struct AddrOfExpr expr = {inner};
-    struct Expr* result = parser_alloc(sizeof(struct Expr));
+    struct Expr* result = arena_alloc(sizeof(struct Expr));
     result->value_type = NULL;
     result->expr.addr_of_expr = expr;
     result->type = ADDR_OF;
@@ -458,7 +448,7 @@ struct Expr* parse_factor(){
     union ConstVariant const_data = {.int_val = data->int_val};
     struct LitExpr lit_expr = {INT_CONST, const_data};
 
-    struct Expr* expr = parser_alloc(sizeof(struct Expr));
+    struct Expr* expr = arena_alloc(sizeof(struct Expr));
     expr->value_type = NULL;
     expr->expr.lit_expr = lit_expr;
     expr->type = LIT;
@@ -467,7 +457,7 @@ struct Expr* parse_factor(){
     union ConstVariant const_data = {.uint_val = data->uint_val};
     struct LitExpr lit_expr = {UINT_CONST, const_data};
 
-    struct Expr* expr = parser_alloc(sizeof(struct Expr));
+    struct Expr* expr = arena_alloc(sizeof(struct Expr));
     expr->value_type = NULL;
     expr->expr.lit_expr = lit_expr;
     expr->type = LIT;
@@ -476,7 +466,7 @@ struct Expr* parse_factor(){
     union ConstVariant const_data  = {.long_val = data->long_val};
     struct LitExpr lit_expr = {LONG_CONST, const_data};
 
-    struct Expr* expr = parser_alloc(sizeof(struct Expr));
+    struct Expr* expr = arena_alloc(sizeof(struct Expr));
     expr->value_type = NULL;
     expr->expr.lit_expr = lit_expr;
     expr->type = LIT;
@@ -485,7 +475,7 @@ struct Expr* parse_factor(){
     union ConstVariant const_data = {.ulong_val = data->ulong_val};
     struct LitExpr lit_expr = {U_LONG_LIT, const_data};
 
-    struct Expr* expr = parser_alloc(sizeof(struct Expr));
+    struct Expr* expr = arena_alloc(sizeof(struct Expr));
     expr->value_type = NULL;
     expr->expr.lit_expr = lit_expr;
     expr->type = LIT;
@@ -590,7 +580,7 @@ struct Expr* parse_bin_expr(unsigned min_prec){
         return NULL;
       }
       struct ConditionalExpr conditional_expr = {lhs, middle, rhs};
-      lhs = parser_alloc(sizeof(struct Expr));
+      lhs = arena_alloc(sizeof(struct Expr));
       lhs->value_type = NULL;
       lhs->type = CONDITIONAL;
       lhs->expr.conditional_expr = conditional_expr;
@@ -608,13 +598,13 @@ struct Expr* parse_bin_expr(unsigned min_prec){
 
     if (op == ASSIGN_OP){
       struct AssignExpr assign_expr = {lhs, rhs};
-      lhs = parser_alloc(sizeof(struct Expr));
+      lhs = arena_alloc(sizeof(struct Expr));
       lhs->value_type = NULL;
       lhs->type = ASSIGN;
       lhs->expr.assign_expr = assign_expr;
     } else {
       struct BinaryExpr bin_expr = {op, lhs, rhs};
-      lhs = parser_alloc(sizeof(struct Expr));
+      lhs = arena_alloc(sizeof(struct Expr));
       lhs->value_type = NULL;
       lhs->type = BINARY;
       lhs->expr.bin_expr = bin_expr;
@@ -642,7 +632,7 @@ struct Statement* parse_return_stmt(){
     return NULL;
   }
   struct ReturnStmt ret_stmt = {expr, NULL};
-  struct Statement* result = parser_alloc(sizeof(struct Statement));
+  struct Statement* result = arena_alloc(sizeof(struct Statement));
   result->type = RETURN_STMT;
   result->statement.ret_stmt = ret_stmt;
   return result;
@@ -657,7 +647,7 @@ struct Statement* parse_expr_stmt(){
     return NULL;
   }
   struct ExprStmt expr_stmt = {expr};
-  struct Statement* result = parser_alloc(sizeof(struct Statement));
+  struct Statement* result = arena_alloc(sizeof(struct Statement));
   result->type = EXPR_STMT;
   result->statement.expr_stmt = expr_stmt;
   return result;
@@ -685,7 +675,7 @@ struct Statement* parse_if_stmt(){
     return NULL;
   }
   struct IfStmt if_stmt = {condition, left, NULL};
-  struct Statement* result = parser_alloc(sizeof(struct Statement));
+  struct Statement* result = arena_alloc(sizeof(struct Statement));
   result->type = IF_STMT;
   result->statement.if_stmt = if_stmt;
   old_current = current;
@@ -717,7 +707,7 @@ struct Statement* parse_labeled_stmt(){
   }
 
   struct LabeledStmt labeled_stmt = {label, stmt};
-  struct Statement* result = parser_alloc(sizeof(struct Statement));
+  struct Statement* result = arena_alloc(sizeof(struct Statement));
   result->type = LABELED_STMT;
   result->statement.labeled_stmt = labeled_stmt;
   return result;
@@ -730,7 +720,7 @@ struct Statement* parse_goto_stmt(){
   if ((data = consume_with_data(IDENT)) && consume(SEMI)){
     struct GotoStmt goto_stmt = { data->ident_name };
 
-    struct Statement* result = parser_alloc(sizeof(struct Statement));
+    struct Statement* result = arena_alloc(sizeof(struct Statement));
     result->type = GOTO_STMT;
     result->statement.goto_stmt = goto_stmt;
     return result;
@@ -744,14 +734,14 @@ struct Statement* parse_goto_stmt(){
 struct BlockItem* parse_block_item(){
   struct Statement* stmt = parse_statement();
   if (stmt != NULL){
-    struct BlockItem* item = parser_alloc(sizeof(struct BlockItem));
+    struct BlockItem* item = arena_alloc(sizeof(struct BlockItem));
     item->type = STMT_ITEM;
     item->item.stmt = stmt;
     return item;
   }
   struct Declaration* dclr = parse_declaration();
   if (dclr != NULL){
-    struct BlockItem* item = parser_alloc(sizeof(struct BlockItem));
+    struct BlockItem* item = arena_alloc(sizeof(struct BlockItem));
     item->type = DCLR_ITEM;
     item->item.dclr = dclr;
     return item;
@@ -774,13 +764,13 @@ struct Block* parse_block(bool* success){
   struct BlockItem* item = parse_block_item();
 
   if (item != NULL){
-    block = parser_alloc(sizeof(struct Block));
+    block = arena_alloc(sizeof(struct Block));
     block->item = item;
     block->next = NULL;
     struct Block* prev_block = block;
     struct Block* cur_block;
     while ((item = parse_block_item()) != NULL){
-      cur_block = parser_alloc(sizeof(struct Block));
+      cur_block = arena_alloc(sizeof(struct Block));
       cur_block->item = item;
       cur_block->next = NULL;
       prev_block->next = cur_block;
@@ -802,7 +792,7 @@ struct Statement* parse_compound_stmt(){
   struct Block* block = parse_block(&success);
   if (!success) return NULL;
   struct CompoundStmt compound_stmt = { block };
-  struct Statement* result = parser_alloc(sizeof(struct Statement));
+  struct Statement* result = arena_alloc(sizeof(struct Statement));
   result->type = COMPOUND_STMT;
   result->statement.compound_stmt = compound_stmt;
   return result;
@@ -812,7 +802,7 @@ struct Statement* parse_break_stmt(){
   struct Token* old_current = current;
   if (consume(BREAK_TOK) && consume(SEMI)){
     struct BreakStmt break_stmt = {NULL};
-    struct Statement* result = parser_alloc(sizeof(struct Statement));
+    struct Statement* result = arena_alloc(sizeof(struct Statement));
     result->type = BREAK_STMT;
     result->statement.break_stmt = break_stmt;
     return result;
@@ -826,7 +816,7 @@ struct Statement* parse_continue_stmt(){
   struct Token* old_current = current;
   if (consume(CONTINUE_TOK) && consume(SEMI)){
     struct ContinueStmt continue_stmt = {NULL};
-    struct Statement* result = parser_alloc(sizeof(struct Statement));
+    struct Statement* result = arena_alloc(sizeof(struct Statement));
     result->type = CONTINUE_STMT;
     result->statement.continue_stmt = continue_stmt;
     return result;
@@ -859,7 +849,7 @@ struct Statement* parse_while_stmt(){
   }
 
   struct WhileStmt while_stmt = {condition, stmt, NULL};
-  struct Statement* result = parser_alloc(sizeof(struct Statement));
+  struct Statement* result = arena_alloc(sizeof(struct Statement));
   result->type = WHILE_STMT;
   result->statement.while_stmt = while_stmt;
   return result;
@@ -892,7 +882,7 @@ struct Statement* parse_do_while_stmt(){
   }
 
   struct DoWhileStmt do_while_stmt = {stmt, condition, NULL};
-  struct Statement* result = parser_alloc(sizeof(struct Statement));
+  struct Statement* result = arena_alloc(sizeof(struct Statement));
   result->type = DO_WHILE_STMT;
   result->statement.do_while_stmt = do_while_stmt;
   return result;
@@ -920,7 +910,7 @@ struct VariableDclr* parse_for_dclr(){
     current = old_current;
     return NULL;
   }
-  struct VariableDclr* var_dclr = parser_alloc(sizeof(struct VariableDclr));
+  struct VariableDclr* var_dclr = arena_alloc(sizeof(struct VariableDclr));
   var_dclr->name = name;
   var_dclr->init = expr;
   var_dclr->type = type;
@@ -933,7 +923,7 @@ struct ForInit* parse_for_init(){
   struct Token* old_current = current;
   struct VariableDclr* var_dclr = parse_for_dclr();
   if (var_dclr != NULL){
-    struct ForInit* init = parser_alloc(sizeof(struct ForInit));
+    struct ForInit* init = arena_alloc(sizeof(struct ForInit));
     init->type = DCLR_INIT;
     init->init.dclr_init = var_dclr;
     return init;
@@ -943,7 +933,7 @@ struct ForInit* parse_for_init(){
       current = old_current;
       return NULL;
     }
-    struct ForInit* init = parser_alloc(sizeof(struct ForInit));
+    struct ForInit* init = arena_alloc(sizeof(struct ForInit));
     init->type = EXPR_INIT;
     init->init.expr_init = expr_init;
     return init;
@@ -979,7 +969,7 @@ struct Statement* parse_for_stmt(){
   }
 
   struct ForStmt for_stmt = {init, condition, end, stmt, NULL};
-  struct Statement* result = parser_alloc(sizeof(struct Statement));
+  struct Statement* result = arena_alloc(sizeof(struct Statement));
   result->type = FOR_STMT;
   result->statement.for_stmt = for_stmt;
   return result;
@@ -1007,7 +997,7 @@ struct Statement* parse_switch_stmt(){
     return NULL;
   }
   struct SwitchStmt switch_stmt = {condition, stmt, NULL, NULL};
-  struct Statement* result = parser_alloc(sizeof(struct Statement));
+  struct Statement* result = arena_alloc(sizeof(struct Statement));
   result->type = SWITCH_STMT;
   result->statement.switch_stmt = switch_stmt;
   return result;
@@ -1031,7 +1021,7 @@ struct Statement* parse_case_stmt(){
     return NULL;
   }
   struct CaseStmt case_stmt = {expr, stmt, NULL};
-  struct Statement* result = parser_alloc(sizeof(struct Statement));
+  struct Statement* result = arena_alloc(sizeof(struct Statement));
   result->type = CASE_STMT;
   result->statement.case_stmt = case_stmt;
   return result;
@@ -1050,7 +1040,7 @@ struct Statement* parse_default_stmt(){
     return NULL;
   }
   struct DefaultStmt default_stmt = {stmt, NULL};
-  struct Statement* result = parser_alloc(sizeof(struct Statement));
+  struct Statement* result = arena_alloc(sizeof(struct Statement));
   result->type = DEFAULT_STMT;
   result->statement.default_stmt = default_stmt;
   return result;
@@ -1059,7 +1049,7 @@ struct Statement* parse_default_stmt(){
 struct Statement* parse_null_stmt(){
   if (consume(SEMI)){
     struct NullStmt null_stmt;
-    struct Statement* result = parser_alloc(sizeof(struct Statement));
+    struct Statement* result = arena_alloc(sizeof(struct Statement));
     result->type = NULL_STMT;
     result->statement.null_stmt = null_stmt;
     return result;
@@ -1097,7 +1087,7 @@ struct VariableDclr* parse_var_dclr(struct Type* type, enum StorageClass storage
       return NULL;
     }
   }
-  struct VariableDclr* var_dclr = parser_alloc(sizeof(struct VariableDclr));
+  struct VariableDclr* var_dclr = arena_alloc(sizeof(struct VariableDclr));
   var_dclr->init = expr;
   var_dclr->name = name;
   var_dclr->type = type;
@@ -1107,37 +1097,37 @@ struct VariableDclr* parse_var_dclr(struct Type* type, enum StorageClass storage
 
 struct DclrPrefix* parse_type_or_storage_class(){
   if (consume(INT_TOK)) {
-    struct DclrPrefix* dclr_prefix = parser_alloc(sizeof(struct DclrPrefix));
+    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = TYPE_PREFIX;
     dclr_prefix->prefix.type_spec = INT_SPEC;
     return dclr_prefix;
   }
   else if (consume(SIGNED_TOK)) {
-    struct DclrPrefix* dclr_prefix = parser_alloc(sizeof(struct DclrPrefix));
+    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = TYPE_PREFIX;
     dclr_prefix->prefix.type_spec = SINT_SPEC;
     return dclr_prefix;
   }
   else if (consume(UNSIGNED_TOK)) {
-    struct DclrPrefix* dclr_prefix = parser_alloc(sizeof(struct DclrPrefix));
+    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = TYPE_PREFIX;
     dclr_prefix->prefix.type_spec = UINT_SPEC;
     return dclr_prefix;
   }
   else if (consume(LONG_TOK)) {
-    struct DclrPrefix* dclr_prefix = parser_alloc(sizeof(struct DclrPrefix));
+    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = TYPE_PREFIX;
     dclr_prefix->prefix.type_spec = LONG_SPEC;
     return dclr_prefix;
   }
   else if (consume(STATIC_TOK)){
-    struct DclrPrefix* dclr_prefix = parser_alloc(sizeof(struct DclrPrefix));
+    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = STORAGE_PREFIX;
     dclr_prefix->prefix.type_spec = STATIC;
     return dclr_prefix;
   }
   else if (consume(EXTERN_TOK)){
-    struct DclrPrefix* dclr_prefix = parser_alloc(sizeof(struct DclrPrefix));
+    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = STORAGE_PREFIX;
     dclr_prefix->prefix.type_spec = EXTERN;
     return dclr_prefix;
@@ -1156,7 +1146,7 @@ void parse_types_and_storage_classes(struct StorageClassList** storages_result, 
   while ((prefix = parse_type_or_storage_class())){
     switch(prefix->type){
       case STORAGE_PREFIX:
-        struct StorageClassList* next_storage = parser_alloc(sizeof(struct StorageClassList));
+        struct StorageClassList* next_storage = arena_alloc(sizeof(struct StorageClassList));
         next_storage->spec = prefix->prefix.storage_class;
         next_storage->next = NULL;
         if (prev_storages != NULL){
@@ -1167,7 +1157,7 @@ void parse_types_and_storage_classes(struct StorageClassList** storages_result, 
         prev_storages = next_storage;
         break;
       case TYPE_PREFIX:
-        struct TypeSpecList* next_spec = parser_alloc(sizeof(struct TypeSpecList));
+        struct TypeSpecList* next_spec = arena_alloc(sizeof(struct TypeSpecList));
         next_spec->spec = prefix->prefix.type_spec;
         next_spec->next = NULL;
         if (prev_specs != NULL){
@@ -1212,22 +1202,22 @@ void parse_type_and_storage_class(struct Type** type, enum StorageClass* class){
     return;
   } else if (spec_list_contains(specs, UINT_SPEC) &&
              spec_list_contains(specs, LONG_SPEC)){
-    *type = parser_alloc(sizeof(struct Type));
+    *type = arena_alloc(sizeof(struct Type));
     (*type)->type = ULONG_TYPE;
     *class = storage;
     return;
   } else if (spec_list_contains(specs, UINT_SPEC)){
-    *type = parser_alloc(sizeof(struct Type));
+    *type = arena_alloc(sizeof(struct Type));
     (*type)->type = UINT_TYPE;
     *class = storage;
     return;
   } else if (spec_list_contains(specs, LONG_SPEC)) {
-    *type = parser_alloc(sizeof(struct Type));
+    *type = arena_alloc(sizeof(struct Type));
     (*type)->type = LONG_TYPE;
     *class = storage;
     return;
   } else {
-    *type = parser_alloc(sizeof(struct Type));
+    *type = arena_alloc(sizeof(struct Type));
     (*type)->type = INT_TYPE;
     *class = storage;
     return;
@@ -1241,7 +1231,7 @@ struct Declarator* parse_declarator(){
   if (consume(ASTERISK)){
     struct Declarator* decl = parse_declarator();
     if (decl != NULL){
-      struct Declarator* result = parser_alloc(sizeof(struct Declarator));
+      struct Declarator* result = arena_alloc(sizeof(struct Declarator));
       result->type = POINTER_DEC;
       result->declarator.pointer_dec.decl = decl;
       return result;
@@ -1259,7 +1249,7 @@ struct Declarator* parse_simple_declarator(){
   union TokenVariant* data = consume_with_data(IDENT);
   if (data != NULL){
     // function or variable name
-    struct Declarator* result = parser_alloc(sizeof(struct Declarator));
+    struct Declarator* result = arena_alloc(sizeof(struct Declarator));
     result->type = IDENT_DEC;
     result->declarator.ident_dec.name = data->ident_name;
     return result;
@@ -1289,7 +1279,7 @@ struct ParamInfoList* parse_params(){
       current = old_current;
       return NULL;
     }
-    struct ParamInfoList* empty = parser_alloc(sizeof(struct ParamInfoList));
+    struct ParamInfoList* empty = arena_alloc(sizeof(struct ParamInfoList));
     empty->info.type = NULL;
     empty->info.decl.type = IDENT_DEC;
     empty->info.decl.declarator.ident_dec.name = NULL;
@@ -1297,7 +1287,7 @@ struct ParamInfoList* parse_params(){
     return empty;
   }
   if (consume(CLOSE_P)){
-    struct ParamInfoList* empty = parser_alloc(sizeof(struct ParamInfoList));
+    struct ParamInfoList* empty = arena_alloc(sizeof(struct ParamInfoList));
     empty->info.type = NULL;
     empty->info.decl.type = IDENT_DEC;
     empty->info.decl.declarator.ident_dec.name = NULL;
@@ -1317,7 +1307,7 @@ struct ParamInfoList* parse_params(){
       current = old_current;
       return NULL;
     }
-    struct ParamInfoList* node = parser_alloc(sizeof(struct ParamInfoList));
+    struct ParamInfoList* node = arena_alloc(sizeof(struct ParamInfoList));
     node->info.type = type_;
     node->info.decl = *declarator;
     node->next = NULL;
@@ -1338,7 +1328,7 @@ struct Declarator* parse_direct_declarator(){
   struct ParamInfoList* params = parse_params();
   if (params == NULL) return decl;
   struct FunDec fun_dec = {params, decl};
-  struct Declarator* result = parser_alloc(sizeof(struct Declarator));
+  struct Declarator* result = arena_alloc(sizeof(struct Declarator));
   result->type = FUN_DEC;
   result->declarator.fun_dec = fun_dec;
   return result;
@@ -1348,7 +1338,7 @@ struct ParamTypeList* params_to_types(struct ParamList* params){
   struct ParamTypeList* head = NULL;
   struct ParamTypeList* tail = head;
   for (struct ParamList* cur = params; cur != NULL; cur = cur->next){
-    struct ParamTypeList* node = parser_alloc(sizeof(struct ParamTypeList));
+    struct ParamTypeList* node = arena_alloc(sizeof(struct ParamTypeList));
     node->type = *cur->param.type;
     node->next = NULL;
     if (head == NULL) {
@@ -1400,7 +1390,7 @@ bool process_params_info(struct ParamInfoList* params, struct ParamList** params
     if (!process_param_info(&cur->info, &name, &type_)){
       return false;
     }
-    struct ParamList* node = parser_alloc(sizeof(struct ParamList));
+    struct ParamList* node = arena_alloc(sizeof(struct ParamList));
     node->param.name = name;
     node->param.type = type_;
     node->param.init = NULL;
@@ -1429,7 +1419,7 @@ bool process_declarator(struct Declarator* decl, struct Type* base_type,
       return true;
     case POINTER_DEC: {
       // Build a pointer type and recurse inward for further derivations.
-      struct Type* ptr_type = parser_alloc(sizeof(struct Type));
+      struct Type* ptr_type = arena_alloc(sizeof(struct Type));
       ptr_type->type = POINTER_TYPE;
       ptr_type->type_data.pointer_type.referenced_type = base_type;
       return process_declarator(decl->declarator.pointer_dec.decl, ptr_type,
@@ -1446,7 +1436,7 @@ bool process_declarator(struct Declarator* decl, struct Type* base_type,
       if (!process_params_info(decl->declarator.fun_dec.params, &params)){
         return false;
       }
-      struct Type* fun_type = parser_alloc(sizeof(struct Type));
+      struct Type* fun_type = arena_alloc(sizeof(struct Type));
       fun_type->type = FUN_TYPE;
       fun_type->type_data.fun_type.return_type = base_type;
       fun_type->type_data.fun_type.param_types = params_to_types(params);
@@ -1476,11 +1466,11 @@ struct Block* parse_end_of_func(bool* success){
 
 struct FunctionDclr* parse_function(struct Type* ret_type, enum StorageClass storage, 
                                     struct Slice* name, struct ParamList* params){
-  struct Type* fun_type = parser_alloc(sizeof(struct Type));
+  struct Type* fun_type = arena_alloc(sizeof(struct Type));
   fun_type->type = FUN_TYPE;
   fun_type->type_data.fun_type.return_type = ret_type;
   fun_type->type_data.fun_type.param_types = params_to_types(params);
-  struct FunctionDclr* result = parser_alloc(sizeof(struct FunctionDclr));
+  struct FunctionDclr* result = arena_alloc(sizeof(struct FunctionDclr));
   result->name = name;
   result->params = params;
   result->storage = storage;
@@ -1530,7 +1520,7 @@ struct Declaration* parse_declaration(){
     return NULL;
   }
 
-  struct Declaration* result = parser_alloc(sizeof(struct Declaration));
+  struct Declaration* result = arena_alloc(sizeof(struct Declaration));
   if (decl_type->type == FUN_TYPE){
     // function declaration
     struct Type* ret_type = decl_type->type_data.fun_type.return_type;
@@ -1556,19 +1546,18 @@ struct Declaration* parse_declaration(){
 }
 
 // Top-level parser entry; consumes all declarations in the token stream.
-struct Program* parse_prog(struct TokenArray* arr, struct Arena* arena){
+struct Program* parse_prog(struct TokenArray* arr){
   if (arena == NULL) {
     fprintf(stderr, "Parser requires an arena\n");
     return NULL;
   }
-  parser_arena = arena;
 
   // parse declarations and put them in a linked list
   program = arr->tokens;
   current = program;
   prog_size = arr->size;
 
-  struct Program* prog = parser_alloc(sizeof(struct Program));
+  struct Program* prog = arena_alloc(sizeof(struct Program));
   struct Declaration* dclr = parse_declaration();
 
   if (dclr == NULL) {
@@ -1581,14 +1570,14 @@ struct Program* parse_prog(struct TokenArray* arr, struct Arena* arena){
     return prog;
   }
 
-  struct DeclarationList* head = parser_alloc(sizeof(struct DeclarationList));
+  struct DeclarationList* head = arena_alloc(sizeof(struct DeclarationList));
   head->dclr = *dclr;
   head->next = NULL;
   prog->dclrs = head;
 
   struct DeclarationList* tail = head;
   while ((dclr = parse_declaration()) != NULL){
-    struct DeclarationList* next_dclr = parser_alloc(sizeof(struct DeclarationList));
+    struct DeclarationList* next_dclr = arena_alloc(sizeof(struct DeclarationList));
     next_dclr->dclr = *dclr;
     next_dclr->next = NULL;
     tail->next = next_dclr;

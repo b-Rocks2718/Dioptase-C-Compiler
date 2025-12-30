@@ -9,6 +9,7 @@
 #include "token_array.h"
 #include "lexer.h"
 #include "parser.h"
+#include "identifier_resolution.h"
 #include "arena.h"
 
 int main(int argc, const char *const *const argv) {
@@ -16,6 +17,7 @@ int main(int argc, const char *const *const argv) {
     int print_tokens = 0;
     int print_ast = 0;
     int print_preprocess = 0;
+    int print_idents = 0;
     int saw_output_flag = 0;
     const char *filename = NULL;
     const char **cli_defines = malloc(argc * sizeof(char*));
@@ -38,6 +40,11 @@ int main(int argc, const char *const *const argv) {
             saw_output_flag = 1;
             continue;
         }
+        if (strcmp(arg, "-idents") == 0) {
+            print_idents = 1;
+            saw_output_flag = 1;
+            continue;
+        }
         if (strncmp(arg, "-D", 2) == 0) {
             const char *def = arg + 2;
             if (def[0] == '\0') {
@@ -50,7 +57,7 @@ int main(int argc, const char *const *const argv) {
         }
         if (arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-DNAME[=value]] <file name>\n", argv[0]);
+            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-DNAME[=value]] <file name>\n", argv[0]);
             free(cli_defines);
             exit(1);
         }
@@ -59,13 +66,13 @@ int main(int argc, const char *const *const argv) {
             continue;
         }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
 
     if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
@@ -132,22 +139,37 @@ int main(int argc, const char *const *const argv) {
         print_token_array(tokens);
     }
 
-    if (print_ast) {
-        struct Arena arena;
-        arena_init(&arena, 16384);
-        struct Program* prog = parse_prog(tokens, &arena);
+    if (print_ast || print_idents) {
+
+        arena_init(16384);
+        struct Program* prog = parse_prog(tokens);
         if (prog == NULL) {
            free(preprocessed);
            destroy_token_array(tokens);
-           arena_destroy(&arena);
+           arena_destroy();
            return 2;
         };
 
-        printf("AST:\n");
-        print_prog(prog);
-        printf("\n");
+        if (print_ast)  {
+            printf("AST:\n");
+            print_prog(prog);
+            printf("\n");
+        }
 
-        arena_destroy(&arena);
+        if (print_idents) {
+            // perform identifier resolution
+            if (!resolve_prog(prog)) {
+                fprintf(stderr, "Identifier resolution failed\n");
+                free(preprocessed);
+                destroy_token_array(tokens);
+                arena_destroy();
+                return 3;
+            } else {
+                print_prog(prog);
+            }
+        }
+
+        arena_destroy();
     }
     destroy_token_array(tokens);
     free(preprocessed);

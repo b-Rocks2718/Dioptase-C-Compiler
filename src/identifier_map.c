@@ -183,8 +183,7 @@ struct IdentMapEntry* ident_map_get(struct IdentMap* hmap, struct Slice* key){
 }
 
 void destroy_ident_map_entry(struct IdentMapEntry* entry){
-  if (entry->next !=  NULL) destroy_ident_map_entry(entry->next);
-  free(entry->key);
+  if (entry->next != NULL) destroy_ident_map_entry(entry->next);
   free(entry);
 }
 

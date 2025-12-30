@@ -1,0 +1,14 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            VarDclr(none, int, x.0, LitExpr(int, 1):untyped);
+            CompoundStmt(
+                VarDclr(none, int, x.1, LitExpr(int, 2):untyped);
+                VarDclr(none, int, y.2, Var(x.1):untyped);
+            );
+            Return(Var(x.0):untyped);
+    );
+)

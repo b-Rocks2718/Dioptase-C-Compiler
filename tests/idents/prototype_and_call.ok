@@ -1,0 +1,22 @@
+Program(
+    FunDclr(
+        helper,
+        storage=none
+        params=[]
+        body=null
+    );
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            Return(FunCallExpr(helper, []):untyped);
+    );
+    FunDclr(
+        helper,
+        storage=none
+        params=[]
+        body=
+            Return(LitExpr(int, 3):untyped);
+    );
+)

@@ -1,0 +1,11 @@
+Program(
+    VarDclr(none, int, value);
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            VarDclr(none, int, value.0, LitExpr(int, 5):untyped);
+            Return(Var(value.0):untyped);
+    );
+)

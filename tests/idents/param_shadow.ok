@@ -1,0 +1,14 @@
+Program(
+    FunDclr(
+        shadow,
+        storage=none
+        params=[VarDclr(none, int, x.0), ]
+        body=
+            VarDclr(none, int, y.1, Var(x.0):untyped);
+            CompoundStmt(
+                VarDclr(none, int, x.2, LitExpr(int, 3):untyped);
+                ExprStmt(Assign(Var(y.1):untyped, Var(x.2):untyped):untyped);
+            );
+            Return(Var(y.1):untyped);
+    );
+)

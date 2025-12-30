@@ -15,8 +15,10 @@ struct Arena {
   size_t block_size;
 };
 
-void arena_init(struct Arena* arena, size_t block_size);
-void* arena_alloc(struct Arena* arena, size_t size);
-void arena_destroy(struct Arena* arena);
+extern struct Arena* arena;
+
+void arena_init(size_t block_size);
+void* arena_alloc(size_t size);
+void arena_destroy(void);
 
 #endif

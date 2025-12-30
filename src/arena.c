@@ -3,17 +3,20 @@
 
 #include "arena.h"
 
+struct Arena* arena = NULL;
+
 static size_t align_up(size_t value, size_t alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
 }
 
-void arena_init(struct Arena* arena, size_t block_size) {
+void arena_init(size_t block_size) {
+  arena = (struct Arena*)malloc(sizeof(struct Arena));
   arena->head = NULL;
   if (block_size < 1024) block_size = 1024;
   arena->block_size = block_size;
 }
 
-void* arena_alloc(struct Arena* arena, size_t size) {
+void* arena_alloc(size_t size) {
   if (arena == NULL) return NULL;
   size_t alignment = sizeof(void*);
   size = align_up(size, alignment);
@@ -35,7 +38,7 @@ void* arena_alloc(struct Arena* arena, size_t size) {
   return out;
 }
 
-void arena_destroy(struct Arena* arena) {
+void arena_destroy(void) {
   if (arena == NULL) return;
   struct ArenaBlock* block = arena->head;
   while (block != NULL) {
@@ -45,4 +48,6 @@ void arena_destroy(struct Arena* arena) {
   }
   arena->head = NULL;
   arena->block_size = 0;
+  free(arena);
+  arena = NULL;
 }

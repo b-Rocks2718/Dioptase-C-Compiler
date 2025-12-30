@@ -1,0 +1,14 @@
+Program(
+    FunDclr(
+        ping,
+        storage=none
+        params=[VarDclr(none, int, n.0), ]
+        body=
+            IfStmt(
+                c=Var(n.0):untyped, 
+                left=
+                    Return(FunCallExpr(ping, [SubOp(Var(n.0):untyped, LitExpr(int, 1):untyped):untyped, ]):untyped);
+            );
+            Return(LitExpr(int, 0):untyped);
+    );
+)

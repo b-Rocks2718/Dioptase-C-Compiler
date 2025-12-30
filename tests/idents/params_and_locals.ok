@@ -1,0 +1,10 @@
+Program(
+    FunDclr(
+        add,
+        storage=none
+        params=[VarDclr(none, int, a.0), VarDclr(none, int, b.1), ]
+        body=
+            VarDclr(none, int, sum.2, AddOp(Var(a.0):untyped, Var(b.1):untyped):untyped);
+            Return(Var(sum.2):untyped);
+    );
+)
