@@ -342,8 +342,10 @@ void print_case_list(struct CaseList* case_list){
   switch (case_list->case_label.type){
     case INT_CASE:
       printf("IntCase %d", case_list->case_label.data);
+      break;
     case DEFAULT_CASE:
       printf("DefaultCase");
+      break;
   }
   printf(", ");
   print_case_list(case_list->next);

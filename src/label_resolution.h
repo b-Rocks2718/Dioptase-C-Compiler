@@ -1,5 +1,5 @@
-#ifndef LOOP_RESOLUTION_H
-#define LOOP_RESOLUTION_H
+#ifndef LABEL_RESOLUTION_H
+#define LABEL_RESOLUTION_H
 
 #include "AST.h"
 #include <stdbool.h>
@@ -17,4 +17,6 @@ bool label_block(struct Slice* func_name, struct Block* block);
 
 bool resolve_gotos(struct Block* block);
 
-#endif // LOOP_RESOLUTION_H
+bool collect_cases(struct Block* block);
+
+#endif // LABEL_RESOLUTION_H

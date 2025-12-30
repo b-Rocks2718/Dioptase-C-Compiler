@@ -1,6 +1,7 @@
-#include "loop_resolution.h"
+#include "label_resolution.h"
 #include "unique_name.h"
 #include "label_map.h"
+#include "arena.h"
 
 #include <stdio.h>
 
@@ -9,6 +10,7 @@ struct Slice* cur_switch_label = NULL;
 enum LabelType cur_label_type = -1;
 
 struct LabelMap* goto_labels = NULL;
+struct CaseList* current_case_list = NULL;
 
 bool label_loops(struct Program* prog) {
   for (struct DeclarationList* decl = prog->dclrs; decl != NULL; decl = decl->next) {
@@ -24,6 +26,10 @@ bool label_loops(struct Program* prog) {
         }
 
         if (!resolve_gotos(func_dclr->body)) {
+          return false;
+        }
+
+        if (!collect_cases(func_dclr->body)) {
           return false;
         }
 
@@ -346,6 +352,121 @@ bool resolve_gotos(struct Block* block) {
     // only need to resolve statements
     if (item->item->type == STMT_ITEM) {
       if (!resolve_stmt(item->item->item.stmt)) { 
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// -------------------------------- case collection -------------------------------- //
+
+bool collect_cases_stmt(struct Statement* stmt){
+  switch (stmt->type) {
+    case WHILE_STMT: {
+      struct WhileStmt* while_stmt = &stmt->statement.while_stmt;
+      return collect_cases_stmt(while_stmt->statement);
+    }
+    case DO_WHILE_STMT: {
+      struct DoWhileStmt* do_while_stmt = &stmt->statement.do_while_stmt;
+      return collect_cases_stmt(do_while_stmt->statement);
+    }
+    case FOR_STMT: {
+      struct ForStmt* for_stmt = &stmt->statement.for_stmt;
+      return collect_cases_stmt(for_stmt->statement);
+    }
+    case IF_STMT: {
+      struct IfStmt* if_stmt = &stmt->statement.if_stmt;
+      if (!collect_cases_stmt(if_stmt->if_stmt)) {
+        return false;
+      }
+      if (if_stmt->else_stmt != NULL) {
+        if (!collect_cases_stmt(if_stmt->else_stmt)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    case COMPOUND_STMT: {
+      struct Block* block = stmt->statement.compound_stmt.block;
+      return collect_cases(block);
+    }
+    case LABELED_STMT: {
+      struct LabeledStmt* labeled_stmt = &stmt->statement.labeled_stmt;
+      return collect_cases_stmt(labeled_stmt->stmt);
+    }
+    case CASE_STMT: {
+      // extract case value
+      struct CaseStmt* case_stmt = &stmt->statement.case_stmt;
+      if (case_stmt->expr->type != LIT) {
+        printf("Case Collection Error: Case statement with non-constant expression\n");
+        return false;
+      }
+      struct LitExpr* lit_expr = &case_stmt->expr->expr.lit_expr;
+      int case_value = lit_expr->value.int_val;
+
+      // check for duplicate cases
+      struct CaseList* case_iter = current_case_list;
+      while (case_iter != NULL) {
+        if (case_iter->case_label.type == INT_CASE && case_iter->case_label.data == case_value) {
+          printf("Case Collection Error: Duplicate case %d\n", case_value);
+          return false;
+        }
+        case_iter = case_iter->next;
+      }
+
+      // add case to current case list
+      struct CaseList* new_case = arena_alloc(sizeof(struct CaseList));
+      new_case->case_label.type = INT_CASE;
+      new_case->case_label.data = case_value;
+      new_case->next = current_case_list;
+      current_case_list = new_case;
+
+      return collect_cases_stmt(case_stmt->statement);
+    }
+    case DEFAULT_STMT: {
+      // check if default case already exists
+      struct CaseList* case_iter = current_case_list;
+      while (case_iter != NULL) {
+        if (case_iter->case_label.type == DEFAULT_CASE) {
+          printf("Case Collection Error: Duplicate default case\n");
+          return false;
+        }
+        case_iter = case_iter->next;
+      }
+      struct DefaultStmt* default_stmt = &stmt->statement.default_stmt;
+      // add default case to current case list
+      struct CaseList* new_case = arena_alloc(sizeof(struct CaseList));
+      new_case->case_label.type = DEFAULT_CASE;
+      new_case->next = current_case_list;
+      current_case_list = new_case;
+      return collect_cases_stmt(default_stmt->statement);
+    }
+    case SWITCH_STMT: {
+      struct CaseList* prev_case_list = current_case_list;
+      current_case_list = NULL;
+
+      if (!collect_cases_stmt(stmt->statement.switch_stmt.statement)) {
+        return false;
+      }
+
+      // assign collected cases to switch statement
+      stmt->statement.switch_stmt.cases = current_case_list;
+
+      current_case_list = prev_case_list;
+      return true;
+    }
+    default:
+      // no cases to collect
+      return true;
+  }
+}
+
+bool collect_cases(struct Block* block) {
+  for (struct Block* item = block; item != NULL; item = item->next) {
+    // only need to process statements
+    if (item->item->type == STMT_ITEM) {
+      if (!collect_cases_stmt(item->item->item.stmt)) {
         return false;
       }
     }

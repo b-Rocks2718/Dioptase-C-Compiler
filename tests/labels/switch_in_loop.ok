@@ -10,6 +10,7 @@ Program(
                 CompoundStmt(
                     SwitchStmt(
                         label=main.switch.1
+                        cases=[DefaultCase, IntCase 0, ]
                         LitExpr(int, 1):untyped,
                         CompoundStmt(
                             CaseStmt(

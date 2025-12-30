@@ -1,0 +1,24 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            SwitchStmt(
+                label=main.switch.0
+                cases=[IntCase 2, IntCase 0, ]
+                LitExpr(int, 0):untyped,
+                CompoundStmt(
+                    CaseStmt(
+                        LitExpr(int, 0):untyped,
+                        NullStmt;
+                    );
+                    CaseStmt(
+                        LitExpr(int, 2):untyped,
+                        NullStmt;
+                    );
+                );
+            );
+            Return(LitExpr(int, 0):untyped, main);
+    );
+)

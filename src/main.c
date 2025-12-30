@@ -10,7 +10,7 @@
 #include "lexer.h"
 #include "parser.h"
 #include "identifier_resolution.h"
-#include "loop_resolution.h"
+#include "label_resolution.h"
 #include "arena.h"
 
 int main(int argc, const char *const *const argv) {
@@ -19,7 +19,7 @@ int main(int argc, const char *const *const argv) {
     int print_ast = 0;
     int print_preprocess = 0;
     int print_idents = 0;
-    int print_loops = 0;
+    int print_labels = 0;
     const char *filename = NULL;
     const char **cli_defines = malloc(argc * sizeof(char*));
     int num_defines = 0;
@@ -42,8 +42,8 @@ int main(int argc, const char *const *const argv) {
             print_idents = 1;
             continue;
         }
-        if (strcmp(arg, "-loops") == 0) {
-            print_loops = 1;
+        if (strcmp(arg, "-labels") == 0) {
+            print_labels = 1;
             continue;
         }
         if (strncmp(arg, "-D", 2) == 0) {
@@ -165,7 +165,7 @@ int main(int argc, const char *const *const argv) {
         destroy_token_array(tokens);
         arena_destroy();
         return 4;
-    } else if (print_loops) {
+    } else if (print_labels) {
         print_prog(prog);
     }
     

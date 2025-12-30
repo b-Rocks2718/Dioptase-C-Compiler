@@ -12,8 +12,8 @@ TEST_PARSER_DIR := tests/parser
 TEST_PARSER_INVALID_DIR := tests/parser_invalid
 TEST_IDENTS_DIR := tests/idents
 TEST_IDENTS_INVALID_DIR := tests/idents_invalid
-TEST_LOOPS_DIR := tests/loops
-TEST_LOOPS_INVALID_DIR := tests/loops_invalid
+TEST_LABELS_DIR := tests/labels
+TEST_LABELS_INVALID_DIR := tests/labels_invalid
 
 C_SRCS 		:= $(wildcard $(SRC_DIR)/*.c)
 OBJFILES 	:= $(patsubst %.c, $(BUILD_DIR)/objfiles/%.o, $(notdir $(C_SRCS)))
@@ -35,10 +35,10 @@ IDENTS_SRCS := $(wildcard $(TEST_IDENTS_DIR)/*.c)
 IDENTS_TESTS := $(patsubst $(TEST_IDENTS_DIR)/%.c,%, $(IDENTS_SRCS))
 IDENTS_INVALID_SRCS := $(wildcard $(TEST_IDENTS_INVALID_DIR)/*.c)
 IDENTS_INVALID_TESTS := $(patsubst $(TEST_IDENTS_INVALID_DIR)/%.c,%, $(IDENTS_INVALID_SRCS))
-LOOPS_SRCS := $(wildcard $(TEST_LOOPS_DIR)/*.c)
-LOOPS_TESTS := $(patsubst $(TEST_LOOPS_DIR)/%.c,%, $(LOOPS_SRCS))
-LOOPS_INVALID_SRCS := $(wildcard $(TEST_LOOPS_INVALID_DIR)/*.c)
-LOOPS_INVALID_TESTS := $(patsubst $(TEST_LOOPS_INVALID_DIR)/%.c,%, $(LOOPS_INVALID_SRCS))
+LABELS_SRCS := $(wildcard $(TEST_LABELS_DIR)/*.c)
+LABELS_TESTS := $(patsubst $(TEST_LABELS_DIR)/%.c,%, $(LABELS_SRCS))
+LABELS_INVALID_SRCS := $(wildcard $(TEST_LABELS_INVALID_DIR)/*.c)
+LABELS_INVALID_TESTS := $(patsubst $(TEST_LABELS_INVALID_DIR)/%.c,%, $(LABELS_INVALID_SRCS))
 
 # Rule to build the main executable
 all: $(BUILD_DIR)/$(EXEC)
@@ -64,8 +64,8 @@ clean:
 		$(TEST_PARSER_INVALID_DIR)/*.out \
 		$(TEST_IDENTS_DIR)/*.out \
 		$(TEST_IDENTS_INVALID_DIR)/*.out \
-		$(TEST_LOOPS_DIR)/*.out \
-		$(TEST_LOOPS_INVALID_DIR)/*.out
+		$(TEST_LABELS_DIR)/*.out \
+		$(TEST_LABELS_INVALID_DIR)/*.out
 
 # Rule to clean up generated files
 purge:
@@ -75,7 +75,7 @@ test: $(BUILD_DIR)/$(EXEC)
 	@GREEN="\033[0;32m"; \
 	RED="\033[0;31m"; \
 	NC="\033[0m"; \
-	passed=0; total=$$(( $(words $(PREPROCESS_TESTS)) + $(words $(PREPROCESS_INVALID_TESTS)) + $(words $(LEXER_TESTS)) + $(words $(LEXER_INVALID_TESTS)) + $(words $(PARSER_TESTS)) + $(words $(PARSER_INVALID_TESTS)) + $(words $(IDENTS_TESTS)) + $(words $(IDENTS_INVALID_TESTS)) + $(words $(LOOPS_TESTS)) + $(words $(LOOPS_INVALID_TESTS)) )); \
+	passed=0; total=$$(( $(words $(PREPROCESS_TESTS)) + $(words $(PREPROCESS_INVALID_TESTS)) + $(words $(LEXER_TESTS)) + $(words $(LEXER_INVALID_TESTS)) + $(words $(PARSER_TESTS)) + $(words $(PARSER_INVALID_TESTS)) + $(words $(IDENTS_TESTS)) + $(words $(IDENTS_INVALID_TESTS)) + $(words $(LABELS_TESTS)) + $(words $(LABELS_INVALID_TESTS)) )); \
 	echo "Running $(words $(PREPROCESS_TESTS)) preprocess tests:"; \
 	for t in $(PREPROCESS_TESTS); do \
 		printf "%s %-20s " '-' "$$t"; \
@@ -207,12 +207,12 @@ test: $(BUILD_DIR)/$(EXEC)
 			fi; \
 		fi; \
 	done; \
-	echo "\nRunning $(words $(LOOPS_TESTS)) loop labeling tests:"; \
-	for t in $(LOOPS_TESTS); do \
+	echo "\nRunning $(words $(LABELS_TESTS)) labeling tests:"; \
+	for t in $(LABELS_TESTS); do \
 		printf "%s %-20s " '-' "$$t"; \
-		out="$(TEST_LOOPS_DIR)/$$t.out"; \
-		if $(BUILD_DIR)/$(EXEC) -loops "$(TEST_LOOPS_DIR)/$$t.c" > "$$out" 2>/dev/null; then \
-			if diff -u "$(TEST_LOOPS_DIR)/$$t.ok" "$$out" >/dev/null 2>&1; then \
+		out="$(TEST_LABELS_DIR)/$$t.out"; \
+		if $(BUILD_DIR)/$(EXEC) -labels "$(TEST_LABELS_DIR)/$$t.c" > "$$out" 2>/dev/null; then \
+			if diff -u "$(TEST_LABELS_DIR)/$$t.ok" "$$out" >/dev/null 2>&1; then \
 				echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
 			else \
 				echo "$$RED FAIL $$NC"; \
@@ -221,15 +221,15 @@ test: $(BUILD_DIR)/$(EXEC)
 			echo "$$RED FAIL $$NC"; \
 		fi; \
 	done; \
-	echo "\nRunning $(words $(LOOPS_INVALID_TESTS)) invalid loop labeling tests:"; \
-	for t in $(LOOPS_INVALID_TESTS); do \
+	echo "\nRunning $(words $(LABELS_INVALID_TESTS)) invalid labeling tests:"; \
+	for t in $(LABELS_INVALID_TESTS); do \
 		printf "%s %-20s " '-' "$$t"; \
-		out="$(TEST_LOOPS_INVALID_DIR)/$$t.out"; \
-		if $(BUILD_DIR)/$(EXEC) -loops "$(TEST_LOOPS_INVALID_DIR)/$$t.c" > "$$out" 2>&1; then \
+		out="$(TEST_LABELS_INVALID_DIR)/$$t.out"; \
+		if $(BUILD_DIR)/$(EXEC) -labels "$(TEST_LABELS_INVALID_DIR)/$$t.c" > "$$out" 2>&1; then \
 			echo "$$RED FAIL $$NC"; \
 		else \
-			if [ -f "$(TEST_LOOPS_INVALID_DIR)/$$t.ok" ]; then \
-				if diff -u "$(TEST_LOOPS_INVALID_DIR)/$$t.ok" "$$out" >/dev/null 2>&1; then \
+			if [ -f "$(TEST_LABELS_INVALID_DIR)/$$t.ok" ]; then \
+				if diff -u "$(TEST_LABELS_INVALID_DIR)/$$t.ok" "$$out" >/dev/null 2>&1; then \
 					echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
 				else \
 					echo "$$RED FAIL $$NC"; \
