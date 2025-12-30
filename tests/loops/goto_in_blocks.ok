@@ -1,0 +1,29 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            LabeledStmt(
+                main.goto.0,
+                IfStmt(
+                    c=LitExpr(int, 1):untyped, 
+                    left=
+                        CompoundStmt(
+                            GotoStmt(main.goto.2);
+                        );
+                );
+            );
+            WhileStmt(
+                main.while.1,
+                LitExpr(int, 0):untyped,
+                CompoundStmt(
+                    GotoStmt(main.goto.0);
+                );
+            );
+            LabeledStmt(
+                main.goto.2,
+                Return(LitExpr(int, 0):untyped, main);
+            );
+    );
+)

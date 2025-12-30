@@ -1,0 +1,16 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            GotoStmt(main.goto.0);
+            CompoundStmt(
+                LabeledStmt(
+                    main.goto.0,
+                    NullStmt;
+                );
+            );
+            Return(LitExpr(int, 0):untyped, main);
+    );
+)

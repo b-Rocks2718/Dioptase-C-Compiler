@@ -1,0 +1,18 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        body=
+            GotoStmt(main.goto.1);
+            LabeledStmt(
+                main.goto.0,
+                GotoStmt(main.goto.1);
+            );
+            LabeledStmt(
+                main.goto.1,
+                GotoStmt(main.goto.0);
+            );
+            Return(LitExpr(int, 0):untyped, main);
+    );
+)

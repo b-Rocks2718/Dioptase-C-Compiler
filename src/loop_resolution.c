@@ -1,11 +1,14 @@
 #include "loop_resolution.h"
 #include "unique_name.h"
+#include "label_map.h"
 
 #include <stdio.h>
 
 struct Slice* cur_loop_label = NULL;
 struct Slice* cur_switch_label = NULL;
 enum LabelType cur_label_type = -1;
+
+struct LabelMap* goto_labels = NULL;
 
 bool label_loops(struct Program* prog) {
   for (struct DeclarationList* decl = prog->dclrs; decl != NULL; decl = decl->next) {
@@ -14,15 +17,25 @@ bool label_loops(struct Program* prog) {
       struct FunctionDclr* func_dclr = &decl->dclr.dclr.fun_dclr;
       // only label if there is a body
       if (func_dclr->body != NULL) {
+        goto_labels = create_label_map(256);
+
         if (!label_block(func_dclr->name, func_dclr->body)) {
           return false;
         }
+
+        if (!resolve_gotos(func_dclr->body)) {
+          return false;
+        }
+
+        destroy_label_map(goto_labels);
       }
     }
   }
 
   return true;
 }
+
+// -------------------------------- loop/switch labeling -------------------------------- //
 
 bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
   switch (stmt->type) {
@@ -173,6 +186,19 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       break;
     }
     case LABELED_STMT: {
+      if (label_map_contains(goto_labels, stmt->statement.labeled_stmt.label)) {
+        printf("Loop Labeling Error: Multiple definitions for goto label ");
+        print_slice(stmt->statement.labeled_stmt.label);
+        printf("\n");
+        return false;
+      }
+
+      // insert into label map
+      struct Slice* unique_label = make_unique_label(func_name, "goto");
+      label_map_insert(goto_labels, stmt->statement.labeled_stmt.label, unique_label);
+
+      stmt->statement.labeled_stmt.label = unique_label;
+
       struct LabeledStmt* labeled_stmt = &stmt->statement.labeled_stmt;
       if (!label_stmt(func_name, labeled_stmt->stmt)) {
         return false;
@@ -244,6 +270,84 @@ bool label_block(struct Slice* func_name, struct Block* block) {
       default:
         printf("Loop Labeling Error: Unknown block item type\n");
         return false;
+    }
+  }
+  return true;
+}
+
+static bool resolve_stmt(struct Statement* stmt) {
+  if (stmt->type == LABELED_STMT) {
+    struct LabeledStmt* labeled_stmt = &stmt->statement.labeled_stmt;
+    if (!resolve_stmt(labeled_stmt->stmt)) {
+      return false;
+    }
+  } else if (stmt->type == COMPOUND_STMT) {
+    struct Block* inner_block = stmt->statement.compound_stmt.block;
+    if (!resolve_gotos(inner_block)) {
+      return false;
+    }
+  } else if (stmt->type == IF_STMT) {
+    struct IfStmt* if_stmt = &stmt->statement.if_stmt;
+    if (!resolve_stmt(if_stmt->if_stmt)) {
+      return false;
+    }
+    if (if_stmt->else_stmt != NULL) {
+      if (!resolve_stmt(if_stmt->else_stmt)) {
+        return false;
+      }
+    }
+  } else if (stmt->type == WHILE_STMT) {
+    struct WhileStmt* while_stmt = &stmt->statement.while_stmt;
+    if (!resolve_stmt(while_stmt->statement)) {
+      return false;
+    }
+  } else if (stmt->type == DO_WHILE_STMT) {
+    struct DoWhileStmt* do_while_stmt = &stmt->statement.do_while_stmt;
+    if (!resolve_stmt(do_while_stmt->statement)) {
+      return false;
+    }
+  } else if (stmt->type == FOR_STMT) {
+    struct ForStmt* for_stmt = &stmt->statement.for_stmt;
+    if (!resolve_stmt(for_stmt->statement)) {
+      return false;
+    }
+  } else if (stmt->type == SWITCH_STMT) {
+    struct SwitchStmt* switch_stmt = &stmt->statement.switch_stmt;
+    if (!resolve_stmt(switch_stmt->statement)) {
+      return false;
+    }
+  } else if (stmt->type == CASE_STMT) {
+    struct CaseStmt* case_stmt = &stmt->statement.case_stmt;
+    if (!resolve_stmt(case_stmt->statement)) {
+      return false;
+    }
+  } else if (stmt->type == DEFAULT_STMT) {
+    struct DefaultStmt* default_stmt = &stmt->statement.default_stmt;
+    if (!resolve_stmt(default_stmt->statement)) {
+      return false;
+    }
+  } else if (stmt->type == GOTO_STMT) {
+    struct GotoStmt* goto_stmt = &stmt->statement.goto_stmt;
+    struct Slice* target_label = label_map_get(goto_labels, goto_stmt->label);
+    if (target_label == NULL) {
+      printf("Goto Resolution Error: Label ");
+      print_slice(goto_stmt->label);
+      printf(" has no definition\n");
+      return false;
+    }
+    goto_stmt->label = target_label;
+  }
+
+  return true;
+}
+
+bool resolve_gotos(struct Block* block) {
+  for (struct Block* item = block; item != NULL; item = item->next) {
+    // only need to resolve statements
+    if (item->item->type == STMT_ITEM) {
+      if (!resolve_stmt(item->item->item.stmt)) { 
+        return false;
+      }
     }
   }
   return true;

@@ -15,4 +15,6 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt);
 
 bool label_block(struct Slice* func_name, struct Block* block);
 
+bool resolve_gotos(struct Block* block);
+
 #endif // LOOP_RESOLUTION_H
