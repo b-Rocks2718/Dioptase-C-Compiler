@@ -2,6 +2,7 @@
 #define AST_H
 
 #include <stddef.h>
+#include <stdbool.h>
 
 /* AST data structures */
 
@@ -65,6 +66,7 @@ struct FunctionDclr {
   struct Slice* name;
   enum StorageClass storage;
   struct ParamList* params;
+  struct Type* type;
   struct Block* body;
 };
 
@@ -527,5 +529,7 @@ void print_declaration(struct Declaration* declaration, unsigned tabs);
 void print_var_dclr(struct VariableDclr* var_dclr);
 
 void print_prog(struct Program* prog);
+
+bool compare_types(struct Type* a, struct Type* b);
 
 #endif // AST_H

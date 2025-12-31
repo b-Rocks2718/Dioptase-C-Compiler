@@ -1474,6 +1474,7 @@ struct FunctionDclr* parse_function(struct Type* ret_type, enum StorageClass sto
   result->name = name;
   result->params = params;
   result->storage = storage;
+  result->type = fun_type;
   bool success;
   result->body = parse_end_of_func(&success);
   if (!success){

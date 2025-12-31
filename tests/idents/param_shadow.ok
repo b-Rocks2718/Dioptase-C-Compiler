@@ -3,6 +3,7 @@ Program(
         shadow,
         storage=none
         params=[VarDclr(none, int, x.0), ]
+        type=func(ret_type=int, param_types=[int, ]),
         body=
             VarDclr(none, int, y.1, Var(x.0):untyped);
             CompoundStmt(

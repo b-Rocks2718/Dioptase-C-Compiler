@@ -3,6 +3,7 @@ Program(
         main,
         storage=none
         params=[]
+        type=func(ret_type=int, param_types=[]),
         body=
             VarDclr(none, int, i, LitExpr(int, 0):untyped);
             WhileStmt(

@@ -38,9 +38,11 @@ void print_type(struct Type* type){
     case FUN_TYPE:
       printf("func(ret_type=");
       print_type(type->type_data.fun_type.return_type);
+      printf(", ");
       printf("param_types=[");
       print_param_type_list(type->type_data.fun_type.param_types);
       printf("]");
+      printf(")");
       break;
   }
 }
@@ -544,6 +546,37 @@ void print_param_list(struct ParamList* params){
   print_param_list(params->next);
 }
 
+void print_fun_dclr(struct FunctionDclr* fun_dclr, unsigned tabs){
+  printf("FunDclr(\n");
+  print_tabs(tabs + 1); 
+  print_slice(fun_dclr->name);
+  printf(",\n");
+  print_tabs(tabs + 1);
+  printf("storage=");
+  print_storage_class(fun_dclr->storage);
+  printf("\n");
+  print_tabs(tabs + 1);
+  printf("params=[");
+  print_param_list(fun_dclr->params);
+  printf("]\n");
+  print_tabs(tabs + 1);
+  printf("type=");
+  if (fun_dclr->type == NULL){
+    printf("untyped");
+  } else {
+    printf("");
+    print_type(fun_dclr->type);
+  }
+  printf(",\n");
+  if (fun_dclr->body != NULL){
+    print_tabs(tabs + 1); printf("body=\n");
+    print_block(fun_dclr->body, tabs + 2);
+  } else {
+    print_tabs(tabs + 1); printf("body=null\n");
+  }
+  print_tabs(tabs); printf(")");
+}
+
 void print_declaration(struct Declaration* declaration, unsigned tabs){
   print_tabs(tabs);
   switch (declaration->type){
@@ -552,25 +585,8 @@ void print_declaration(struct Declaration* declaration, unsigned tabs){
       printf(";\n");
       break;
     case FUN_DCLR:
-      printf("FunDclr(\n");
-      print_tabs(tabs + 1); 
-      print_slice(declaration->dclr.fun_dclr.name);
-      printf(",\n");
-      print_tabs(tabs + 1);
-      printf("storage=");
-      print_storage_class(declaration->dclr.fun_dclr.storage);
-      printf("\n");
-      print_tabs(tabs + 1);
-      printf("params=[");
-      print_param_list(declaration->dclr.fun_dclr.params);
-      printf("]\n");
-      if (declaration->dclr.fun_dclr.body != NULL){
-        print_tabs(tabs + 1); printf("body=\n");
-        print_block(declaration->dclr.fun_dclr.body, tabs + 2);
-      } else {
-        print_tabs(tabs + 1); printf("body=null\n");
-      }
-      print_tabs(tabs); printf(");\n");
+      print_fun_dclr(&declaration->dclr.fun_dclr, tabs);
+      printf(";\n");
       break;
   }
 }
@@ -581,4 +597,51 @@ void print_prog(struct Program* prog){
     print_declaration(&cur->dclr, 1);
   }
   printf(")\n");
+}
+
+bool compare_types(struct Type* a, struct Type* b) {
+  if (a->type != b->type) {
+    return false;
+  }
+
+  switch (a->type) {
+    case INT_TYPE:
+    case UINT_TYPE:
+    case LONG_TYPE:
+    case ULONG_TYPE:
+      return true; // primitive types match
+
+    case POINTER_TYPE:
+      return compare_types(a->type_data.pointer_type.referenced_type,
+                           b->type_data.pointer_type.referenced_type);
+
+    case FUN_TYPE: {
+      struct FunType* fun_a = &a->type_data.fun_type;
+      struct FunType* fun_b = &b->type_data.fun_type;
+
+      // compare return types
+      if (!compare_types(fun_a->return_type, fun_b->return_type)) {
+        return false;
+      }
+
+      // compare parameter types
+      struct ParamTypeList* param_a = fun_a->param_types;
+      struct ParamTypeList* param_b = fun_b->param_types;
+
+      while (param_a != NULL && param_b != NULL) {
+        if (!compare_types(&param_a->type, &param_b->type)) {
+          return false;
+        }
+        param_a = param_a->next;
+        param_b = param_b->next;
+      }
+
+      // both should reach the end
+      return param_a == NULL && param_b == NULL;
+    }
+
+    default:
+      printf("Type error: Unknown type in compare_types\n");
+      return false; // unknown type
+  }
 }

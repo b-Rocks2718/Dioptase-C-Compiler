@@ -3,6 +3,7 @@ Program(
         main,
         storage=none
         params=[]
+        type=func(ret_type=int, param_types=[]),
         body=
             GotoStmt(main.goto.1);
             LabeledStmt(

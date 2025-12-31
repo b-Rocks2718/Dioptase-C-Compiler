@@ -3,6 +3,7 @@ Program(
         ping,
         storage=none
         params=[VarDclr(none, int, n.0), ]
+        type=func(ret_type=int, param_types=[int, ]),
         body=
             IfStmt(
                 c=Var(n.0):untyped, 

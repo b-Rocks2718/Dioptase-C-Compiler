@@ -33,7 +33,6 @@ struct LabelEntry* create_label_entry(struct Slice* key, struct Slice* value){
 void label_entry_insert(struct LabelEntry* entry, struct Slice* key, struct Slice* value){
   if (compare_slice_to_slice(entry->key, key)){
     entry->value = value;
-    free(key);
   } else if (entry->next == NULL){
     entry->next = create_label_entry(key, value);
   } else {

@@ -3,12 +3,14 @@ Program(
         helper,
         storage=none
         params=[]
+        type=func(ret_type=int, param_types=[]),
         body=null
     );
     FunDclr(
         main,
         storage=none
         params=[]
+        type=func(ret_type=int, param_types=[]),
         body=
             Return(FunCallExpr(helper, []):untyped);
     );
@@ -16,6 +18,7 @@ Program(
         helper,
         storage=none
         params=[]
+        type=func(ret_type=int, param_types=[]),
         body=
             Return(LitExpr(int, 3):untyped);
     );

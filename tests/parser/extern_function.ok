@@ -3,12 +3,14 @@ Program(
         ext,
         storage=extern
         params=[VarDclr(none, int, a), VarDclr(none, int, b), ]
+        type=func(ret_type=int, param_types=[int, int, ]),
         body=null
     );
     FunDclr(
         main,
         storage=none
         params=[]
+        type=func(ret_type=int, param_types=[]),
         body=
             Return(FunCallExpr(ext, [LitExpr(int, 1):untyped, LitExpr(int, 2):untyped, ]):untyped);
     );

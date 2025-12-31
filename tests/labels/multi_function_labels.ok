@@ -3,6 +3,7 @@ Program(
         first,
         storage=none
         params=[]
+        type=func(ret_type=int, param_types=[]),
         body=
             WhileStmt(
                 first.while.0,
@@ -17,6 +18,7 @@ Program(
         second,
         storage=none
         params=[]
+        type=func(ret_type=int, param_types=[]),
         body=
             DoWhileStmt(
                 second.do_while.1,

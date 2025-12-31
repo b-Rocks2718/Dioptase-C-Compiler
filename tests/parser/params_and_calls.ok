@@ -3,6 +3,7 @@ Program(
         add,
         storage=none
         params=[VarDclr(none, int, a), VarDclr(none, int, b), VarDclr(none, int, c), ]
+        type=func(ret_type=int, param_types=[int, int, int, ]),
         body=
             Return(AddOp(AddOp(Var(a):untyped, Var(b):untyped):untyped, Var(c):untyped):untyped);
     );
@@ -10,6 +11,7 @@ Program(
         main,
         storage=none
         params=[]
+        type=func(ret_type=int, param_types=[]),
         body=
             Return(FunCallExpr(add, [LitExpr(int, 1):untyped, LitExpr(int, 2):untyped, LitExpr(int, 3):untyped, ]):untyped);
     );
