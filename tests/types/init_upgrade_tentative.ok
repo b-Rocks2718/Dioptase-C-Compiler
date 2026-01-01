@@ -1,0 +1,13 @@
+Program(
+    VarDclr(none, int, value);
+    VarDclr(none, int, value);
+    VarDclr(none, int, value, LitExpr(int, 3):int);
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            Return(Var(value):int, main);
+    );
+)

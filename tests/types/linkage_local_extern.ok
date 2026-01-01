@@ -1,0 +1,12 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(extern, int, value);
+            Return(Var(value):int, main);
+    );
+    VarDclr(none, int, value);
+)

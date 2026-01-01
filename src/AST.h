@@ -46,7 +46,7 @@ struct Type {
 };
 
 struct ParamTypeList {
-  struct Type type;
+  struct Type* type;
   struct ParamTypeList* next;
 };
 
@@ -237,7 +237,7 @@ struct Expr {
 };
 
 struct ArgList {
-  struct Expr arg;
+  struct Expr* arg;
   struct ArgList* next;
 };
 

@@ -17,3 +17,5 @@ Program(
             Return(FunCallExpr(add, [LitExpr(int, 1):untyped, LitExpr(int, 2):untyped, ]):untyped);
     );
 )
+Type error: cannot convert type for assignment
+Type error: Incompatible types in assignment

@@ -12,7 +12,7 @@ void print_tabs(unsigned tabs) {
 
 void print_param_type_list(struct ParamTypeList* type_list){
   if (type_list == NULL) return;
-  print_type(&type_list->type);
+  print_type(type_list->type);
   printf(", ");
   print_param_type_list(type_list->next);
 }
@@ -280,7 +280,7 @@ void print_var_expr(struct VarExpr* var_expr){
 
 void print_args_list(struct ArgList* args_list){
   if (args_list == NULL) return;
-  print_expr(&args_list->arg);
+  print_expr(args_list->arg);
   printf(", ");
   print_args_list(args_list->next);
 }
@@ -564,7 +564,6 @@ void print_fun_dclr(struct FunctionDclr* fun_dclr, unsigned tabs){
   if (fun_dclr->type == NULL){
     printf("untyped");
   } else {
-    printf("");
     print_type(fun_dclr->type);
   }
   printf(",\n");
@@ -629,7 +628,7 @@ bool compare_types(struct Type* a, struct Type* b) {
       struct ParamTypeList* param_b = fun_b->param_types;
 
       while (param_a != NULL && param_b != NULL) {
-        if (!compare_types(&param_a->type, &param_b->type)) {
+        if (!compare_types(param_a->type, param_b->type)) {
           return false;
         }
         param_a = param_a->next;

@@ -19,6 +19,7 @@ bool label_loops(struct Program* prog) {
       struct FunctionDclr* func_dclr = &decl->dclr.dclr.fun_dclr;
       // only label if there is a body
       if (func_dclr->body != NULL) {
+        // Each function gets its own goto-label map and labeling pass.
         goto_labels = create_label_map(256);
 
         if (!label_block(func_dclr->name, func_dclr->body)) {
@@ -54,7 +55,7 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       enum LabelType prev_label_type = cur_label_type;
       struct Slice* prev_loop_label = cur_loop_label;
 
-      // entered a loop, update current label state
+      // Entered a loop: update current label state for break/continue.
       cur_loop_label = label;
       cur_label_type = LOOP;
 
@@ -81,7 +82,7 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       enum LabelType prev_label_type = cur_label_type;
       struct Slice* prev_loop_label = cur_loop_label;
 
-      // entered a loop, update current label state
+      // Entered a loop: update current label state for break/continue.
       cur_loop_label = label;
       cur_label_type = LOOP;
 
@@ -107,7 +108,7 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       enum LabelType prev_label_type = cur_label_type;
       struct Slice* prev_loop_label = cur_loop_label;
 
-      // entered a loop, update current label state
+      // Entered a loop: update current label state for break/continue.
       cur_loop_label = label;
       cur_label_type = LOOP;
 
@@ -133,7 +134,7 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       enum LabelType prev_label_type = cur_label_type;
       struct Slice* prev_switch_label = cur_switch_label;
 
-      // entered a switch, update current label state
+      // Entered a switch: update current label state for break/case/default.
       cur_switch_label = label;
       cur_label_type = SWITCH;
 
@@ -199,7 +200,7 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
         return false;
       }
 
-      // insert into label map
+      // Map user label -> unique label to avoid collisions across scopes.
       struct Slice* unique_label = make_unique_label(func_name, "goto");
       label_map_insert(goto_labels, stmt->statement.labeled_stmt.label, unique_label);
 
@@ -334,6 +335,7 @@ static bool resolve_stmt(struct Statement* stmt) {
     }
   } else if (stmt->type == GOTO_STMT) {
     struct GotoStmt* goto_stmt = &stmt->statement.goto_stmt;
+    // Replace user label with the unique label assigned during labeling.
     struct Slice* target_label = label_map_get(goto_labels, goto_stmt->label);
     if (target_label == NULL) {
       printf("Goto Resolution Error: Label ");
@@ -405,7 +407,7 @@ bool collect_cases_stmt(struct Statement* stmt){
       struct LitExpr* lit_expr = &case_stmt->expr->expr.lit_expr;
       int case_value = lit_expr->value.int_val;
 
-      // check for duplicate cases
+      // Check for duplicate case values within the current switch.
       struct CaseList* case_iter = current_case_list;
       while (case_iter != NULL) {
         if (case_iter->case_label.type == INT_CASE && case_iter->case_label.data == case_value) {
@@ -425,7 +427,7 @@ bool collect_cases_stmt(struct Statement* stmt){
       return collect_cases_stmt(case_stmt->statement);
     }
     case DEFAULT_STMT: {
-      // check if default case already exists
+      // Ensure only one default per switch.
       struct CaseList* case_iter = current_case_list;
       while (case_iter != NULL) {
         if (case_iter->case_label.type == DEFAULT_CASE) {
@@ -443,6 +445,7 @@ bool collect_cases_stmt(struct Statement* stmt){
       return collect_cases_stmt(default_stmt->statement);
     }
     case SWITCH_STMT: {
+      // Each switch statement collects its own case list.
       struct CaseList* prev_case_list = current_case_list;
       current_case_list = NULL;
 

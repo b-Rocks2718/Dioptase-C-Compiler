@@ -352,7 +352,7 @@ struct ArgList* parse_args(){
   struct Token* old_current = current;
   if ((arg = parse_expr())){
     struct ArgList* args = arena_alloc(sizeof(struct ArgList));
-    args->arg = *arg;
+    args->arg = arg;
     if (consume(COMMA)) args->next = parse_args();
     else if (consume(CLOSE_P)) args->next = NULL;
     else {
@@ -1339,7 +1339,7 @@ struct ParamTypeList* params_to_types(struct ParamList* params){
   struct ParamTypeList* tail = head;
   for (struct ParamList* cur = params; cur != NULL; cur = cur->next){
     struct ParamTypeList* node = arena_alloc(sizeof(struct ParamTypeList));
-    node->type = *cur->param.type;
+    node->type = cur->param.type;
     node->next = NULL;
     if (head == NULL) {
       head = node;

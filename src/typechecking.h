@@ -61,6 +61,8 @@ struct IdentAttr {
   struct IdentInit init;
 };
 
+// ------------------------- Typechecking Functions ------------------------- //
+
 bool typecheck_program(struct Program* program);
 
 bool typecheck_file_scope_dclr(struct Declaration* dclr);
@@ -69,7 +71,43 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr);
 
 bool typecheck_func(struct FunctionDclr* func_dclr);
 
+bool typecheck_init(struct Expr** init, struct Type* type);
+
 bool typecheck_expr(struct Expr* expr);
+
+bool typecheck_convert_expr(struct Expr* expr);
+
+bool typecheck_params(struct ParamList* params);
+
+bool typecheck_block(struct Block* block);
+
+bool typecheck_local_dclr(struct Declaration* dclr);
+
+bool typecheck_stmt(struct Statement* stmt);
+
+bool typecheck_local_var(struct VariableDclr* var_dclr);
+
+bool typecheck_for_init(struct ForInit* init_);
+
+bool typecheck_args(struct ArgList* args, struct ParamTypeList* params);
+
+// ------------------------- Type Utility Functions ------------------------- //
+
+bool is_arithmetic_type(struct Type* type);
+
+bool is_pointer_type(struct Type* type);
+
+bool convert_by_assignment(struct Expr** expr, struct Type* target_type);
+
+struct Type* get_common_type(struct Type* type1, struct Type* type2);
+
+struct Type* get_common_pointer_type(struct Expr* expr1, struct Expr* expr2);
+
+void convert_expr_type(struct Expr** expr, struct Type* target_type);
+
+bool is_lvalue(struct Expr* expr);
+
+// ------------------------- Symbol Table Functions ------------------------- //
 
 struct SymbolTable* create_symbol_table(size_t numBuckets);
 

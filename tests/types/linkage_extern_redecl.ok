@@ -1,0 +1,13 @@
+Program(
+    VarDclr(extern, int, shared_value);
+    VarDclr(extern, int, shared_value);
+    VarDclr(none, int, shared_value);
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            Return(Var(shared_value):int, main);
+    );
+)

@@ -1,0 +1,16 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int, x.0, LitExpr(int, 1):int);
+            VarDclr(none, int, y.1, LitExpr(int, 2):int);
+            VarDclr(none, int*, p.2, AddrOf(Var(x.0):int):int*);
+            VarDclr(none, int*, q.3, AddrOf(Var(y.1):int):int*);
+            ExprStmt(Assign(Var(p.2):int*, AddOp(Var(p.2):int*, LitExpr(int, 1):int):int*):int*);
+            ExprStmt(Assign(Var(q.3):int*, SubOp(Var(p.2):int*, LitExpr(int, 1):int):int*):int*);
+            Return(Dereference(Var(q.3):int*):int, main);
+    );
+)

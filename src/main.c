@@ -11,6 +11,7 @@
 #include "parser.h"
 #include "identifier_resolution.h"
 #include "label_resolution.h"
+#include "typechecking.h"
 #include "arena.h"
 
 int main(int argc, const char *const *const argv) {
@@ -20,6 +21,7 @@ int main(int argc, const char *const *const argv) {
     int print_preprocess = 0;
     int print_idents = 0;
     int print_labels = 0;
+    int print_types = 0;
     const char *filename = NULL;
     const char **cli_defines = malloc(argc * sizeof(char*));
     int num_defines = 0;
@@ -46,6 +48,10 @@ int main(int argc, const char *const *const argv) {
             print_labels = 1;
             continue;
         }
+        if (strcmp(arg, "-types") == 0) {
+            print_types = 1;
+            continue;
+        }
         if (strncmp(arg, "-D", 2) == 0) {
             const char *def = arg + 2;
             if (def[0] == '\0') {
@@ -58,7 +64,7 @@ int main(int argc, const char *const *const argv) {
         }
         if (arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-loops] [-DNAME[=value]] <file name>\n", argv[0]);
+            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-DNAME[=value]] <file name>\n", argv[0]);
             free(cli_defines);
             exit(1);
         }
@@ -67,13 +73,13 @@ int main(int argc, const char *const *const argv) {
             continue;
         }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-loops] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
 
     if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-loops] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
@@ -166,6 +172,16 @@ int main(int argc, const char *const *const argv) {
         arena_destroy();
         return 4;
     } else if (print_labels) {
+        print_prog(prog);
+    }
+
+    if (!typecheck_program(prog)) {
+        fprintf(stderr, "Typechecking failed\n");
+        free(preprocessed);
+        destroy_token_array(tokens);
+        arena_destroy();
+        return 5;
+    } else if (print_types) {
         print_prog(prog);
     }
     

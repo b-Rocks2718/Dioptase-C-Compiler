@@ -5,6 +5,8 @@
 
 struct SymbolTable* global_symbol_table = NULL;
 
+// ------------------------- Typechecking Functions ------------------------- //
+
 bool typecheck_program(struct Program* program) {
   global_symbol_table = create_symbol_table(1024);
 
@@ -33,7 +35,7 @@ bool typecheck_file_scope_dclr(struct Declaration* dclr) {
 
 bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
   enum IdentInitType init_type = -1;
-  // init type of new declaration
+  // Infer file-scope initialization status from storage class and initializer.
   if (var_dclr->init != NULL) {
     init_type = INITIAL;
   } else if (var_dclr->storage != EXTERN) {
@@ -61,7 +63,7 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
       }
     }
 
-    if (!typecheck_expr(var_dclr->init)) {
+    if (!typecheck_init(&var_dclr->init, var_dclr->type)) {
       return false;
     }
   }
@@ -101,11 +103,8 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
       return false;
     }
 
-    // by this point, we know the types match and linkage is consistent
-
-    // the only case where we need to update the symbol table is if
-    // we are upgrading the initialization status
-    // the ordering is NO_INIT < TENTATIVE < INITIAL
+  // By this point, types and linkage match; update only if init state improves.
+  // Ordering is NO_INIT < TENTATIVE < INITIAL.
 
     if (init_type > entry->attrs->init.init_type) {
       // upgrade init type
@@ -137,517 +136,890 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
 
   return true;
 }
-
-/*
-typecheckFunc :: AST.FunctionDclr -> StateT SymbolTable Result FunctionDclr
-typecheckFunc (AST.FunctionDclr name type_  mStorage params mBody) = do
-  let hasBody = case mBody of
-        Just _ -> True
-        Nothing -> False
-      global = mStorage /= Just Static
-  when (isArrayType type_) $
-    lift (Err $ "Semantics Error: function " ++ show name ++ " returns an array")
-  let newParams = processFunParam <$> params
-  maps <- get
-  case lookup name maps of
-    Just (oldType, oldAttrs) -> do
-      let (alreadyDefined, oldGlobal) = getFunAttrs oldAttrs
-      if isFunc oldType && oldType /= type_ then
-        if isFunc oldType
-          then lift (Err $ "Semantics Error: Incompatible function declarations for " ++ show name ++
-            ": " ++ show oldType ++ " /= " ++ show type_)
-        else do
-          -- function shadows variable, so we add to the map instead of replacing the old def
-          let attrs = FunAttr (hasBody || alreadyDefined) global
-          put $ replace name (type_, attrs) maps
-      else if oldGlobal && mStorage == Just Static
-        then lift (Err $ "Semantics Error: Static function declaration follows non-static for function " ++ show name)
-      else if hasBody && alreadyDefined
-        then lift (Err $ "Semantics Error: Multiple definitions for function " ++ show name)
-      else do
-        let attrs = FunAttr (hasBody || alreadyDefined) global
-        put $ replace name (type_, attrs) maps
-    Nothing -> do
-      let attrs = FunAttr hasBody global
-      put $ (name, (type_, attrs)) : maps
-
-  typedParams <- typecheckParams newParams
-  typedBody <- liftMaybe typecheckBlock mBody
-  return (FunctionDclr name type_ mStorage typedParams typedBody)
-*/
   
 bool typecheck_func(struct FunctionDclr* func_dclr) {
   struct SymbolEntry* entry = symbol_table_get(global_symbol_table, func_dclr->name);
 
   if (entry == NULL) {
-    // new function declaration
+    // First declaration/definition of this function.
     struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
     attrs->attr_type = FUN_ATTR;
     attrs->is_defined = (func_dclr->body != NULL);
     attrs->is_global = (func_dclr->storage != STATIC);
     symbol_table_insert(global_symbol_table, func_dclr->name, func_dclr->type, attrs);
   } else {
+    // ensure the existing entry is a function
+    if (entry->type->type != FUN_TYPE) {
+      printf("Type error: Variable %.*s redeclared as function\n",
+             (int)func_dclr->name->len, func_dclr->name->start);
+      return false;
+    }
 
+    // ensure both declarations have the same type
+    if (!compare_types(entry->type, func_dclr->type)) {
+      printf("Type error: Conflicting declarations for function %.*s\n",
+             (int)func_dclr->name->len, func_dclr->name->start);
+      return false;
+    }
+
+    // check for duplicate definitions
+    if (entry->attrs->is_defined && func_dclr->body != NULL) {
+      printf("Type error: Multiple definitions for function %.*s\n",
+             (int)func_dclr->name->len, func_dclr->name->start);
+      return false;
+    }
+
+    // check for conflicting linkage
+    bool global = (func_dclr->storage != STATIC);
+    if (entry->attrs->is_global != global) {
+      printf("Type error: Conflicting function linkage for function %.*s\n",
+             (int)func_dclr->name->len, func_dclr->name->start);
+      return false;
+    }
+
+    // update definition status
+    if (func_dclr->body != NULL) {
+      entry->attrs->is_defined = true;
+    }
   }
 
-  return false;
+  // Parameters share the same symbol table as the body in this pass.
+  if (!typecheck_params(func_dclr->params)) {
+    return false;
+  }
+
+  if (func_dclr->body != NULL) {
+    // typecheck function body
+    if (!typecheck_block(func_dclr->body)) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
-/*
-typecheckParams :: [AST.VariableDclr] -> StateT SymbolTable Result [VariableDclr]
-typecheckParams params = do
-  maps <- get
-  put $ maps ++ paramMaps params
-  foldr typecheckParamsFold (pure []) params
+bool typecheck_params(struct ParamList* params) {
+  struct ParamList* cur = params;
+  while (cur != NULL) {
+    // ensure each parameter has no initializer
+    if (cur->param.init != NULL) {
+      printf("Type error: Function parameter %.*s should not have an initializer\n",
+             (int)cur->param.name->len, cur->param.name->start);
+      return false;
+    }
 
-typecheckParamsFold :: AST.VariableDclr ->
-    StateT SymbolTable Result [VariableDclr] ->
-    StateT SymbolTable Result [VariableDclr]
-typecheckParamsFold (AST.VariableDclr name type_ Nothing Nothing) paramsState = do
-  params <- paramsState
-  return (VariableDclr name type_ Nothing Nothing : params)
-typecheckParamsFold _ _ = error "Compiler Error: function parameter should not have initializer"
+    // Add parameters as locals so body expressions can reference them.
+    struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
+    attrs->attr_type = LOCAL_ATTR;
+    attrs->is_defined = true;
+    attrs->is_global = false;
+    symbol_table_insert(global_symbol_table, cur->param.name, cur->param.type, attrs);
 
-paramMaps :: [AST.VariableDclr] -> SymbolTable
-paramMaps = foldr paramMapsFold []
+    cur = cur->next;
+  }
+  return true;
+}
 
-paramMapsFold :: AST.VariableDclr -> SymbolTable -> SymbolTable
-paramMapsFold (AST.VariableDclr name type_ Nothing Nothing) table =
-  (name, (type_, LocalAttr)) : table
-paramMapsFold _ _ = error "Compiler Error: function parameter should not have initializer"
-*/
+bool typecheck_block(struct Block* block) {
+  struct Block* cur = block;
+  while (cur != NULL) {
+    switch (cur->item->type) {
+      case DCLR_ITEM:
+        // typecheck local declaration
+        if (!typecheck_local_dclr(cur->item->item.dclr)) {
+          return false;
+        }
+        break;
+      case STMT_ITEM:
+        // typecheck statement
+        if (!typecheck_stmt(cur->item->item.stmt)) {
+          return false;
+        }
+        break;
+      default:
+        printf("Type error: Unknown block item type in typecheck_block\n");
+        return false; // Unknown block item type
+    }
+    cur = cur->next;
+  }
+  return true;
+}
 
-/*
-typecheckBlock :: AST.Block -> StateT SymbolTable Result Block
-typecheckBlock (AST.Block items) = Block <$> foldl' typecheckBlockFold (return []) items
+bool typecheck_stmt(struct Statement* stmt) {
+  switch (stmt->type) {
+    // Placeholder implementation
+    case RETURN_STMT: {
+      if (!typecheck_convert_expr(stmt->statement.ret_stmt.expr)) {
+        return false;
+      }
 
-typecheckBlockFold :: StateT SymbolTable Result [BlockItem] -> AST.BlockItem ->
-  StateT SymbolTable Result [BlockItem]
-typecheckBlockFold oldState item = do
-  typedBlocks <- oldState
-  typedBlock <- typecheckBlockItem item
-  return (append typedBlocks typedBlock)
-*/
+      // Ensure the return value can be converted to the function's return type.
+      struct SymbolEntry* entry = symbol_table_get(global_symbol_table, stmt->statement.ret_stmt.func);
+      if (entry == NULL) {
+        printf("Type error: Unknown function in return statement\n");
+        return false;
+      }
+      struct Type* func_type = entry->type;
+      struct Type* ret_type = func_type->type_data.fun_type.return_type;
 
-/*
-typecheckBlockItem :: AST.BlockItem -> StateT SymbolTable Result BlockItem
-typecheckBlockItem item = case item of
-  AST.StmtBlock stmt -> StmtBlock <$> typecheckStmt stmt
-  AST.DclrBlock dclr -> DclrBlock <$> typecheckLocalDclr dclr
-*/
+      if (!convert_by_assignment(&stmt->statement.ret_stmt.expr, ret_type)) {
+        printf("Type error: Incompatible return type in return statement\n");
+        return false;
+      }
 
-/*
-typecheckStmt :: AST.Stmt -> StateT SymbolTable Result Stmt
-typecheckStmt stmt = case stmt of
-  AST.RetStmt expr mFunc -> do
-    typedExpr <- typecheckAndConvert expr
-    maps <- get
-    let retType = case lookup (fromJust mFunc) maps of
-            (Just (FunType _ type_, _)) -> type_
-            _ -> error "Compiler Error: this should be a function declaration"
-    retVal <- case convertByAssignment typedExpr retType of
-      Ok v -> return v
-      other -> lift other
-    return (RetStmt retVal)
-  AST.ExprStmt expr -> ExprStmt <$> typecheckAndConvert expr
-  AST.IfStmt expr stmt1 mStmt2 -> do
-    typedStmt2 <- liftMaybe typecheckStmt mStmt2
-    typedExpr <- typecheckAndConvert expr
-    typedStmt1 <- typecheckStmt stmt1
-    return (IfStmt typedExpr typedStmt1 typedStmt2)
-  AST.GoToStmt label -> return (GoToStmt label)
-  AST.LabeledStmt name stmt' -> LabeledStmt name <$> typecheckStmt stmt'
-  AST.CompoundStmt block -> CompoundStmt <$> typecheckBlock block
-  AST.BreakStmt label -> return (BreakStmt label)
-  AST.ContinueStmt label -> return (ContinueStmt label)
-  AST.WhileStmt expr stmt' label -> do
-    typedExpr <- typecheckAndConvert expr
-    typedStmt <- typecheckStmt stmt'
-    return (WhileStmt typedExpr typedStmt label)
-  AST.DoWhileStmt stmt' expr label -> do
-    typedStmt <- typecheckStmt stmt'
-    typedExpr <- typecheckAndConvert expr
-    return (DoWhileStmt typedStmt typedExpr label)
-  AST.ForStmt init_ mExpr1 mExpr2 stmt' label -> do
-    typedInit <- typecheckForInit init_
-    typedExpr1 <- liftMaybe typecheckAndConvert mExpr1
-    typedExpr2 <- liftMaybe typecheckAndConvert mExpr2
-    typedStmt <- typecheckStmt stmt'
-    return (ForStmt typedInit typedExpr1 typedExpr2 typedStmt label)
-  AST.SwitchStmt expr stmt' label cases -> do
-    typedExpr <- typecheckAndConvert expr
-    typedStmt <- typecheckStmt stmt'
-    if isArithmeticType (getExprType typedExpr) then
-      return (SwitchStmt typedExpr typedStmt label cases)
-    else
-      lift (Err "Switch condition must have arithmetic type")
-  AST.CaseStmt expr stmt' label -> do
-    typedStmt <- typecheckStmt stmt'
-    typedExpr <- typecheckAndConvert expr
-    return (CaseStmt typedExpr typedStmt label)
-  AST.DefaultStmt stmt' label -> do
-    typedStmt <- typecheckStmt stmt'
-    return (DefaultStmt typedStmt label)
-  AST.NullStmt -> return NullStmt
-*/
+      break;
+    }
+    case EXPR_STMT: {
+      if (!typecheck_convert_expr(stmt->statement.expr_stmt.expr)) {
+        return false;
+      }
+      break;
+    }
+    case IF_STMT: {
+      if (!typecheck_convert_expr(stmt->statement.if_stmt.condition)) {
+        return false;
+      }
 
-/*
-typecheckForInit :: AST.ForInit -> StateT SymbolTable Result ForInit
-typecheckForInit init_ = case init_ of
-  AST.InitDclr dclr -> InitDclr <$> typecheckLocalVar dclr
-  AST.InitExpr (Just expr) -> InitExpr . Just <$> typecheckAndConvert expr
-  AST.InitExpr Nothing -> return (InitExpr Nothing)
-*/
+      if (!is_arithmetic_type(stmt->statement.if_stmt.condition->value_type)) {
+        printf("Type error: If condition must have arithmetic type\n");
+        return false;
+      }
 
-/*
-typecheckLocalDclr :: AST.Declaration -> StateT SymbolTable Result Declaration
-typecheckLocalDclr dclr = case dclr of
-  AST.VarDclr v -> VarDclr <$> typecheckLocalVar v
-  AST.FunDclr f -> FunDclr <$> typecheckFunc f
-*/
+      if (!typecheck_stmt(stmt->statement.if_stmt.if_stmt)) {
+        return false;
+      }
+      if (stmt->statement.if_stmt.else_stmt != NULL) {
+        if (!typecheck_stmt(stmt->statement.if_stmt.else_stmt)) {
+          return false;
+        }
+      }
+      break;
+    }
+    case GOTO_STMT: {
+      // nothing to typecheck
+      break;
+    }
+    case LABELED_STMT: {
+      if (!typecheck_stmt(stmt->statement.labeled_stmt.stmt)) {
+        return false;
+      }
+      break;
+    }
+    case WHILE_STMT: {
+      if (!typecheck_convert_expr(stmt->statement.while_stmt.condition)) {
+        return false;
+      }
 
-/*
-getName :: String -> String
-getName = show . takeWhile (/= '.')
-*/
+      if (!is_arithmetic_type(stmt->statement.while_stmt.condition->value_type)) {
+        printf("Type error: While condition must have arithmetic type\n");
+        return false;
+      }
 
-/*
-typecheckLocalVar :: AST.VariableDclr -> StateT SymbolTable Result VariableDclr
-typecheckLocalVar (AST.VariableDclr v type_ mStorage mInit) = do
-  maps <- get
-  if mStorage == Just Extern then
-    if isJust mInit then
-      lift (Err $ "Initializer on local extern variable declaration for variable " ++ getName v)
-    else case lookup v maps of
-      Nothing -> do
-        put $ (v, (type_, StaticAttr NoInit True)) : maps -- add v to symbol table
-        return (VariableDclr v type_ mStorage Nothing) -- mExpr was Nothing, no need to typecheck
-      Just (FunType _ _, _) -> lift (Err $ "Function " ++ v ++ " redeclared as variable")
-      Just (oldType, _) ->
-        if type_ == oldType then
-          return (VariableDclr v type_ mStorage Nothing) -- mExpr was Nothing, no need to typecheck
-        else
-          lift (Err $ "Conflicting types for variable " ++ getName v)
-  else if mStorage == Just Static then
-    case isInitConst type_ <$> mInit of
-      Just (Just i) -> do -- the expr was constant, so we're good
-        put $ (v, (type_, StaticAttr (Initial i) False)) : maps
-        e <- liftMaybe (typecheckInit type_) mInit
-        return (VariableDclr v type_ mStorage e)
-      Just Nothing -> lift (Err $ "Non -constant initializer on local static variable " ++ getName v)
-      Nothing -> do -- there was no expr initializer
-        put $ (v, (type_, StaticAttr (Initial $ intStaticInit type_ 0) True)) : maps
-        return (VariableDclr v type_ mStorage Nothing)
-  else do -- it's a local variable, and we need to typecheck the initializer
-    put ((v, (type_, LocalAttr)) : maps)
-    typedInit <- liftMaybe (typecheckInit type_) mInit
-    return (VariableDclr v type_ mStorage typedInit)
-*/
+      if (!typecheck_stmt(stmt->statement.while_stmt.statement)) {
+        return false;
+      }
+      break;
+    }
+    case DO_WHILE_STMT: {
+      if (!typecheck_stmt(stmt->statement.do_while_stmt.statement)) {
+        return false;
+      }
+      if (!typecheck_convert_expr(stmt->statement.do_while_stmt.condition)) {
+        return false;
+      }
 
-/*
-typecheckAndConvert :: AST.Expr -> StateT SymbolTable Result Expr
-typecheckAndConvert expr = do
-  typedExpr <- typecheckExpr expr
-  case getExprType typedExpr of
-    ArrayType type_ _ -> return (AddrOf typedExpr (PointerType type_))
-    _ -> return typedExpr
-*/
+      if (!is_arithmetic_type(stmt->statement.do_while_stmt.condition->value_type)) {
+        printf("Type error: Do-while condition must have arithmetic type\n");
+        return false;
+      }
 
-/*
-typecheckInit :: Type_ -> AST.VarInit -> StateT SymbolTable Result VarInit
-typecheckInit targetType init_ = case (targetType, init_) of
-  (_, AST.SingleInit expr) -> do
-    typedExpr <- typecheckAndConvert expr
-    let castExpr = convertByAssignment typedExpr targetType
-    case castExpr of
-      Ok e -> return (SingleInit e targetType)
-      _ -> lift (Err "Semantics Error: invalid initializer 1")
-  (ArrayType inner size, AST.CompoundInit inits) -> do
-    when (length inits > size) $ 
-      lift (Err "Semantics Error: initializer list contains too many values")
-    resolved <- traverse (typecheckInit inner) inits
-    -- pad with 0s
-    let padded = take size (resolved ++ repeat (zeroInitializer inner))
-    return (CompoundInit padded targetType)
-  _ -> lift (Err "Semantics Error: invalid initializer 2")
-*/
+      break;
+    }
+    case FOR_STMT: {
+      // Each part is optional, but any present expressions must be typed.
+      if (!typecheck_for_init(stmt->statement.for_stmt.init)) {
+        return false;
+      }
+      if (stmt->statement.for_stmt.condition != NULL) {
+        if (!typecheck_convert_expr(stmt->statement.for_stmt.condition)) {
+          return false;
+        }
+      }
+      if (stmt->statement.for_stmt.end != NULL) {
+        if (!typecheck_convert_expr(stmt->statement.for_stmt.end)) {
+          return false;
+        }
+      }
+      if (!typecheck_stmt(stmt->statement.for_stmt.statement)) {
+        return false;
+      }
+      break;
+    }
+    case SWITCH_STMT: {
+      if (!typecheck_convert_expr(stmt->statement.switch_stmt.condition)) {
+        return false;
+      }
 
-/*
-typecheckExpr :: AST.Expr -> StateT SymbolTable Result Expr
-typecheckExpr e = case e of
-  -- pointers support == and !=,
-  -- so they are handled slightly differently
-  AST.Binary BoolEq left right -> do
-    -- typecheck left and right expressions
-    typedLeft <- typecheckAndConvert left
-    typedRight <- typecheckAndConvert right
-    let leftType = getExprType typedLeft
-        rightType = getExprType typedRight
-        -- figure out the common type to cast to
-        commonTypeResult =
-          if isPointerType leftType || isPointerType rightType
-          then getCommonPointerType typedLeft typedRight
-          else return $ getCommonType leftType rightType
-    commonType <- case commonTypeResult of
-      Ok t -> return t
-      Err err -> lift (Err err) -- pointer cast may fail
-      Fail -> lift Fail
-    let convertedLeft = convertExprType typedLeft commonType
-        convertedRight = convertExprType typedRight commonType
-    return (Binary BoolEq convertedLeft convertedRight IntType)
-  AST.Binary BoolNeq left right -> do
-    typedLeft <- typecheckAndConvert left
-    typedRight <- typecheckAndConvert right
-    let leftType = getExprType typedLeft
-        rightType = getExprType typedRight
-        commonTypeResult =
-          if isPointerType leftType || isPointerType rightType
-          then getCommonPointerType typedLeft typedRight
-          else return $ getCommonType leftType rightType
-    commonType <- case commonTypeResult of
-      Ok t -> return t
-      Err err -> lift (Err err)
-      Fail -> lift Fail
-    let convertedLeft = convertExprType typedLeft commonType
-        convertedRight = convertExprType typedRight commonType
-    return (Binary BoolNeq convertedLeft convertedRight IntType)
-  AST.Binary AddOp left right -> do
-    typedLeft <- typecheckAndConvert left
-    typedRight <- typecheckAndConvert right
-    let leftType = getExprType typedLeft
-        rightType = getExprType typedRight
-    if isArithmeticType leftType && isArithmeticType rightType then do
-      let commonType = getCommonType leftType rightType
-          convertedLeft = convertExprType typedLeft commonType
-          convertedRight = convertExprType typedRight commonType
-      return (Binary AddOp convertedLeft convertedRight commonType)
-    else if (isArithmeticType leftType && isPointerType rightType) ||
-            (isPointerType leftType && isArithmeticType rightType) then
-      return (Binary AddOp typedLeft typedRight leftType)
-    else lift (Err "Semantics Error: Invalid pointer arithmetic")
-  AST.Binary PlusEqOp left right -> do
-    typedLeft <- typecheckAndConvert left
-    typedRight <- typecheckAndConvert right
-    let leftType = getExprType typedLeft
-        rightType = getExprType typedRight
-    if isArithmeticType leftType && isArithmeticType rightType then do
-      let commonType = getCommonType leftType rightType
-          convertedLeft = convertExprType typedLeft commonType
-          convertedRight = convertExprType typedRight commonType
-      return (Binary PlusEqOp convertedLeft convertedRight commonType)
-    else if (isArithmeticType leftType && isPointerType rightType) ||
-            (isPointerType leftType && isArithmeticType rightType) then
-      return (Binary PlusEqOp typedLeft typedRight leftType)
-    else lift (Err "Semantics Error: Invalid pointer arithmetic")
-  AST.Binary SubOp left right -> do
-    typedLeft <- typecheckAndConvert left
-    typedRight <- typecheckAndConvert right
-    let leftType = getExprType typedLeft
-        rightType = getExprType typedRight
-    if isArithmeticType leftType && isArithmeticType rightType then do
-      let commonType = getCommonType leftType rightType
-          convertedLeft = convertExprType typedLeft commonType
-          convertedRight = convertExprType typedRight commonType
-      return (Binary SubOp convertedLeft convertedRight commonType)
-    else if isPointerType leftType && isArithmeticType rightType then
-      return (Binary SubOp typedLeft typedRight leftType)
-    else lift (Err "Semantics Error: Invalid pointer arithmetic")
-  AST.Binary MinusEqOp left right -> do
-    typedLeft <- typecheckAndConvert left
-    typedRight <- typecheckAndConvert right
-    let leftType = getExprType typedLeft
-        rightType = getExprType typedRight
-    if isArithmeticType leftType && isArithmeticType rightType then do
-      let commonType = getCommonType leftType rightType
-          convertedLeft = convertExprType typedLeft commonType
-          convertedRight = convertExprType typedRight commonType
-      return (Binary MinusEqOp convertedLeft convertedRight commonType)
-    else if isPointerType leftType && isArithmeticType rightType then
-      return (Binary MinusEqOp typedLeft typedRight leftType)
-    else lift (Err "Semantics Error: Invalid pointer arithmetic")
-  AST.Binary op left right -> do
-    typedLeft <- typecheckAndConvert left
-    typedRight <- typecheckAndConvert right
-    if op == BoolAnd || op == BoolOr
-      then return (Binary op typedLeft typedRight AST.IntType)
-    else do
-      let leftType = getExprType typedLeft
-          rightType = getExprType typedRight
-      when (isPointerType leftType || isPointerType rightType) $
-        lift (Err "Semantics Error: Invalid pointer arithmetic")
-      let commonType = getCommonType leftType rightType
-          convertedLeft = convertExprType typedLeft commonType
-          convertedRight = convertExprType typedRight commonType
-      return (Binary op convertedLeft convertedRight $
-        if op `elem` AST.relationalOps then
-          IntType
-        else
-          commonType)
-  AST.Assign left right -> do
-    typedLeft <- typecheckAndConvert left
-    unless (isLValue typedLeft)
-      (lift $ Err "Semantics Error: Cannot assign to non-lvalue")
-    typedRight <- typecheckAndConvert right
-    -- cast right expr to left expr
-    let leftType = getExprType typedLeft
-        convertedRightResult = convertByAssignment typedRight leftType
-    convertedRight <- case convertedRightResult of
-      Ok r -> return r
-      other -> lift other
-    return (Assign typedLeft convertedRight leftType)
-  AST.PostAssign expr op -> do
-    typedExpr <- typecheckAndConvert expr
-    return (PostAssign typedExpr op (getExprType typedExpr))
-  AST.Conditional c left right -> do
-    typedC <- typecheckAndConvert c
-    typedLeft <- typecheckAndConvert left
-    typedRight <- typecheckAndConvert right
-    -- find common type for left and right expr
-    let leftType = getExprType typedLeft
-        rightType = getExprType typedRight
-        commonTypeResult =
-          if isPointerType leftType || isPointerType rightType
-          then getCommonPointerType typedLeft typedRight
-          else return $ getCommonType leftType rightType
-    commonType <- case commonTypeResult of
-      Ok t -> return t
-      Err err -> lift (Err err)
-      Fail -> lift Fail
-    let convertedLeft = convertExprType typedLeft commonType
-        convertedRight = convertExprType typedRight commonType
-    return (Conditional typedC convertedLeft convertedRight commonType)
-  AST.FunctionCall name args -> do
-    maps <- get
-    case lookup name maps of
-      Just (rsltType, _) -> case rsltType of
-        AST.FunType paramTypes retType ->
-          if length paramTypes /= length args then
-            lift (Err $ "Function " ++ show name ++ " called with wrong number of arguments")
-          else do
-            argsRslt <- typecheckArgs args paramTypes
-            return (FunctionCall name argsRslt retType)
-        _ -> lift
-          (Err $ "Variable " ++ show (head $ splitOn "." name) ++ " cannot be used as a function")
-      Nothing -> error $ "Compiler Error: missed function declaration for " ++ show name
-  AST.Var v -> do
-    maps <- get
-    case lookup v maps of
-      Just (rsltType, _) -> case rsltType of
-        AST.FunType _ _ -> lift (Err $ "Function " ++ show v ++ " cannot be used as a variable")
-        type_ -> return (Var v type_)
-      Nothing -> error $ "Compiler Error: missed variable declaration for " ++ show v
-  AST.Unary op expr' -> do
-    rslt <- typecheckAndConvert expr'
-    when (isPointerType (getExprType rslt) &&
-          op `elem` [Negate, Complement]) $
-      lift (Err "Semantics Error: invalid pointer operation")
-    let type_ = if op == BoolNot
-        then IntType
-        else getExprType rslt
-    return (Unary op rslt type_)
-  AST.Lit c -> case c of
-    AST.ConstInt _ -> return (Lit c IntType)
-    AST.ConstUInt _ -> return (Lit c UIntType)
-    AST.ConstLong _ -> return (Lit c LongType)
-    AST.ConstULong _ -> return (Lit c ULongType)
-  AST.Cast target expr -> do
-    when (isArrayType target) $
-      lift (Err "Semantics Error: cannot cast to array type")
-    rslt <- typecheckAndConvert expr
-    return (Cast target rslt)
-  AST.AddrOf inner -> do
-    typedInner <- typecheckExpr inner
-    if isLValue typedInner then do
-      let referenced = getExprType typedInner
-      return (AddrOf typedInner (PointerType referenced))
-    else lift (Err $ "Semantics Error: Can't take the address of a non-lvalue " ++ show inner)
-  AST.Dereference inner -> do
-    typedInner <- typecheckAndConvert inner
-    case getExprType typedInner of
-      PointerType referenced -> return (Dereference typedInner referenced)
-      _ -> lift (Err $ "Semantics Error: Cannot dereference non-pointer " ++ show inner)
-  AST.Subscript left right -> do
-    typedLeft <- typecheckAndConvert left
-    typedRight <- typecheckAndConvert right
-    let leftType = getExprType typedLeft
-        rightType = getExprType typedRight
-    if isPointerType leftType && isArithmeticType rightType then
-      return (Subscript typedLeft typedRight (getRefType leftType))
-    else if isArithmeticType leftType && isPointerType rightType then
-      return (Subscript typedRight typedLeft (getRefType rightType))
-    else lift (Err "Semantics Error: Invalid subscript use")
-*/
+      if (!is_arithmetic_type(stmt->statement.switch_stmt.condition->value_type)) {
+        printf("Type error: Switch condition must have arithmetic type\n");
+        return false;
+      }
+
+      if (!typecheck_stmt(stmt->statement.switch_stmt.statement)) {
+        return false;
+      }
+      break;
+    }
+    case CASE_STMT: {
+      if (!typecheck_convert_expr(stmt->statement.case_stmt.expr)) {
+        return false;
+      }
+      if (!typecheck_stmt(stmt->statement.case_stmt.statement)) {
+        return false;
+      }
+      break;
+    }
+    case DEFAULT_STMT: {
+      if (!typecheck_stmt(stmt->statement.default_stmt.statement)) {
+        return false;
+      }
+      break;
+    }
+    case BREAK_STMT: {
+      // nothing to typecheck
+      break;
+    }
+    case CONTINUE_STMT: {
+      // nothing to typecheck
+      break;
+    }
+    case COMPOUND_STMT: {
+      if (!typecheck_block(stmt->statement.compound_stmt.block)) {
+        return false;
+      }
+      break;
+    }
+    case NULL_STMT: {
+      // nothing to typecheck
+      break;
+    }
+
+    default: {
+      printf("Type error: Unknown statement type in typecheck_stmt\n");
+      return false; // Unknown statement type
+    }
+  }
+
+  return true;
+}
+
+bool typecheck_for_init(struct ForInit* init_) {
+  switch (init_->type) {
+    case DCLR_INIT:
+      return typecheck_local_var(init_->init.dclr_init);
+    case EXPR_INIT:
+      if (init_->init.expr_init != NULL) {
+        return typecheck_convert_expr(init_->init.expr_init);
+      } else {
+        return true; // Nothing to typecheck
+      }
+    default:
+      printf("Type error: Unknown for init type in typecheck_for_init\n");
+      return false; // Unknown for init type
+  }
+}
+
+bool typecheck_local_dclr(struct Declaration* dclr) {
+  switch (dclr->type) {
+    case VAR_DCLR:
+      return typecheck_local_var(&dclr->dclr.var_dclr);
+    case FUN_DCLR:
+      return typecheck_func(&dclr->dclr.fun_dclr);
+    default:
+      printf("Type error: Unknown declaration type in typecheck_local_dclr\n");
+      return false; // Unknown declaration type
+  }
+}
+
+bool typecheck_local_var(struct VariableDclr* var_dclr) {
+  if (var_dclr->storage == EXTERN) {
+    // Local extern declarations just validate and/or introduce a global symbol.
+    if (var_dclr->init != NULL) {
+      printf("Type error: Initializer on local extern variable declaration for variable %.*s\n",
+             (int)var_dclr->name->len, var_dclr->name->start);
+      return false;
+    }
+
+    struct SymbolEntry* entry = symbol_table_get(global_symbol_table, var_dclr->name);
+    if (entry == NULL) {
+      // New extern declaration shares the global table but has no definition.
+      struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
+      attrs->attr_type = NO_INIT;
+      attrs->is_defined = false;
+      attrs->is_global = true;
+      symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
+    } else {
+      // ensure the existing entry is not a function
+      if (entry->type->type == FUN_TYPE) {
+        printf("Type error: Function %.*s redeclared as variable\n",
+               (int)var_dclr->name->len, var_dclr->name->start);
+        return false;
+      }
+
+      // ensure both declarations have the same type
+      if (!compare_types(entry->type, var_dclr->type)) {
+        printf("Type error: Conflicting declarations for variable %.*s\n",
+               (int)var_dclr->name->len, var_dclr->name->start);
+        return false;
+      }
+    }
+
+    return true;
+  } else if (var_dclr->storage == STATIC) {
+    // Local static behaves like a file-scope object with local visibility.
+    if (var_dclr->init != NULL) {
+      if (!typecheck_init(&var_dclr->init, var_dclr->type)) {
+        return false;
+      }
+    }
+
+    struct SymbolEntry* entry = symbol_table_get(global_symbol_table, var_dclr->name);
+    if (entry == NULL) {
+      struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
+      attrs->attr_type = STATIC_ATTR;
+      attrs->is_defined = (var_dclr->init != NULL);
+      attrs->is_global = false;
+      attrs->init.init_type = INITIAL;
+      attrs->init.init_list = arena_alloc(sizeof(struct InitList));
+      attrs->init.init_list->value.int_type = INT_INIT; // assuming int type for simplicity
+      if (var_dclr->init != NULL) {
+        attrs->init.init_list->value.value = var_dclr->init->expr.lit_expr.value.int_val;
+      } else {
+        attrs->init.init_list->value.value = 0; // default initialization
+      }
+      symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
+    } else {
+      // ensure the existing entry is not a function
+      if (entry->type->type == FUN_TYPE) {
+        printf("Type error: Function %.*s redeclared as variable\n",
+               (int)var_dclr->name->len, var_dclr->name->start);
+        return false;
+      }
+
+      // ensure both declarations have the same type
+      if (!compare_types(entry->type, var_dclr->type)) {
+        printf("Type error: Conflicting declarations for variable %.*s\n",
+               (int)var_dclr->name->len, var_dclr->name->start);
+        return false;
+      }
+
+      // check for duplicate definitions
+      if (entry->attrs->is_defined && var_dclr->init != NULL) {
+        printf("Type error: Conflicting local static variable definitions for variable %.*s\n",
+               (int)var_dclr->name->len, var_dclr->name->start);
+        return false;
+      }
+
+      // update definition status
+      if (var_dclr->init != NULL) {
+        entry->attrs->is_defined = true;
+      }
+    }
+
+    return true;
+  } else {
+    // Regular local variable must be unique within the current function scope.
+    if (var_dclr->init != NULL) {
+      if (!typecheck_init(&var_dclr->init, var_dclr->type)) {
+        return false;
+      }
+    }
+
+    struct SymbolEntry* entry = symbol_table_get(global_symbol_table, var_dclr->name);
+    if (entry != NULL) {
+      printf("Type error: Duplicate local variable declaration for variable %.*s\n",
+             (int)var_dclr->name->len, var_dclr->name->start);
+      return false;
+    }
+
+    // add to symbol table
+    struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
+    attrs->attr_type = LOCAL_ATTR;
+    attrs->is_defined = true;
+    attrs->is_global = false;
+    symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
+  }
+
+  return true;
+}
+
+bool typecheck_convert_expr(struct Expr* expr) {
+  // will do more once I implement arrays
+  return typecheck_expr(expr);
+}
+
+bool typecheck_init(struct Expr** init, struct Type* type) {
+  if (*init == NULL) {
+    return true; // Nothing to typecheck
+  }
+
+  if (!typecheck_convert_expr(*init)) {
+    return false;
+  }
+
+  if (!convert_by_assignment(init, type)) {
+    return false;
+  }
+
+  return true;
+}
 
 bool typecheck_expr(struct Expr* expr) {
+  switch (expr->type) {
+    case BINARY: {
+      struct BinaryExpr* bin_expr = &expr->expr.bin_expr;
+      if (!typecheck_convert_expr(bin_expr->left)) {
+        return false;
+      }
+      if (!typecheck_convert_expr(bin_expr->right)) {
+        return false;
+      }
+
+      struct Type* left_type = bin_expr->left->value_type;
+      struct Type* right_type = bin_expr->right->value_type;
+
+      // Equality allows pointer comparisons; otherwise use arithmetic common type.
+      if (bin_expr->op == BOOL_EQ || bin_expr->op == BOOL_NEQ) {
+        struct Type* common_type = NULL;
+        if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
+          common_type = get_common_pointer_type(bin_expr->left, bin_expr->right);
+          if (common_type == NULL) {
+            printf("Type error: Incompatible pointer types in equality comparison\n");
+            return false;
+          }
+        } else {
+          common_type = get_common_type(left_type, right_type);
+          if (common_type == NULL) {
+            printf("Type error: Incompatible types in equality comparison\n");
+            return false;
+          }
+        }
+
+        convert_expr_type(&bin_expr->left, common_type);
+        convert_expr_type(&bin_expr->right, common_type);
+        expr->value_type = arena_alloc(sizeof(struct Type));
+        expr->value_type->type = INT_TYPE; // result type of equality comparison is int
+        return true;
+      }
+      else if (bin_expr->op == ADD_OP || bin_expr->op == PLUS_EQ_OP) {
+        if (is_arithmetic_type(left_type) && is_arithmetic_type(right_type)) {
+          struct Type* common_type = get_common_type(left_type, right_type);
+          convert_expr_type(&bin_expr->left, common_type);
+          convert_expr_type(&bin_expr->right, common_type);
+          expr->value_type = common_type;
+          return true;
+        } else if ((is_arithmetic_type(left_type) && is_pointer_type(right_type)) ||
+                   (is_pointer_type(left_type) && is_arithmetic_type(right_type))) {
+          // Pointer arithmetic yields a pointer.
+          expr->value_type = is_pointer_type(left_type) ? left_type : right_type;
+          return true;
+        } else {
+          printf("Type error: Invalid types for pointer arithmetic in addition\n");
+          return false;
+        }
+      }
+      else if (bin_expr->op == SUB_OP || bin_expr->op == MINUS_EQ_OP) {
+        if (is_arithmetic_type(left_type) && is_arithmetic_type(right_type)) {
+          struct Type* common_type = get_common_type(left_type, right_type);
+          convert_expr_type(&bin_expr->left, common_type);
+          convert_expr_type(&bin_expr->right, common_type);
+          expr->value_type = common_type;
+          return true;
+        } else if (is_pointer_type(left_type) && is_arithmetic_type(right_type)) {
+          // Pointer minus integer yields a pointer.
+          expr->value_type = left_type;
+          return true;
+        } else {
+          printf("Type error: Invalid types for pointer arithmetic in subtraction\n");
+          return false;
+        }
+      } 
+      else if (bin_expr->op == BOOL_AND || bin_expr->op == BOOL_OR) {
+        // Logical operators always yield int in this language subset.
+        expr->value_type = arena_alloc(sizeof(struct Type));
+        expr->value_type->type = INT_TYPE; // result type of logical operations is int
+        return true;
+      }
+      else {
+        if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
+          printf("Type error: Invalid pointer arithmetic in binary operation\n");
+          return false;
+        }
+        struct Type* common_type = get_common_type(left_type, right_type);
+        if (common_type == NULL) {
+          printf("Type error: Incompatible types in binary operation\n");
+          return false;
+        }
+        convert_expr_type(&bin_expr->left, common_type);
+        convert_expr_type(&bin_expr->right, common_type);
+        expr->value_type = arena_alloc(sizeof(struct Type));
+        if (bin_expr->op == BOOL_LE || bin_expr->op == BOOL_LEQ ||
+            bin_expr->op == BOOL_GE || bin_expr->op == BOOL_GEQ) {
+          expr->value_type->type = INT_TYPE; // result type of relational operations is int
+        } else {
+          expr->value_type = common_type;
+        }
+        return true;
+      }
+    }
+    case ASSIGN: {
+      struct AssignExpr* assign_expr = &expr->expr.assign_expr;
+      if (!typecheck_convert_expr(assign_expr->left)) {
+        return false;
+      }
+
+      if (!is_lvalue(assign_expr->left)) {
+        printf("Type error: Cannot assign to non-lvalue\n");
+        return false;
+      }
+
+      if (!typecheck_convert_expr(assign_expr->right)) {
+        return false;
+      }
+
+      if (!convert_by_assignment(&assign_expr->right, assign_expr->left->value_type)) {
+        printf("Type error: Incompatible types in assignment\n");
+        return false;
+      }
+
+      expr->value_type = assign_expr->left->value_type;
+      return true;
+    }
+    case POST_ASSIGN: {
+      struct PostAssignExpr* post_assign_expr = &expr->expr.post_assign_expr;
+      if (!typecheck_convert_expr(post_assign_expr->expr)) {
+        return false;
+      }
+
+      if (!is_lvalue(post_assign_expr->expr)) {
+        printf("Type error: Cannot apply post-increment/decrement to non-lvalue\n");
+        return false;
+      }
+
+      if (!is_arithmetic_type(post_assign_expr->expr->value_type) &&
+          !is_pointer_type(post_assign_expr->expr->value_type)) {
+        printf("Type error: Post-increment/decrement requires arithmetic or pointer type\n");
+        return false;
+      }
+
+      expr->value_type = post_assign_expr->expr->value_type;
+      return true;
+    }
+    case CONDITIONAL: {
+      struct ConditionalExpr* cond_expr = &expr->expr.conditional_expr;
+      if (!typecheck_convert_expr(cond_expr->condition)) {
+        return false;
+      }
+      if (!typecheck_convert_expr(cond_expr->left)) {
+        return false;
+      }
+      if (!typecheck_convert_expr(cond_expr->right)) {
+        return false;
+      }
+
+      struct Type* left_type = cond_expr->left->value_type;
+      struct Type* right_type = cond_expr->right->value_type;
+
+      // Find a compatible common type for the true/false arms.
+      struct Type* common_type = NULL;
+      if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
+        common_type = get_common_pointer_type(cond_expr->left, cond_expr->right);
+        if (common_type == NULL) {
+          printf("Type error: Incompatible pointer types in conditional expression\n");
+          return false;
+        }
+      } else {
+        common_type = get_common_type(left_type, right_type);
+        if (common_type == NULL) {
+          printf("Type error: Incompatible types in conditional expression\n");
+          return false;
+        }
+      }
+
+      convert_expr_type(&cond_expr->left, common_type);
+      convert_expr_type(&cond_expr->right, common_type);
+      expr->value_type = common_type;
+      return true;
+    }
+    case FUNCTION_CALL: {
+      struct SymbolEntry* entry = symbol_table_get(global_symbol_table, expr->expr.fun_call_expr.func_name);
+      if (entry == NULL) {
+        printf("Type error: Unknown function in function call\n");
+        return false;
+      }
+      struct Type* func_type = entry->type;
+      if (func_type->type != FUN_TYPE) {
+        printf("Type error: Variable %.*s cannot be used as a function\n",
+               (int)expr->expr.fun_call_expr.func_name->len, expr->expr.fun_call_expr.func_name->start);
+        return false;
+      }
+
+      // Arguments are converted by assignment to each parameter type.
+      struct ParamTypeList* param_types = func_type->type_data.fun_type.param_types;
+      if (!typecheck_args(expr->expr.fun_call_expr.args, param_types)) {
+        return false;
+      }
+      expr->value_type = func_type->type_data.fun_type.return_type;
+      return true;
+    }
+    case VAR: {
+      struct SymbolEntry* entry = symbol_table_get(global_symbol_table, expr->expr.var_expr.name);
+      if (entry == NULL) {
+        printf("Type error: Unknown variable %.*s\n",
+               (int)expr->expr.var_expr.name->len, expr->expr.var_expr.name->start);
+        return false;
+      }
+      if (entry->type->type == FUN_TYPE) {
+        printf("Type error: Function %.*s cannot be used as a variable\n",
+               (int)expr->expr.var_expr.name->len, expr->expr.var_expr.name->start);
+        return false;
+      }
+      expr->value_type = entry->type;
+      return true;
+    }
+    case UNARY: {
+      struct UnaryExpr* unary_expr = &expr->expr.un_expr;
+      if (!typecheck_convert_expr(unary_expr->expr)) {
+        return false;
+      }
+      struct Type* expr_type = unary_expr->expr->value_type;
+      if (is_pointer_type(expr_type) &&
+          (unary_expr->op == NEGATE || unary_expr->op == COMPLEMENT)) {
+        printf("Type error: Invalid pointer operation in unary expression\n");
+        return false;
+      }
+      if (unary_expr->op == BOOL_NOT) {
+        expr->value_type = arena_alloc(sizeof(struct Type));
+        expr->value_type->type = INT_TYPE;
+      } else {
+        expr->value_type = expr_type;
+      }
+      return true;
+    }
+    case LIT: {
+      struct LitExpr* lit_expr = &expr->expr.lit_expr;
+      expr->value_type = arena_alloc(sizeof(struct Type));
+      switch (lit_expr->type) {
+        case INT_CONST:
+          expr->value_type->type = INT_TYPE;
+          return true;
+        case UINT_CONST:
+          expr->value_type->type = UINT_TYPE;
+          return true;
+        case LONG_CONST:
+          expr->value_type->type = LONG_TYPE;
+          return true;
+        case ULONG_CONST:
+          expr->value_type->type = ULONG_TYPE;
+          return true;
+        default:
+          printf("Type error: Unknown literal type in typecheck_expr\n");
+          return false; // Unknown literal type
+      }
+    }
+    case CAST: {
+      struct CastExpr* cast_expr = &expr->expr.cast_expr;
+      if (!typecheck_convert_expr(cast_expr->expr)) {
+        return false;
+      }
+      expr->value_type = cast_expr->target;
+      return true;
+    }
+    case ADDR_OF: {
+      struct AddrOfExpr* addr_of_expr = &expr->expr.addr_of_expr;
+      if (!typecheck_convert_expr(addr_of_expr->expr)) {
+        return false;
+      }
+      if (!is_lvalue(addr_of_expr->expr)) {
+        printf("Type error: Cannot take the address of a non-lvalue\n");
+        return false;
+      }
+      struct Type* referenced = addr_of_expr->expr->value_type;
+      expr->value_type = arena_alloc(sizeof(struct Type));
+      expr->value_type->type = POINTER_TYPE;
+      expr->value_type->type_data.pointer_type.referenced_type = referenced;
+      return true;
+    }
+    case DEREFERENCE: {
+      struct DereferenceExpr* deref_expr = &expr->expr.deref_expr;
+      if (!typecheck_convert_expr(deref_expr->expr)) {
+        return false;
+      }
+      struct Type* expr_type = deref_expr->expr->value_type;
+      if (!is_pointer_type(expr_type)) {
+        printf("Type error: Cannot dereference non-pointer type\n");
+        return false;
+      }
+      expr->value_type = expr_type->type_data.pointer_type.referenced_type;
+      return true;
+    }
+    default: {
+      printf("Type error: Unknown expression type in typecheck_expr\n");
+      return false; // Unknown expression type
+    }
+  }
+}
+
+bool typecheck_args(struct ArgList* args, struct ParamTypeList* types) {
+  for (; args != NULL && types != NULL; args = args->next, types = types->next) {
+    if (!typecheck_convert_expr(args->arg)) {
+      return false;
+    }
+    if (!convert_by_assignment(&args->arg, types->type)) {
+      return false;
+    }
+  }
+  if (args != NULL || types != NULL) {
+    printf("Type error: Argument and parameter count mismatch\n");
+    return false;
+  }
+  return true;
+}
+
+// ------------------------- Type Utility Functions ------------------------- //
+
+bool is_arithmetic_type(struct Type* type) {
+  switch (type->type) {
+    case INT_TYPE:
+    case UINT_TYPE:
+    case LONG_TYPE:
+    case ULONG_TYPE:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool is_signed_type(struct Type* type) {
+  switch (type->type) {
+    case INT_TYPE:
+    case LONG_TYPE:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool is_pointer_type(struct Type* type) {
+  return type->type == POINTER_TYPE;
+}
+
+void convert_expr_type(struct Expr** expr, struct Type* target) {
+  if (!compare_types((*expr)->value_type, target)) {
+    struct Expr* new_expr = arena_alloc(sizeof(struct Expr));
+    new_expr->type = CAST;
+    new_expr->expr.cast_expr.target = target;
+    new_expr->expr.cast_expr.expr = *expr;
+    new_expr->value_type = target;
+    *expr = new_expr;
+  }
+}
+
+size_t get_type_size(struct Type* type) {
+  switch (type->type) {
+    case INT_TYPE:
+      return 4;
+    case UINT_TYPE:
+      return 4;
+    case LONG_TYPE:
+      return 8;
+    case ULONG_TYPE:
+      return 8;
+    case POINTER_TYPE:
+      return 8; // assuming 64-bit architecture
+    default:
+      return 0; // unknown type size
+  }
+}
+
+struct Type* get_common_type(struct Type* t1, struct Type* t2) {
+  if (compare_types(t1, t2)) {
+    return t1;
+  }
+
+  size_t size1 = get_type_size(t1);
+  size_t size2 = get_type_size(t2);
+
+  if (size1 == size2) {
+    if (is_signed_type(t1)) {
+      return t2;
+    } else {
+      return t1;
+    }
+  } else if (size1 > size2) {
+    return t1;
+  } else {
+    return t2;
+  }
+}
+
+bool is_lvalue(struct Expr* expr) {
+  switch (expr->type) {
+    case VAR:
+      return true;
+    case DEREFERENCE:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool is_null_pointer_constant(struct Expr* expr) {
+  if (expr->type == LIT) {
+    struct LitExpr* lit_expr = &expr->expr.lit_expr;
+    if (lit_expr->type == INT_CONST && lit_expr->value.int_val == 0) {
+      return true;
+    }
+  }
   return false;
 }
 
-/*
-convertExprType :: Expr -> Type_ -> Expr
-convertExprType expr type_ =
-  if getExprType expr == type_ then
-    expr
-  else Cast type_ expr
-*/
+struct Type* get_common_pointer_type(struct Expr* expr1, struct Expr* expr2) {
+  struct Type* t1 = expr1->value_type;
+  struct Type* t2 = expr2->value_type;
 
-/*
-typecheckArgs :: [AST.Expr] -> [Type_] -> StateT SymbolTable Result [Expr]
-typecheckArgs args types =
-  foldr typecheckArgsFold (return []) (zip args types)
+  if (compare_types(t1, t2)) {
+    return t1;
+  } else if (is_null_pointer_constant(expr1)) {
+    return t2;
+  } else if (is_null_pointer_constant(expr2)) {
+    return t1;
+  }
+  return NULL;
+}
 
-typecheckArgsFold :: (AST.Expr, Type_) ->
-  StateT SymbolTable Result [Expr] ->
-  StateT SymbolTable Result [Expr]
-typecheckArgsFold (arg, paramType) args = do
-  typedArg <- typecheckAndConvert arg
-  typedArgs <- args
-  convertedArg <- case convertByAssignment typedArg paramType of
-    Ok expr -> return expr
-    other -> lift other
-  return (convertedArg : typedArgs)
-*/
+bool convert_by_assignment(struct Expr** expr, struct Type* target) {
+  if (compare_types((*expr)->value_type, target)) {
+    return true;
+  }
 
-/*
--- finds the type to use for implicit casting
-getCommonType :: Type_ -> Type_ -> Type_
-getCommonType t1 t2
-  | t1 == t2 = t1
-  | typeSize t1 == typeSize t2 =
-    if isSigned t1 then t2 else t1
-  | typeSize t1 > typeSize t2 = t1
-  | otherwise = t2
+  // Apply the assignment conversion rules for arithmetic and null-pointer cases.
+  if (is_arithmetic_type((*expr)->value_type) && is_arithmetic_type(target)) {
+    // perform conversion
+    convert_expr_type(expr, target);
+    return true;
+  }
 
-isLValue :: Expr -> Bool
-isLValue expr = case expr of
-  Var _ _ -> True
-  Dereference _ _ -> True
-  Subscript {} -> True
-  _ -> False
-*/
+  if (is_pointer_type((*expr)->value_type) && is_pointer_type(target)
+     && is_null_pointer_constant(*expr)) {
+    // perform conversion (TODO: should really only allow this for null pointer constants)
+    convert_expr_type(expr, target);
+    return true;
+  }
 
-/*
-getCommonPointerType :: Expr -> Expr -> Result Type_
-getCommonPointerType expr1 expr2
-  | t1 == t2 = Ok t1
-  | isNullPointerConstant expr1 = Ok t2
-  | isNullPointerConstant expr2 = Ok t1
-  | otherwise = Err "Semantics Error: Expressions have incompatible types"
-  where t1 = getExprType expr1
-        t2 = getExprType expr2
-*/
-
-/*
-convertByAssignment :: Expr -> Type_ -> Result Expr
-convertByAssignment expr target
-  | getExprType expr == target =
-    return expr
-  | isArithmeticType (getExprType expr) && isArithmeticType target =
-    return (convertExprType expr target)
-  | isPointerType (getExprType expr) && isPointerType target = -- TODO: should really only allow this for null pointer constants
-    return (convertExprType expr target)
-  | otherwise =
-    Err "Semantics Error: cannot convert type for assignment"
-*/
+  printf("Type error: cannot convert type for assignment\n");
+  return false;
+}
 
 
 // ------------------------- Symbol Table Functions ------------------------- //
@@ -707,4 +1079,3 @@ bool symbol_table_contains(struct SymbolTable* hmap, struct Slice* key){
   }
   return false;
 }
-

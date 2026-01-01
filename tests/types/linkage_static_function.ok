@@ -1,0 +1,19 @@
+Program(
+    VarDclr(none, int, shared_value);
+    FunDclr(
+        helper,
+        storage=static
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            Return(Var(shared_value):int, helper);
+    );
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            Return(FunCallExpr(helper, []):int, main);
+    );
+)

@@ -24,7 +24,7 @@ bool resolve_prog(struct Program* prog) {
 
 bool resolve_args(struct ArgList* args){
   for (struct ArgList* arg = args; arg != NULL; arg = arg->next) {
-    if (!resolve_expr(&arg->arg)) {
+    if (!resolve_expr(arg->arg)) {
       printf("Identifier Resolution Error: Failed to resolve argument\n");
       return false;
     }
@@ -62,7 +62,7 @@ bool resolve_expr(struct Expr* expr) {
       bool from_current_scope = false;
       struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, expr->expr.var_expr.name, &from_current_scope);
       if (entry != NULL) {
-        // substitute in unique name for local var
+        // Substitute the unique name for locals so later passes can ignore scoping rules.
         expr->expr.var_expr.name = entry->entry_name;
         return true;
       } else {
@@ -74,6 +74,7 @@ bool resolve_expr(struct Expr* expr) {
       bool from_current_scope = false;
       struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, expr->expr.fun_call_expr.func_name, &from_current_scope);
       if (entry != NULL) {
+        // Functions are resolved by name only; arguments still need identifier resolution.
         return resolve_args(expr->expr.fun_call_expr.args);
       } else {
         printf("Identifier Resolution Error: Function has not been declared\n");
@@ -105,7 +106,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
       printf("Identifier Resolution Error: Multiple declarations for variable\n");
       return false;
     } else {
-      // declared in outer scope
+      // Declared in an outer scope; either allow extern or create a new unique local.
       if (var_dclr->storage == EXTERN) {
         // ok to redeclare as extern
         return true;
@@ -122,7 +123,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
       }
     }
   } else {
-    // not declared yet
+    // First declaration in this scope: insert and optionally resolve initializer.
     if (var_dclr->storage == EXTERN) {
       ident_stack_insert(global_ident_stack, var_dclr->name,
           var_dclr->name, true);
@@ -192,6 +193,7 @@ bool resolve_stmt(struct Statement* stmt) {
     case GOTO_STMT:
       return true;
     case COMPOUND_STMT:
+      // New scope for block-local declarations.
       enter_scope(global_ident_stack);
       if (!resolve_block(stmt->statement.compound_stmt.block)) {
         return false;
@@ -213,8 +215,8 @@ bool resolve_stmt(struct Statement* stmt) {
       }
       return resolve_expr(stmt->statement.do_while_stmt.condition);
     case FOR_STMT:
+      // The for-init may introduce new locals, so give the loop its own scope.
       enter_scope(global_ident_stack);
-      // skipping init, condition, end resolution for identifier resolution
       if (!resolve_for_init(stmt->statement.for_stmt.init)) {
         return false;
       }
@@ -267,7 +269,7 @@ bool resolve_local_func(struct FunctionDclr* func_dclr) {
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, func_dclr->name, &from_current_scope);
   if (entry == NULL) {
-    // add to ident map
+    // Only insert if this is the first local declaration we've seen.
     ident_stack_insert(global_ident_stack, func_dclr->name,
         func_dclr->name, true);
   }
@@ -358,6 +360,7 @@ bool resolve_file_scope_func(struct FunctionDclr* func_dclr) {
     ident_stack_insert(global_ident_stack, func_dclr->name,
         func_dclr->name, func_dclr->storage != STATIC);
 
+    // Parameters and body share a new scope distinct from file scope.
     enter_scope(global_ident_stack);
     bool params_resolved = resolve_params(func_dclr->params);
     bool block_resolved = resolve_block(func_dclr->body);
@@ -378,4 +381,3 @@ bool resolve_file_scope_dclr(struct Declaration* dclr) {
       return false;
   }
 }
-

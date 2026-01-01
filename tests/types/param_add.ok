@@ -1,0 +1,18 @@
+Program(
+    FunDclr(
+        add,
+        storage=none
+        params=[VarDclr(none, int, a.0), VarDclr(none, int, b.1), ]
+        type=func(ret_type=int, param_types=[int, int, ]),
+        body=
+            Return(AddOp(Var(a.0):int, Var(b.1):int):int, add);
+    );
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            Return(FunCallExpr(add, [LitExpr(int, 1):int, LitExpr(int, 2):int, ]):int, main);
+    );
+)
