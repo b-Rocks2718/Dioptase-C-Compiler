@@ -1,2 +1,2 @@
-lexer failed at offset 4
+Lexer error at tests/lexer_invalid/invalid_char.c:1:5: unexpected character '$'
 $x;

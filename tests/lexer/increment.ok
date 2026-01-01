@@ -1,4 +1,4 @@
 [
     i, ++
 ]
-parser failed at offset 0
+Parse error at tests/lexer/increment.c:1:1: unexpected token

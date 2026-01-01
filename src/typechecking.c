@@ -1,9 +1,26 @@
 #include "typechecking.h"
 #include "arena.h"
+#include "source_location.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 
 struct SymbolTable* global_symbol_table = NULL;
+
+static void type_error_at(const char* loc, const char* fmt, ...) {
+  struct SourceLocation where = source_location_from_ptr(loc);
+  const char* filename = source_filename();
+  if (where.line == 0) {
+    printf("Type error: ");
+  } else {
+    printf("Type error at %s:%zu:%zu: ", filename, where.line, where.column);
+  }
+  va_list args;
+  va_start(args, fmt);
+  vprintf(fmt, args);
+  va_end(args);
+  printf("\n");
+}
 
 // ------------------------- Typechecking Functions ------------------------- //
 
@@ -28,7 +45,7 @@ bool typecheck_file_scope_dclr(struct Declaration* dclr) {
       // Type check function declaration
       return typecheck_func(&dclr->dclr.fun_dclr);
     default:
-      printf("Type error: Unknown declaration type in typecheck_file_scope_dclr\n");
+      type_error_at(NULL, "unknown declaration type in typecheck_file_scope_dclr");
       return false; // Unknown declaration type
   }
 }
@@ -48,8 +65,9 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
   if (var_dclr->init != NULL) {
     if (var_dclr->init->type != LIT) {
       // For simplicity, we only allow literal initializers for global variables
-      printf("Type error: Non-constant initializer for global variable %.*s\n",
-             (int)var_dclr->name->len, var_dclr->name->start);
+      type_error_at(var_dclr->init->loc,
+                    "non-constant initializer for global variable %.*s",
+                    (int)var_dclr->name->len, var_dclr->name->start);
       return false;
     }
 
@@ -57,8 +75,9 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
       // For simplicity, we only allow null pointer constants as initializers for global pointer variables
       struct LitExpr* lit_expr = &var_dclr->init->expr.lit_expr;
       if (lit_expr->value.int_val != 0) {
-        printf("Type error: Invalid pointer initializer for global variable %.*s\n",
-               (int)var_dclr->name->len, var_dclr->name->start);
+        type_error_at(var_dclr->init->loc,
+                      "invalid pointer initializer for global variable %.*s",
+                      (int)var_dclr->name->len, var_dclr->name->start);
         return false;
       }
     }
@@ -77,29 +96,33 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
 
     // reject function types
     if (entry->type->type == FUN_TYPE) {
-      printf("Type error: Function %.*s redeclared as variable\n",
-             (int)var_dclr->name->len, var_dclr->name->start);
+      type_error_at(var_dclr->name->start,
+                    "function %.*s redeclared as variable",
+                    (int)var_dclr->name->len, var_dclr->name->start);
       return false;
     }
 
     // ensure both declarations have the same type
     if (!compare_types(entry->type, var_dclr->type)) {
-      printf("Type error: Conflicting declarations for variable %.*s\n",
-             (int)var_dclr->name->len, var_dclr->name->start);
+      type_error_at(var_dclr->name->start,
+                    "conflicting declarations for variable %.*s",
+                    (int)var_dclr->name->len, var_dclr->name->start);
       return false;
     }
 
     // check for duplicate definitions
     if (entry->attrs->init.init_type == INITIAL && var_dclr->init != NULL) {
-      printf("Type error: Conflicting file scope variable definitions for variable %.*s\n",
-             (int)var_dclr->name->len, var_dclr->name->start);
+      type_error_at(var_dclr->name->start,
+                    "conflicting file scope variable definitions for variable %.*s",
+                    (int)var_dclr->name->len, var_dclr->name->start);
       return false;
     }
 
     // check for conflicting linkage
     if (entry->attrs->is_global != global) {
-      printf("Type error: Conflicting variable linkage for variable %.*s\n",
-             (int)var_dclr->name->len, var_dclr->name->start);
+      type_error_at(var_dclr->name->start,
+                    "conflicting variable linkage for variable %.*s",
+                    (int)var_dclr->name->len, var_dclr->name->start);
       return false;
     }
 
@@ -150,30 +173,34 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
   } else {
     // ensure the existing entry is a function
     if (entry->type->type != FUN_TYPE) {
-      printf("Type error: Variable %.*s redeclared as function\n",
-             (int)func_dclr->name->len, func_dclr->name->start);
+      type_error_at(func_dclr->name->start,
+                    "variable %.*s redeclared as function",
+                    (int)func_dclr->name->len, func_dclr->name->start);
       return false;
     }
 
     // ensure both declarations have the same type
     if (!compare_types(entry->type, func_dclr->type)) {
-      printf("Type error: Conflicting declarations for function %.*s\n",
-             (int)func_dclr->name->len, func_dclr->name->start);
+      type_error_at(func_dclr->name->start,
+                    "conflicting declarations for function %.*s",
+                    (int)func_dclr->name->len, func_dclr->name->start);
       return false;
     }
 
     // check for duplicate definitions
     if (entry->attrs->is_defined && func_dclr->body != NULL) {
-      printf("Type error: Multiple definitions for function %.*s\n",
-             (int)func_dclr->name->len, func_dclr->name->start);
+      type_error_at(func_dclr->name->start,
+                    "multiple definitions for function %.*s",
+                    (int)func_dclr->name->len, func_dclr->name->start);
       return false;
     }
 
     // check for conflicting linkage
     bool global = (func_dclr->storage != STATIC);
     if (entry->attrs->is_global != global) {
-      printf("Type error: Conflicting function linkage for function %.*s\n",
-             (int)func_dclr->name->len, func_dclr->name->start);
+      type_error_at(func_dclr->name->start,
+                    "conflicting function linkage for function %.*s",
+                    (int)func_dclr->name->len, func_dclr->name->start);
       return false;
     }
 
@@ -203,8 +230,9 @@ bool typecheck_params(struct ParamList* params) {
   while (cur != NULL) {
     // ensure each parameter has no initializer
     if (cur->param.init != NULL) {
-      printf("Type error: Function parameter %.*s should not have an initializer\n",
-             (int)cur->param.name->len, cur->param.name->start);
+      type_error_at(cur->param.name->start,
+                    "function parameter %.*s should not have an initializer",
+                    (int)cur->param.name->len, cur->param.name->start);
       return false;
     }
 
@@ -237,7 +265,7 @@ bool typecheck_block(struct Block* block) {
         }
         break;
       default:
-        printf("Type error: Unknown block item type in typecheck_block\n");
+        type_error_at(NULL, "unknown block item type in typecheck_block");
         return false; // Unknown block item type
     }
     cur = cur->next;
@@ -256,14 +284,14 @@ bool typecheck_stmt(struct Statement* stmt) {
       // Ensure the return value can be converted to the function's return type.
       struct SymbolEntry* entry = symbol_table_get(global_symbol_table, stmt->statement.ret_stmt.func);
       if (entry == NULL) {
-        printf("Type error: Unknown function in return statement\n");
+        type_error_at(stmt->loc, "unknown function in return statement");
         return false;
       }
       struct Type* func_type = entry->type;
       struct Type* ret_type = func_type->type_data.fun_type.return_type;
 
       if (!convert_by_assignment(&stmt->statement.ret_stmt.expr, ret_type)) {
-        printf("Type error: Incompatible return type in return statement\n");
+        type_error_at(stmt->loc, "incompatible return type in return statement");
         return false;
       }
 
@@ -281,7 +309,8 @@ bool typecheck_stmt(struct Statement* stmt) {
       }
 
       if (!is_arithmetic_type(stmt->statement.if_stmt.condition->value_type)) {
-        printf("Type error: If condition must have arithmetic type\n");
+        type_error_at(stmt->statement.if_stmt.condition->loc,
+                      "if condition must have arithmetic type");
         return false;
       }
 
@@ -311,7 +340,8 @@ bool typecheck_stmt(struct Statement* stmt) {
       }
 
       if (!is_arithmetic_type(stmt->statement.while_stmt.condition->value_type)) {
-        printf("Type error: While condition must have arithmetic type\n");
+        type_error_at(stmt->statement.while_stmt.condition->loc,
+                      "while condition must have arithmetic type");
         return false;
       }
 
@@ -329,7 +359,8 @@ bool typecheck_stmt(struct Statement* stmt) {
       }
 
       if (!is_arithmetic_type(stmt->statement.do_while_stmt.condition->value_type)) {
-        printf("Type error: Do-while condition must have arithmetic type\n");
+        type_error_at(stmt->statement.do_while_stmt.condition->loc,
+                      "do-while condition must have arithmetic type");
         return false;
       }
 
@@ -361,7 +392,8 @@ bool typecheck_stmt(struct Statement* stmt) {
       }
 
       if (!is_arithmetic_type(stmt->statement.switch_stmt.condition->value_type)) {
-        printf("Type error: Switch condition must have arithmetic type\n");
+        type_error_at(stmt->statement.switch_stmt.condition->loc,
+                      "switch condition must have arithmetic type");
         return false;
       }
 
@@ -405,7 +437,7 @@ bool typecheck_stmt(struct Statement* stmt) {
     }
 
     default: {
-      printf("Type error: Unknown statement type in typecheck_stmt\n");
+      type_error_at(stmt->loc, "unknown statement type in typecheck_stmt");
       return false; // Unknown statement type
     }
   }
@@ -424,7 +456,7 @@ bool typecheck_for_init(struct ForInit* init_) {
         return true; // Nothing to typecheck
       }
     default:
-      printf("Type error: Unknown for init type in typecheck_for_init\n");
+      type_error_at(NULL, "unknown for init type in typecheck_for_init");
       return false; // Unknown for init type
   }
 }
@@ -436,7 +468,7 @@ bool typecheck_local_dclr(struct Declaration* dclr) {
     case FUN_DCLR:
       return typecheck_func(&dclr->dclr.fun_dclr);
     default:
-      printf("Type error: Unknown declaration type in typecheck_local_dclr\n");
+      type_error_at(NULL, "unknown declaration type in typecheck_local_dclr");
       return false; // Unknown declaration type
   }
 }
@@ -445,8 +477,9 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
   if (var_dclr->storage == EXTERN) {
     // Local extern declarations just validate and/or introduce a global symbol.
     if (var_dclr->init != NULL) {
-      printf("Type error: Initializer on local extern variable declaration for variable %.*s\n",
-             (int)var_dclr->name->len, var_dclr->name->start);
+      type_error_at(var_dclr->init->loc,
+                    "initializer on local extern variable declaration for variable %.*s",
+                    (int)var_dclr->name->len, var_dclr->name->start);
       return false;
     }
 
@@ -461,15 +494,17 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
     } else {
       // ensure the existing entry is not a function
       if (entry->type->type == FUN_TYPE) {
-        printf("Type error: Function %.*s redeclared as variable\n",
-               (int)var_dclr->name->len, var_dclr->name->start);
+        type_error_at(var_dclr->name->start,
+                      "function %.*s redeclared as variable",
+                      (int)var_dclr->name->len, var_dclr->name->start);
         return false;
       }
 
       // ensure both declarations have the same type
       if (!compare_types(entry->type, var_dclr->type)) {
-        printf("Type error: Conflicting declarations for variable %.*s\n",
-               (int)var_dclr->name->len, var_dclr->name->start);
+        type_error_at(var_dclr->name->start,
+                      "conflicting declarations for variable %.*s",
+                      (int)var_dclr->name->len, var_dclr->name->start);
         return false;
       }
     }
@@ -501,22 +536,25 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
     } else {
       // ensure the existing entry is not a function
       if (entry->type->type == FUN_TYPE) {
-        printf("Type error: Function %.*s redeclared as variable\n",
-               (int)var_dclr->name->len, var_dclr->name->start);
+        type_error_at(var_dclr->name->start,
+                      "function %.*s redeclared as variable",
+                      (int)var_dclr->name->len, var_dclr->name->start);
         return false;
       }
 
       // ensure both declarations have the same type
       if (!compare_types(entry->type, var_dclr->type)) {
-        printf("Type error: Conflicting declarations for variable %.*s\n",
-               (int)var_dclr->name->len, var_dclr->name->start);
+        type_error_at(var_dclr->name->start,
+                      "conflicting declarations for variable %.*s",
+                      (int)var_dclr->name->len, var_dclr->name->start);
         return false;
       }
 
       // check for duplicate definitions
       if (entry->attrs->is_defined && var_dclr->init != NULL) {
-        printf("Type error: Conflicting local static variable definitions for variable %.*s\n",
-               (int)var_dclr->name->len, var_dclr->name->start);
+        type_error_at(var_dclr->name->start,
+                      "conflicting local static variable definitions for variable %.*s",
+                      (int)var_dclr->name->len, var_dclr->name->start);
         return false;
       }
 
@@ -537,8 +575,9 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
 
     struct SymbolEntry* entry = symbol_table_get(global_symbol_table, var_dclr->name);
     if (entry != NULL) {
-      printf("Type error: Duplicate local variable declaration for variable %.*s\n",
-             (int)var_dclr->name->len, var_dclr->name->start);
+      type_error_at(var_dclr->name->start,
+                    "duplicate local variable declaration for variable %.*s",
+                    (int)var_dclr->name->len, var_dclr->name->start);
       return false;
     }
 
@@ -594,13 +633,13 @@ bool typecheck_expr(struct Expr* expr) {
         if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
           common_type = get_common_pointer_type(bin_expr->left, bin_expr->right);
           if (common_type == NULL) {
-            printf("Type error: Incompatible pointer types in equality comparison\n");
+            type_error_at(expr->loc, "incompatible pointer types in equality comparison");
             return false;
           }
         } else {
           common_type = get_common_type(left_type, right_type);
           if (common_type == NULL) {
-            printf("Type error: Incompatible types in equality comparison\n");
+            type_error_at(expr->loc, "incompatible types in equality comparison");
             return false;
           }
         }
@@ -624,7 +663,7 @@ bool typecheck_expr(struct Expr* expr) {
           expr->value_type = is_pointer_type(left_type) ? left_type : right_type;
           return true;
         } else {
-          printf("Type error: Invalid types for pointer arithmetic in addition\n");
+          type_error_at(expr->loc, "invalid types for pointer arithmetic in addition");
           return false;
         }
       }
@@ -640,7 +679,7 @@ bool typecheck_expr(struct Expr* expr) {
           expr->value_type = left_type;
           return true;
         } else {
-          printf("Type error: Invalid types for pointer arithmetic in subtraction\n");
+          type_error_at(expr->loc, "invalid types for pointer arithmetic in subtraction");
           return false;
         }
       } 
@@ -652,12 +691,12 @@ bool typecheck_expr(struct Expr* expr) {
       }
       else {
         if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
-          printf("Type error: Invalid pointer arithmetic in binary operation\n");
+          type_error_at(expr->loc, "invalid pointer arithmetic in binary operation");
           return false;
         }
         struct Type* common_type = get_common_type(left_type, right_type);
         if (common_type == NULL) {
-          printf("Type error: Incompatible types in binary operation\n");
+          type_error_at(expr->loc, "incompatible types in binary operation");
           return false;
         }
         convert_expr_type(&bin_expr->left, common_type);
@@ -679,7 +718,7 @@ bool typecheck_expr(struct Expr* expr) {
       }
 
       if (!is_lvalue(assign_expr->left)) {
-        printf("Type error: Cannot assign to non-lvalue\n");
+        type_error_at(expr->loc, "cannot assign to non-lvalue");
         return false;
       }
 
@@ -688,7 +727,7 @@ bool typecheck_expr(struct Expr* expr) {
       }
 
       if (!convert_by_assignment(&assign_expr->right, assign_expr->left->value_type)) {
-        printf("Type error: Incompatible types in assignment\n");
+        type_error_at(expr->loc, "incompatible types in assignment");
         return false;
       }
 
@@ -702,13 +741,14 @@ bool typecheck_expr(struct Expr* expr) {
       }
 
       if (!is_lvalue(post_assign_expr->expr)) {
-        printf("Type error: Cannot apply post-increment/decrement to non-lvalue\n");
+        type_error_at(expr->loc, "cannot apply post-increment/decrement to non-lvalue");
         return false;
       }
 
       if (!is_arithmetic_type(post_assign_expr->expr->value_type) &&
           !is_pointer_type(post_assign_expr->expr->value_type)) {
-        printf("Type error: Post-increment/decrement requires arithmetic or pointer type\n");
+        type_error_at(expr->loc,
+                      "post-increment/decrement requires arithmetic or pointer type");
         return false;
       }
 
@@ -735,13 +775,13 @@ bool typecheck_expr(struct Expr* expr) {
       if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
         common_type = get_common_pointer_type(cond_expr->left, cond_expr->right);
         if (common_type == NULL) {
-          printf("Type error: Incompatible pointer types in conditional expression\n");
+          type_error_at(expr->loc, "incompatible pointer types in conditional expression");
           return false;
         }
       } else {
         common_type = get_common_type(left_type, right_type);
         if (common_type == NULL) {
-          printf("Type error: Incompatible types in conditional expression\n");
+          type_error_at(expr->loc, "incompatible types in conditional expression");
           return false;
         }
       }
@@ -754,19 +794,21 @@ bool typecheck_expr(struct Expr* expr) {
     case FUNCTION_CALL: {
       struct SymbolEntry* entry = symbol_table_get(global_symbol_table, expr->expr.fun_call_expr.func_name);
       if (entry == NULL) {
-        printf("Type error: Unknown function in function call\n");
+        type_error_at(expr->loc, "unknown function in function call");
         return false;
       }
       struct Type* func_type = entry->type;
       if (func_type->type != FUN_TYPE) {
-        printf("Type error: Variable %.*s cannot be used as a function\n",
-               (int)expr->expr.fun_call_expr.func_name->len, expr->expr.fun_call_expr.func_name->start);
+        type_error_at(expr->loc,
+                      "variable %.*s cannot be used as a function",
+                      (int)expr->expr.fun_call_expr.func_name->len,
+                      expr->expr.fun_call_expr.func_name->start);
         return false;
       }
 
       // Arguments are converted by assignment to each parameter type.
       struct ParamTypeList* param_types = func_type->type_data.fun_type.param_types;
-      if (!typecheck_args(expr->expr.fun_call_expr.args, param_types)) {
+      if (!typecheck_args(expr->expr.fun_call_expr.args, param_types, expr)) {
         return false;
       }
       expr->value_type = func_type->type_data.fun_type.return_type;
@@ -775,13 +817,15 @@ bool typecheck_expr(struct Expr* expr) {
     case VAR: {
       struct SymbolEntry* entry = symbol_table_get(global_symbol_table, expr->expr.var_expr.name);
       if (entry == NULL) {
-        printf("Type error: Unknown variable %.*s\n",
-               (int)expr->expr.var_expr.name->len, expr->expr.var_expr.name->start);
+        type_error_at(expr->loc,
+                      "unknown variable %.*s",
+                      (int)expr->expr.var_expr.name->len, expr->expr.var_expr.name->start);
         return false;
       }
       if (entry->type->type == FUN_TYPE) {
-        printf("Type error: Function %.*s cannot be used as a variable\n",
-               (int)expr->expr.var_expr.name->len, expr->expr.var_expr.name->start);
+        type_error_at(expr->loc,
+                      "function %.*s cannot be used as a variable",
+                      (int)expr->expr.var_expr.name->len, expr->expr.var_expr.name->start);
         return false;
       }
       expr->value_type = entry->type;
@@ -795,7 +839,7 @@ bool typecheck_expr(struct Expr* expr) {
       struct Type* expr_type = unary_expr->expr->value_type;
       if (is_pointer_type(expr_type) &&
           (unary_expr->op == NEGATE || unary_expr->op == COMPLEMENT)) {
-        printf("Type error: Invalid pointer operation in unary expression\n");
+        type_error_at(expr->loc, "invalid pointer operation in unary expression");
         return false;
       }
       if (unary_expr->op == BOOL_NOT) {
@@ -823,7 +867,7 @@ bool typecheck_expr(struct Expr* expr) {
           expr->value_type->type = ULONG_TYPE;
           return true;
         default:
-          printf("Type error: Unknown literal type in typecheck_expr\n");
+          type_error_at(expr->loc, "unknown literal type in typecheck_expr");
           return false; // Unknown literal type
       }
     }
@@ -841,7 +885,7 @@ bool typecheck_expr(struct Expr* expr) {
         return false;
       }
       if (!is_lvalue(addr_of_expr->expr)) {
-        printf("Type error: Cannot take the address of a non-lvalue\n");
+        type_error_at(expr->loc, "cannot take the address of a non-lvalue");
         return false;
       }
       struct Type* referenced = addr_of_expr->expr->value_type;
@@ -857,20 +901,20 @@ bool typecheck_expr(struct Expr* expr) {
       }
       struct Type* expr_type = deref_expr->expr->value_type;
       if (!is_pointer_type(expr_type)) {
-        printf("Type error: Cannot dereference non-pointer type\n");
+        type_error_at(expr->loc, "cannot dereference non-pointer type");
         return false;
       }
       expr->value_type = expr_type->type_data.pointer_type.referenced_type;
       return true;
     }
     default: {
-      printf("Type error: Unknown expression type in typecheck_expr\n");
+      type_error_at(expr->loc, "unknown expression type in typecheck_expr");
       return false; // Unknown expression type
     }
   }
 }
 
-bool typecheck_args(struct ArgList* args, struct ParamTypeList* types) {
+bool typecheck_args(struct ArgList* args, struct ParamTypeList* types, struct Expr* call_site) {
   for (; args != NULL && types != NULL; args = args->next, types = types->next) {
     if (!typecheck_convert_expr(args->arg)) {
       return false;
@@ -880,7 +924,8 @@ bool typecheck_args(struct ArgList* args, struct ParamTypeList* types) {
     }
   }
   if (args != NULL || types != NULL) {
-    printf("Type error: Argument and parameter count mismatch\n");
+    type_error_at(call_site ? call_site->loc : NULL,
+                  "argument and parameter count mismatch");
     return false;
   }
   return true;
@@ -917,6 +962,7 @@ bool is_pointer_type(struct Type* type) {
 void convert_expr_type(struct Expr** expr, struct Type* target) {
   if (!compare_types((*expr)->value_type, target)) {
     struct Expr* new_expr = arena_alloc(sizeof(struct Expr));
+    new_expr->loc = (*expr)->loc;
     new_expr->type = CAST;
     new_expr->expr.cast_expr.target = target;
     new_expr->expr.cast_expr.expr = *expr;
@@ -936,7 +982,7 @@ size_t get_type_size(struct Type* type) {
     case ULONG_TYPE:
       return 8;
     case POINTER_TYPE:
-      return 8; // assuming 64-bit architecture
+      return 4; // assuming 32-bit architecture
     default:
       return 0; // unknown type size
   }
@@ -1017,7 +1063,7 @@ bool convert_by_assignment(struct Expr** expr, struct Type* target) {
     return true;
   }
 
-  printf("Type error: cannot convert type for assignment\n");
+  type_error_at((*expr)->loc, "cannot convert type for assignment");
   return false;
 }
 

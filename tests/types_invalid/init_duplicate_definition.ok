@@ -1,2 +1,2 @@
 Typechecking failed
-Type error: Conflicting file scope variable definitions for variable value
+Type error at tests/types_invalid/init_duplicate_definition.c:2:5: conflicting file scope variable definitions for variable value

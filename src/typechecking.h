@@ -89,7 +89,7 @@ bool typecheck_local_var(struct VariableDclr* var_dclr);
 
 bool typecheck_for_init(struct ForInit* init_);
 
-bool typecheck_args(struct ArgList* args, struct ParamTypeList* params);
+bool typecheck_args(struct ArgList* args, struct ParamTypeList* params, struct Expr* call_site);
 
 // ------------------------- Type Utility Functions ------------------------- //
 

@@ -1,10 +1,27 @@
 #include "identifier_resolution.h"
 #include "identifier_map.h"
 #include "unique_name.h"
+#include "source_location.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 
 static struct IdentStack* global_ident_stack = NULL;
+
+static void ident_error_at(const char* loc, const char* fmt, ...) {
+  struct SourceLocation where = source_location_from_ptr(loc);
+  const char* filename = source_filename();
+  if (where.line == 0) {
+    printf("Identifier Resolution Error: ");
+  } else {
+    printf("Identifier Resolution Error at %s:%zu:%zu: ", filename, where.line, where.column);
+  }
+  va_list args;
+  va_start(args, fmt);
+  vprintf(fmt, args);
+  va_end(args);
+  printf("\n");
+}
 
 // resolve each declaration in the program
 bool resolve_prog(struct Program* prog) {
@@ -12,7 +29,7 @@ bool resolve_prog(struct Program* prog) {
 
   for (struct DeclarationList* decl = prog->dclrs; decl != NULL; decl = decl->next) {
     if (!resolve_file_scope_dclr(&decl->dclr)) {
-      printf("Identifier Resolution Error: Failed to resolve declaration\n");
+      ident_error_at(NULL, "failed to resolve declaration");
       return false;
     }
   }
@@ -25,7 +42,7 @@ bool resolve_prog(struct Program* prog) {
 bool resolve_args(struct ArgList* args){
   for (struct ArgList* arg = args; arg != NULL; arg = arg->next) {
     if (!resolve_expr(arg->arg)) {
-      printf("Identifier Resolution Error: Failed to resolve argument\n");
+      ident_error_at(arg->arg->loc, "failed to resolve argument");
       return false;
     }
   }
@@ -66,7 +83,7 @@ bool resolve_expr(struct Expr* expr) {
         expr->expr.var_expr.name = entry->entry_name;
         return true;
       } else {
-        printf("Identifier Resolution Error: No declaration for variable\n");
+        ident_error_at(expr->loc, "no declaration for variable");
         return false;
       }
     }
@@ -77,7 +94,7 @@ bool resolve_expr(struct Expr* expr) {
         // Functions are resolved by name only; arguments still need identifier resolution.
         return resolve_args(expr->expr.fun_call_expr.args);
       } else {
-        printf("Identifier Resolution Error: Function has not been declared\n");
+        ident_error_at(expr->loc, "function has not been declared");
         return false;
       }
     }
@@ -88,7 +105,7 @@ bool resolve_expr(struct Expr* expr) {
     case DEREFERENCE:
       return resolve_expr(expr->expr.deref_expr.expr);
     default:
-      printf("Identifier Resolution Error: Unknown expression type\n");
+      ident_error_at(expr->loc, "unknown expression type");
       return false;
   }
 }
@@ -103,7 +120,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
         return true;
       }
       // already declared in this scope
-      printf("Identifier Resolution Error: Multiple declarations for variable\n");
+      ident_error_at(var_dclr->name->start, "multiple declarations for variable");
       return false;
     } else {
       // Declared in an outer scope; either allow extern or create a new unique local.
@@ -148,7 +165,7 @@ bool resolve_local_dclr(struct Declaration* dclr) {
     case FUN_DCLR:
       return resolve_local_func(&dclr->dclr.fun_dclr);
     default:
-      printf("Identifier Resolution Error: Unknown declaration type\n");
+      ident_error_at(NULL, "unknown declaration type");
       return false;
   }
 }
@@ -164,7 +181,7 @@ bool resolve_for_init(struct ForInit* init) {
         return true;
       }
     default:
-      printf("Identifier Resolution Error: Unknown for init type\n");
+      ident_error_at(NULL, "unknown for init type");
       return false;
   }
 }
@@ -248,7 +265,7 @@ bool resolve_stmt(struct Statement* stmt) {
     case NULL_STMT:
       return true;
     default:
-      printf("Identifier Resolution Error: Unknown statement type\n");
+      ident_error_at(stmt->loc, "unknown statement type");
       return false;
   }
 }
@@ -256,13 +273,14 @@ bool resolve_stmt(struct Statement* stmt) {
 bool resolve_local_func(struct FunctionDclr* func_dclr) {
   // local functions must have extern linkage
   if (func_dclr->storage == STATIC) {
-      printf("Identifier Resolution Error: local functions declarations cannot be static\n");
+      ident_error_at(func_dclr->name->start,
+                     "local function declarations cannot be static");
       return false;
   }
 
   // local functions cannot have bodies
   if (func_dclr->body != NULL) {
-    printf("Identifier Resolution Error: Local function cannot have body\n");
+    ident_error_at(func_dclr->name->start, "local function cannot have body");
     return false;
   }
 
@@ -280,7 +298,7 @@ bool resolve_local_func(struct FunctionDclr* func_dclr) {
 bool resolve_params(struct ParamList* params){
   for (struct ParamList* param = params; param != NULL; param = param->next) {
     if (!resolve_local_var_dclr(&param->param)) {
-      printf("Identifier Resolution Error: Failed to resolve parameter\n");
+      ident_error_at(param->param.name->start, "failed to resolve parameter");
       return false;
     }
   }
@@ -292,18 +310,18 @@ bool resolve_block(struct Block* block){
     switch (item->item->type) {
       case STMT_ITEM:
         if (!resolve_stmt(item->item->item.stmt)) {
-          printf("Identifier Resolution Error: Failed to resolve statement in block\n");
+          ident_error_at(item->item->item.stmt->loc, "failed to resolve statement in block");
           return false;
         }
         break;
       case DCLR_ITEM:
         if (!resolve_local_dclr(item->item->item.dclr)) {
-          printf("Identifier Resolution Error: Failed to resolve statement in block\n");
+          ident_error_at(NULL, "failed to resolve declaration in block");
           return false;
         }
         break;
       default:
-        printf("Identifier Resolution Error: Unknown block item type\n");
+        ident_error_at(NULL, "unknown block item type");
         return false;
     }
   }
@@ -316,7 +334,7 @@ bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
   if (entry != NULL) {
     if (!from_current_scope) {
       // this should never happen, as file scope declarations are global
-      printf("Identifier Resolution Error: Function is outside file scope\n");
+      ident_error_at(var_dclr->name->start, "declaration is outside file scope");
       return false;
     }
     
@@ -338,13 +356,13 @@ bool resolve_file_scope_func(struct FunctionDclr* func_dclr) {
   if (entry != NULL) {
     if (!from_current_scope) {
       // this should never happen, as file scope declarations are global
-      printf("Identifier Resolution Error: Function is outside file scope\n");
+      ident_error_at(func_dclr->name->start, "declaration is outside file scope");
       return false;
     }
 
     if (!entry->has_linkage) {
       // multiple declarations
-      printf("Identifier Resolution Error: Multiple declarations for function\n");
+      ident_error_at(func_dclr->name->start, "multiple declarations for function");
       return false;
     }
 

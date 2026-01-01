@@ -2,7 +2,9 @@
 #include "unique_name.h"
 #include "label_map.h"
 #include "arena.h"
+#include "source_location.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 
 struct Slice* cur_loop_label = NULL;
@@ -11,6 +13,21 @@ enum LabelType cur_label_type = -1;
 
 struct LabelMap* goto_labels = NULL;
 struct CaseList* current_case_list = NULL;
+
+static void label_error_at(const char* prefix, const char* loc, const char* fmt, ...) {
+  struct SourceLocation where = source_location_from_ptr(loc);
+  const char* filename = source_filename();
+  if (where.line == 0) {
+    printf("%s: ", prefix);
+  } else {
+    printf("%s at %s:%zu:%zu: ", prefix, filename, where.line, where.column);
+  }
+  va_list args;
+  va_start(args, fmt);
+  vprintf(fmt, args);
+  va_end(args);
+  printf("\n");
+}
 
 bool label_loops(struct Program* prog) {
   for (struct DeclarationList* decl = prog->dclrs; decl != NULL; decl = decl->next) {
@@ -155,7 +172,8 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       struct BreakStmt* break_stmt = &stmt->statement.break_stmt;
 
       if (cur_label_type == -1) {
-        printf("Loop Labeling Error: Break statement outside loop/switch\n");
+        label_error_at("Loop Labeling Error", stmt->loc,
+                       "break statement outside loop/switch");
         return false;
       }
 
@@ -166,7 +184,8 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
     case CONTINUE_STMT: {
       struct ContinueStmt* continue_stmt = &stmt->statement.continue_stmt;
       if (cur_loop_label == NULL) {
-        printf("Loop Labeling Error: Continue statement outside loop\n");
+        label_error_at("Loop Labeling Error", stmt->loc,
+                       "continue statement outside loop");
         return false;
       }
       // assign current label to continue statement
@@ -194,9 +213,10 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
     }
     case LABELED_STMT: {
       if (label_map_contains(goto_labels, stmt->statement.labeled_stmt.label)) {
-        printf("Loop Labeling Error: Multiple definitions for goto label ");
-        print_slice(stmt->statement.labeled_stmt.label);
-        printf("\n");
+        label_error_at("Loop Labeling Error", stmt->loc,
+                       "multiple definitions for goto label %.*s",
+                       (int)stmt->statement.labeled_stmt.label->len,
+                       stmt->statement.labeled_stmt.label->start);
         return false;
       }
 
@@ -222,12 +242,14 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       struct CaseStmt* case_stmt = &stmt->statement.case_stmt;
 
       if (cur_switch_label == NULL) {
-        printf("Loop Labeling Error: Case statement outside switch\n");
+        label_error_at("Loop Labeling Error", stmt->loc,
+                       "case statement outside switch");
         return false;
       }
 
       if (case_stmt->expr->type != LIT) {
-        printf("Loop Labeling Error: Case statement with non-constant expression\n");
+        label_error_at("Loop Labeling Error", stmt->loc,
+                       "case statement with non-constant expression");
         return false;
       }
 
@@ -242,7 +264,8 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
     case DEFAULT_STMT: {
       struct DefaultStmt* default_stmt = &stmt->statement.default_stmt;
       if (cur_switch_label == NULL) {
-        printf("Loop Labeling Error: Default statement outside switch\n");
+        label_error_at("Loop Labeling Error", stmt->loc,
+                       "default statement outside switch");
         return false;
       }
 
@@ -275,7 +298,8 @@ bool label_block(struct Slice* func_name, struct Block* block) {
         // no need to label declarations
         break;
       default:
-        printf("Loop Labeling Error: Unknown block item type\n");
+        label_error_at("Loop Labeling Error", NULL,
+                       "unknown block item type");
         return false;
     }
   }
@@ -338,9 +362,9 @@ static bool resolve_stmt(struct Statement* stmt) {
     // Replace user label with the unique label assigned during labeling.
     struct Slice* target_label = label_map_get(goto_labels, goto_stmt->label);
     if (target_label == NULL) {
-      printf("Goto Resolution Error: Label ");
-      print_slice(goto_stmt->label);
-      printf(" has no definition\n");
+      label_error_at("Goto Resolution Error", stmt->loc,
+                     "label %.*s has no definition",
+                     (int)goto_stmt->label->len, goto_stmt->label->start);
       return false;
     }
     goto_stmt->label = target_label;
@@ -401,7 +425,8 @@ bool collect_cases_stmt(struct Statement* stmt){
       // extract case value
       struct CaseStmt* case_stmt = &stmt->statement.case_stmt;
       if (case_stmt->expr->type != LIT) {
-        printf("Case Collection Error: Case statement with non-constant expression\n");
+        label_error_at("Case Collection Error", stmt->loc,
+                       "case statement with non-constant expression");
         return false;
       }
       struct LitExpr* lit_expr = &case_stmt->expr->expr.lit_expr;
@@ -411,7 +436,8 @@ bool collect_cases_stmt(struct Statement* stmt){
       struct CaseList* case_iter = current_case_list;
       while (case_iter != NULL) {
         if (case_iter->case_label.type == INT_CASE && case_iter->case_label.data == case_value) {
-          printf("Case Collection Error: Duplicate case %d\n", case_value);
+          label_error_at("Case Collection Error", stmt->loc,
+                         "duplicate case %d", case_value);
           return false;
         }
         case_iter = case_iter->next;
@@ -431,7 +457,8 @@ bool collect_cases_stmt(struct Statement* stmt){
       struct CaseList* case_iter = current_case_list;
       while (case_iter != NULL) {
         if (case_iter->case_label.type == DEFAULT_CASE) {
-          printf("Case Collection Error: Duplicate default case\n");
+          label_error_at("Case Collection Error", stmt->loc,
+                         "duplicate default case");
           return false;
         }
         case_iter = case_iter->next;

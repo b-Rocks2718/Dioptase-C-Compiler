@@ -1,2 +1,2 @@
 Typechecking failed
-Type error: Conflicting variable linkage for variable value
+Type error at tests/types_invalid/linkage_var_conflict.c:2:5: conflicting variable linkage for variable value

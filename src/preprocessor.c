@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <ctype.h>
+#include <stdarg.h>
 
 #include "preprocessor.h"
 
@@ -35,6 +36,15 @@ struct IfStack {
   size_t cap;
   bool current_active;
 };
+
+static void preprocessor_error_at(const char* filename, size_t line_no, const char* fmt, ...) {
+  fprintf(stderr, "Preprocessor error at %s:%zu: ", filename, line_no);
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, fmt, args);
+  va_end(args);
+  fprintf(stderr, "\n");
+}
 
 // Initialize a buffer with the requested capacity.
 static bool buffer_init(struct Buffer* buf, size_t cap) {
@@ -261,40 +271,46 @@ fail:
 }
 
 // Read an entire file into a newly allocated buffer.
-static char* read_file(const char* path) {
+static char* read_file(const char* path, const char* include_from, size_t line_no) {
   FILE* file = fopen(path, "rb");
   if (file == NULL) {
-    fprintf(stderr, "Preprocessor failed to open include file: %s\n", path);
+    preprocessor_error_at(include_from, line_no,
+                          "failed to open include file: %s", path);
     return NULL;
   }
 
   if (fseek(file, 0, SEEK_END) != 0) {
-    fprintf(stderr, "Preprocessor failed to seek include file: %s\n", path);
+    preprocessor_error_at(include_from, line_no,
+                          "failed to seek include file: %s", path);
     fclose(file);
     return NULL;
   }
   long size = ftell(file);
   if (size < 0) {
-    fprintf(stderr, "Preprocessor failed to size include file: %s\n", path);
+    preprocessor_error_at(include_from, line_no,
+                          "failed to size include file: %s", path);
     fclose(file);
     return NULL;
   }
   if (fseek(file, 0, SEEK_SET) != 0) {
-    fprintf(stderr, "Preprocessor failed to seek include file: %s\n", path);
+    preprocessor_error_at(include_from, line_no,
+                          "failed to seek include file: %s", path);
     fclose(file);
     return NULL;
   }
 
   char* buffer = malloc((size_t)size + 1);
   if (buffer == NULL) {
-    fprintf(stderr, "Preprocessor memory error\n");
+    preprocessor_error_at(include_from, line_no,
+                          "memory error while reading include file: %s", path);
     fclose(file);
     return NULL;
   }
 
   size_t read = fread(buffer, 1, (size_t)size, file);
   if (read != (size_t)size) {
-    fprintf(stderr, "Preprocessor failed to read include file: %s\n", path);
+    preprocessor_error_at(include_from, line_no,
+                          "failed to read include file: %s", path);
     free(buffer);
     fclose(file);
     return NULL;
@@ -436,11 +452,13 @@ static bool expand_macros_in_line(const char* line, size_t len, struct Macro* ma
 }
 
 // Parse a #define line (object-like only) and store it in the macro list.
-static bool parse_define_line(const char* line, const char* line_end, struct Macro** macros) {
+static bool parse_define_line(const char* line, const char* line_end,
+                              const char* filename, size_t line_no,
+                              struct Macro** macros) {
   const char* p = line;
   while (p < line_end && isspace((unsigned char)*p)) p++;
   if (p >= line_end || !is_ident_start(*p)) {
-    fprintf(stderr, "Invalid #define directive\n");
+    preprocessor_error_at(filename, line_no, "invalid #define directive");
     return false;
   }
 
@@ -455,7 +473,8 @@ static bool parse_define_line(const char* line, const char* line_end, struct Mac
   while (value_end > value_start && isspace((unsigned char)*(value_end - 1))) value_end--;
 
   if (!macro_define(macros, name_start, name_len, value_start, (size_t)(value_end - value_start))) {
-    fprintf(stderr, "Preprocessor memory error\n");
+    preprocessor_error_at(filename, line_no,
+                          "memory error while defining macro");
     return false;
   }
   return true;
@@ -465,25 +484,28 @@ static bool parse_define_line(const char* line, const char* line_end, struct Mac
 static char* preprocess_buffer(const char* prog, const char* filename, struct Macro** macros);
 
 // Handle #include "path" by preprocessing the included file in place.
-static bool handle_include_line(const char* line, const char* line_end, const char* filename, struct Macro** macros, struct Buffer* out, bool add_newline) {
+static bool handle_include_line(const char* line, const char* line_end, const char* filename,
+                                size_t line_no, struct Macro** macros, struct Buffer* out,
+                                bool add_newline) {
   const char* p = line;
   while (p < line_end && isspace((unsigned char)*p)) p++;
   if (p >= line_end || *p != '"') {
-    fprintf(stderr, "Invalid #include directive\n");
+    preprocessor_error_at(filename, line_no, "invalid #include directive");
     return false;
   }
   p++;
   const char* name_start = p;
   while (p < line_end && *p != '"') p++;
   if (p >= line_end) {
-    fprintf(stderr, "Invalid #include directive\n");
+    preprocessor_error_at(filename, line_no, "invalid #include directive");
     return false;
   }
   size_t name_len = (size_t)(p - name_start);
 
   char* include_name = malloc(name_len + 1);
   if (include_name == NULL) {
-    fprintf(stderr, "Preprocessor memory error\n");
+    preprocessor_error_at(filename, line_no,
+                          "memory error while parsing include directive");
     return false;
   }
   memcpy(include_name, name_start, name_len);
@@ -492,11 +514,12 @@ static bool handle_include_line(const char* line, const char* line_end, const ch
   char* include_path = resolve_include_path(filename, include_name);
   free(include_name);
   if (include_path == NULL) {
-    fprintf(stderr, "Preprocessor memory error\n");
+    preprocessor_error_at(filename, line_no,
+                          "memory error while resolving include path");
     return false;
   }
 
-  char* include_source = read_file(include_path);
+  char* include_source = read_file(include_path, filename, line_no);
   if (include_source == NULL) {
     free(include_path);
     return false;
@@ -517,11 +540,14 @@ static bool handle_include_line(const char* line, const char* line_end, const ch
 }
 
 // Basic validation for #ifdef/#ifndef names with parsed output.
-static bool parse_ifdef_name(const char* line, const char* line_end, const char* directive, const char** name_start, size_t* name_len) {
+static bool parse_ifdef_name(const char* line, const char* line_end,
+                             const char* filename, size_t line_no,
+                             const char* directive,
+                             const char** name_start, size_t* name_len) {
   const char* p = line;
   while (p < line_end && isspace((unsigned char)*p)) p++;
   if (p >= line_end || !is_ident_start(*p)) {
-    fprintf(stderr, "Invalid #%s directive\n", directive);
+    preprocessor_error_at(filename, line_no, "invalid #%s directive", directive);
     return false;
   }
   const char* start = p;
@@ -537,6 +563,7 @@ static bool preprocess_directive(
     const char* line_start,
     const char* line_end,
     bool has_newline,
+    size_t line_no,
     const char* filename,
     struct Macro** macros,
     struct Buffer* out,
@@ -548,7 +575,7 @@ static bool preprocess_directive(
   size_t word_len = (size_t)(p - word_start);
 
   if (word_len == 0) {
-    fprintf(stderr, "Invalid preprocessor directive\n");
+    preprocessor_error_at(filename, line_no, "invalid preprocessor directive");
     return false;
   }
 
@@ -556,18 +583,20 @@ static bool preprocess_directive(
 
   if (word_len == 7 && strncmp(word_start, "include", 7) == 0) {
     if (!is_active) return true;
-    return handle_include_line(p, line_end, filename, macros, out, has_newline);
+    return handle_include_line(p, line_end, filename, line_no, macros, out, has_newline);
   }
 
   if (word_len == 6 && strncmp(word_start, "define", 6) == 0) {
     if (!is_active) return true;
-    return parse_define_line(p, line_end, macros);
+    return parse_define_line(p, line_end, filename, line_no, macros);
   }
 
   if (word_len == 5 && strncmp(word_start, "ifdef", 5) == 0) {
     const char* name_start = NULL;
     size_t name_len = 0;
-    if (!parse_ifdef_name(p, line_end, "ifdef", &name_start, &name_len)) return false;
+    if (!parse_ifdef_name(p, line_end, filename, line_no, "ifdef", &name_start, &name_len)) {
+      return false;
+    }
     bool condition_true = false;
     if (if_stack->current_active) {
       condition_true = (macro_find(*macros, name_start, name_len) != NULL);
@@ -582,7 +611,9 @@ static bool preprocess_directive(
   if (word_len == 6 && strncmp(word_start, "ifndef", 6) == 0) {
     const char* name_start = NULL;
     size_t name_len = 0;
-    if (!parse_ifdef_name(p, line_end, "ifndef", &name_start, &name_len)) return false;
+    if (!parse_ifdef_name(p, line_end, filename, line_no, "ifndef", &name_start, &name_len)) {
+      return false;
+    }
     bool condition_true = false;
     if (if_stack->current_active) {
       condition_true = (macro_find(*macros, name_start, name_len) == NULL);
@@ -596,7 +627,7 @@ static bool preprocess_directive(
 
   if (word_len == 4 && strncmp(word_start, "else", 4) == 0) {
     if (!ifstack_else(if_stack)) {
-      fprintf(stderr, "Unexpected #else\n");
+      preprocessor_error_at(filename, line_no, "unexpected #else");
       return false;
     }
     return true;
@@ -604,13 +635,13 @@ static bool preprocess_directive(
 
   if (word_len == 5 && strncmp(word_start, "endif", 5) == 0) {
     if (!ifstack_pop(if_stack)) {
-      fprintf(stderr, "Unexpected #endif\n");
+      preprocessor_error_at(filename, line_no, "unexpected #endif");
       return false;
     }
     return true;
   }
 
-  fprintf(stderr, "Unknown preprocessor directive\n");
+  preprocessor_error_at(filename, line_no, "unknown preprocessor directive");
   return false;
 }
 
@@ -636,6 +667,7 @@ static char* preprocess_buffer(const char* prog, const char* filename, struct Ma
   if_stack.current_active = true;
 
   const char* cursor = no_comments;
+  size_t line_no = 1;
   while (*cursor != '\0') {
     const char* line_start = cursor;
     while (*cursor != '\0' && *cursor != '\n') cursor++;
@@ -647,12 +679,14 @@ static char* preprocess_buffer(const char* prog, const char* filename, struct Ma
     while (p < line_end && isspace((unsigned char)*p)) p++;
     // Directive lines are recognized even when indented.
     if (p < line_end && *p == '#') {
-      if (!preprocess_directive(p + 1, line_end, has_newline, filename, macros, &out, &if_stack)) {
+      if (!preprocess_directive(p + 1, line_end, has_newline, line_no,
+                                filename, macros, &out, &if_stack)) {
         free(no_comments);
         free(out.data);
         free(if_stack.items);
         return NULL;
       }
+      if (has_newline) line_no++;
       continue;
     }
 
@@ -673,11 +707,13 @@ static char* preprocess_buffer(const char* prog, const char* filename, struct Ma
         return NULL;
       }
     }
+    if (has_newline) line_no++;
   }
 
   // Unterminated #ifdef/#ifndef should be reported as an error.
   if (if_stack.count != 0) {
-    fprintf(stderr, "Unterminated #ifdef/#ifndef block\n");
+    preprocessor_error_at(filename, line_no,
+                          "unterminated #ifdef/#ifndef block (reached end of file)");
     free(no_comments);
     free(out.data);
     free(if_stack.items);

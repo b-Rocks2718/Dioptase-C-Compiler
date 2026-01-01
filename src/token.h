@@ -1,6 +1,8 @@
 #ifndef TOKEN_H
 #define TOKEN_H
 
+#include <stddef.h>
+
 enum TokenType {
   // tokens with data
   INT_LIT, // CONTAINS INT
@@ -83,6 +85,8 @@ union TokenVariant {
 struct Token {
   enum TokenType type;
   union TokenVariant data;
+  const char* start;
+  size_t len;
 };
 
 void free_token(struct Token* token);

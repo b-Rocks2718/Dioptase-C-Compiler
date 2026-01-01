@@ -1,4 +1,4 @@
 [
     return, x, ;
 ]
-parser failed at offset 0
+Parse error at tests/lexer/keyword_then_ident.c:1:1: unexpected token

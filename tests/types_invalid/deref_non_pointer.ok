@@ -1,2 +1,2 @@
 Typechecking failed
-Type error: Cannot dereference non-pointer type
+Type error at tests/types_invalid/deref_non_pointer.c:4:10: cannot dereference non-pointer type

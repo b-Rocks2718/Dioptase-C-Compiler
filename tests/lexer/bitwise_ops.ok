@@ -1,4 +1,4 @@
 [
     a, &, b, |, c, ^, d, ;
 ]
-parser failed at offset 0
+Parse error at tests/lexer/bitwise_ops.c:1:1: unexpected token

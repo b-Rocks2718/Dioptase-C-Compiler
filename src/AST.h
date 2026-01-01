@@ -231,6 +231,7 @@ union ExprVariant {
 };
 
 struct Expr {
+  const char* loc; // start of this expression in the preprocessed source
   struct Type* value_type;
   enum ExprType type;
   union ExprVariant expr;
@@ -369,6 +370,7 @@ union StatementVariant {
 };
 
 struct Statement {
+  const char* loc; // start of this statement in the preprocessed source
   union StatementVariant statement;
   enum StatementType type;
 };

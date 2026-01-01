@@ -1,4 +1,4 @@
 [
     a, <<, 2, ;, b, >>, 3, ;
 ]
-parser failed at offset 0
+Parse error at tests/lexer/shifts.c:1:1: unexpected token

@@ -1,1 +1,1 @@
-Unterminated #ifdef/#ifndef block
+Preprocessor error at tests/preprocess_invalid/unterminated_if.c:3: unterminated #ifdef/#ifndef block (reached end of file)

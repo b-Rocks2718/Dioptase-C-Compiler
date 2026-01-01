@@ -1,1 +1,1 @@
-Preprocessor failed to open include file: tests/preprocess_invalid/missing.h
+Preprocessor error at tests/preprocess_invalid/bad_include_missing.c:1: failed to open include file: tests/preprocess_invalid/missing.h

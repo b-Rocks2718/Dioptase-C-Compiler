@@ -13,6 +13,7 @@
 #include "label_resolution.h"
 #include "typechecking.h"
 #include "arena.h"
+#include "source_location.h"
 
 int main(int argc, const char *const *const argv) {
 
@@ -119,6 +120,7 @@ int main(int argc, const char *const *const argv) {
         return 1;
     }
     size_t preprocessed_len = strlen(preprocessed);
+    set_source_context(filename, preprocessed);
 
     if (print_preprocess) {
         fputs(preprocessed, stdout);

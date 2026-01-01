@@ -2,4 +2,4 @@
     switch, (, x, ), {, case, 1, :, break, ;, 
     default, :, break, ;, }
 ]
-parser failed at offset 0
+Parse error at tests/lexer/switch_case.c:1:1: unexpected token

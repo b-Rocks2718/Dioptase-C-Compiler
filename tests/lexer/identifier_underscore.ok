@@ -1,4 +1,4 @@
 [
     _foo
 ]
-parser failed at offset 0
+Parse error at tests/lexer/identifier_underscore.c:1:1: unexpected token

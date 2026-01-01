@@ -1,4 +1,4 @@
 Identifier resolution failed
-Identifier Resolution Error: Multiple declarations for variable
-Identifier Resolution Error: Failed to resolve statement in block
-Identifier Resolution Error: Failed to resolve declaration
+Identifier Resolution Error at tests/types_invalid/init_duplicate_local_static.c:3:14: multiple declarations for variable
+Identifier Resolution Error: failed to resolve declaration in block
+Identifier Resolution Error: failed to resolve declaration

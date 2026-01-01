@@ -1,1 +1,1 @@
-parser failed at offset 0
+Parse error at tests/parser_invalid/invalid_return_void.c:1:1: unexpected token

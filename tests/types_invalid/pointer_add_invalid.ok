@@ -1,2 +1,2 @@
 Typechecking failed
-Type error: Invalid types for pointer arithmetic in addition
+Type error at tests/types_invalid/pointer_add_invalid.c:6:12: invalid types for pointer arithmetic in addition

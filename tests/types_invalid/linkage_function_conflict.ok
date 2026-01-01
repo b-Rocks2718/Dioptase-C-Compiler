@@ -1,2 +1,2 @@
 Typechecking failed
-Type error: Conflicting function linkage for function helper
+Type error at tests/types_invalid/linkage_function_conflict.c:2:12: conflicting function linkage for function helper

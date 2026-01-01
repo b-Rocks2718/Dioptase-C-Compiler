@@ -2,4 +2,4 @@
     int, a, =, 1, ,, b, =, 2, ,, c, 
     =, 3, ;
 ]
-parser failed at offset 0
+Parse error at tests/lexer/comma_list.c:1:1: unexpected token

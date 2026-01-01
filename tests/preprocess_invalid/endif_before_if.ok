@@ -1,1 +1,1 @@
-Unexpected #endif
+Preprocessor error at tests/preprocess_invalid/endif_before_if.c:1: unexpected #endif
