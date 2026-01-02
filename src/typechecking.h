@@ -61,6 +61,8 @@ struct IdentAttr {
   struct IdentInit init;
 };
 
+extern struct SymbolTable* global_symbol_table;
+
 // ------------------------- Typechecking Functions ------------------------- //
 
 bool typecheck_program(struct Program* program);
@@ -116,5 +118,11 @@ void symbol_table_insert(struct SymbolTable* hmap, struct Slice* key, struct Typ
 struct SymbolEntry* symbol_table_get(struct SymbolTable* hmap, struct Slice* key);
 
 bool symbol_table_contains(struct SymbolTable* hmap, struct Slice* key);
+
+void print_symbol_table(struct SymbolTable* hmap);
+
+void print_ident_attr(struct IdentAttr* attrs);
+
+void print_ident_init(struct IdentInit* init);
 
 #endif // TYPECHECKING_H

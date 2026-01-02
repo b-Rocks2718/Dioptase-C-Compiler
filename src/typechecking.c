@@ -126,8 +126,8 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
       return false;
     }
 
-  // By this point, types and linkage match; update only if init state improves.
-  // Ordering is NO_INIT < TENTATIVE < INITIAL.
+    // By this point, types and linkage match; update only if init state improves.
+    // Ordering is NO_INIT < TENTATIVE < INITIAL.
 
     if (init_type > entry->attrs->init.init_type) {
       // upgrade init type
@@ -135,6 +135,8 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
       if (init_type == INITIAL) {
         entry->attrs->init.init_list = arena_alloc(sizeof(struct InitList));
         entry->attrs->init.init_list->value.int_type = INT_INIT; // assuming int type for simplicity
+        entry->attrs->init.init_list->value.value = var_dclr->init->expr.lit_expr.value.int_val;
+        entry->attrs->is_defined = true;
         entry->attrs->init.init_list->next = NULL;
       }
     }
@@ -487,7 +489,7 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
     if (entry == NULL) {
       // New extern declaration shares the global table but has no definition.
       struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
-      attrs->attr_type = NO_INIT;
+      attrs->attr_type = STATIC_ATTR;
       attrs->is_defined = false;
       attrs->is_global = true;
       symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
@@ -1124,4 +1126,70 @@ bool symbol_table_contains(struct SymbolTable* hmap, struct Slice* key){
     cur = cur->next;
   }
   return false;
+}
+
+void print_symbol_table(struct SymbolTable* hmap){
+  for (size_t i = 0; i < hmap->size; i++){
+    struct SymbolEntry* cur = hmap->arr[i];
+    while (cur != NULL){
+      printf("Key: %.*s\n", (int)cur->key->len, cur->key->start);
+      printf("  Type: ");
+      print_type(cur->type);
+      printf("\n");
+      printf("  Attributes:\n");
+      print_ident_attr(cur->attrs);
+      printf("\n");
+      cur = cur->next;
+    }
+  }
+}
+
+void print_ident_attr(struct IdentAttr* attrs){
+  if (attrs == NULL){
+    printf("NULL\n");
+    return;
+  }
+  printf("    Attr Type: ");
+  switch (attrs->attr_type){
+    case FUN_ATTR:
+      printf("Function\n");
+      break;
+    case STATIC_ATTR:
+      printf("Static Variable\n");
+      print_ident_init(&attrs->init);
+      break;
+    case LOCAL_ATTR:
+      printf("Local Variable\n");
+      break;
+    default:
+      printf("Unknown Attribute Type\n");
+      break;
+  }
+  printf("    Is Defined: %s\n", attrs->is_defined ? "true" : "false");
+  printf("    Is Global: %s\n", attrs->is_global ? "true" : "false");
+}
+
+void print_ident_init(struct IdentInit* init){
+  if (init == NULL){
+    printf("NULL\n");
+    return;
+  }
+  printf("    Init Type: ");
+  switch (init->init_type){
+    case NO_INIT:
+      printf("No Init\n");
+      break;
+    case TENTATIVE:
+      printf("Tentative\n");
+      break;
+    case INITIAL:
+      printf("Initial ");
+      struct InitList* cur = init->init_list;
+      printf("%d", cur->value.value);
+      printf("\n");
+      break;
+    default:
+      printf("Unknown Init Type\n");
+      break;
+  }
 }

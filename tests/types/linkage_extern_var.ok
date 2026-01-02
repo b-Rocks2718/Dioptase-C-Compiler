@@ -1,3 +1,18 @@
+Key: shared_value
+  Type: int
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Tentative
+    Is Defined: false
+    Is Global: true
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
 Program(
     VarDclr(extern, int, shared_value);
     VarDclr(none, int, shared_value);

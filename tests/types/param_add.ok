@@ -1,3 +1,31 @@
+Key: add
+  Type: func(ret_type=int, param_types=[int, int, ])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
+Key: a.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: b.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
 Program(
     FunDclr(
         add,

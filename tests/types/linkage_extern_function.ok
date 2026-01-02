@@ -1,3 +1,17 @@
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
+Key: helper
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
 Program(
     FunDclr(
         helper,

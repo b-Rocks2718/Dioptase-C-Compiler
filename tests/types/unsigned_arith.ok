@@ -1,0 +1,70 @@
+Key: add
+  Type: func(ret_type=uint, param_types=[uint, int, ])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
+Key: a.0
+  Type: uint
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: b.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: r.4
+  Type: uint
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: s.3
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: u.2
+  Type: uint
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
+Program(
+    FunDclr(
+        add,
+        storage=none
+        params=[VarDclr(none, uint, a.0), VarDclr(none, int, b.1), ]
+        type=func(ret_type=uint, param_types=[uint, int, ]),
+        body=
+            Return(AddOp(Var(a.0):uint, Cast(uint, Var(b.1):int):uint):uint, add);
+    );
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, uint, u.2, Cast(uint, LitExpr(int, 1):int):uint);
+            VarDclr(none, int, s.3, Negate(LitExpr(int, 2):int):int);
+            VarDclr(none, uint, r.4, FunCallExpr(add, [Var(u.2):uint, Var(s.3):int, ]):uint);
+            Return(Cast(int, Var(r.4):uint):int, main);
+    );
+)

@@ -1,3 +1,18 @@
+Key: counter
+  Type: int
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Initial 1
+    Is Defined: true
+    Is Global: false
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
 Program(
     VarDclr(static, int, counter);
     VarDclr(static, int, counter);

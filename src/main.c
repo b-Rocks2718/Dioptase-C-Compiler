@@ -12,6 +12,7 @@
 #include "identifier_resolution.h"
 #include "label_resolution.h"
 #include "typechecking.h"
+#include "TAC.h"
 #include "arena.h"
 #include "source_location.h"
 
@@ -184,6 +185,7 @@ int main(int argc, const char *const *const argv) {
         arena_destroy();
         return 5;
     } else if (print_types) {
+        print_symbol_table(global_symbol_table);
         print_prog(prog);
     }
     

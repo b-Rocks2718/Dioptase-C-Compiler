@@ -1,3 +1,52 @@
+Key: z.4
+  Type: long
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: a.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: b.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: widen
+  Type: func(ret_type=long, param_types=[int, int, ])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
+Key: x.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: y.3
+  Type: long
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
 Program(
     FunDclr(
         widen,

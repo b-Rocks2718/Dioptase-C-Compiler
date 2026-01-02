@@ -1,3 +1,31 @@
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
+Key: x.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: y.1
+  Type: long
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: z.2
+  Type: long
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
 Program(
     FunDclr(
         main,

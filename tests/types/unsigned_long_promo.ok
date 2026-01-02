@@ -1,0 +1,41 @@
+Key: sum.2
+  Type: ulong
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: ul.1
+  Type: ulong
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: u.0
+  Type: uint
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, uint, u.0, Cast(uint, LitExpr(int, 1):int):uint);
+            VarDclr(none, ulong, ul.1, Cast(ulong, LitExpr(int, 2):int):ulong);
+            VarDclr(none, ulong, sum.2, AddOp(Cast(ulong, Var(u.0):uint):ulong, Var(ul.1):ulong):ulong);
+            Return(Cast(int, Var(sum.2):ulong):int, main);
+    );
+)
