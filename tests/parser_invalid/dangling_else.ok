@@ -1,1 +1,1 @@
-Parse error at tests/parser_invalid/dangling_else.c:1:1: unexpected token
+Parse error at tests/parser_invalid/dangling_else.c:2:8: unexpected token

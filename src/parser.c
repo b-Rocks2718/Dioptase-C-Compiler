@@ -13,8 +13,25 @@
 static struct Token * program;
 static size_t prog_size;
 static struct Token * current;
+// Track the furthest consumed token so backtracking reports a useful error location.
+static size_t max_consumed_index;
+static bool max_consumed_valid;
+
+static void record_consumed_token(const struct Token* token) {
+  size_t index = (size_t)(token - program);
+  if (!max_consumed_valid || index > max_consumed_index) {
+    max_consumed_index = index;
+    max_consumed_valid = true;
+  }
+}
 
 static const char* parser_error_ptr(void) {
+  if (max_consumed_valid) {
+    if (max_consumed_index < prog_size) {
+      return program[max_consumed_index].start;
+    }
+    return source_text_end();
+  }
   if ((size_t)(current - program) < prog_size) {
     return current->start;
   }
@@ -54,6 +71,7 @@ static struct Statement* alloc_stmt(enum StatementType type, const char* loc) {
 static bool consume(const enum TokenType expected) {
   if (current - program < prog_size && expected == current->type) {
     current++;
+    record_consumed_token(current - 1);
     return true;
   } else {
     return false;
@@ -63,6 +81,7 @@ static bool consume(const enum TokenType expected) {
 static union TokenVariant* consume_with_data(const enum TokenType expected) {
   if (current - program < prog_size && expected == current->type) {
     current++;
+    record_consumed_token(current - 1);
     return &((current - 1)->data);
   } else {
     return NULL;
@@ -1570,6 +1589,8 @@ struct Program* parse_prog(struct TokenArray* arr){
   program = arr->tokens;
   current = program;
   prog_size = arr->size;
+  max_consumed_valid = false;
+  max_consumed_index = 0;
 
   struct Program* prog = arena_alloc(sizeof(struct Program));
   struct Declaration* dclr = parse_declaration();

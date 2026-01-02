@@ -2,5 +2,5 @@
     static, extern, unsigned, signed, long, int, x, ;, goto, label, 
     ;, label, :, continue, ;
 ]
-Parse error at tests/lexer/storage_and_flow.c:1:40: invalid storage class
-Parse error at tests/lexer/storage_and_flow.c:1:1: unexpected token
+Parse error at tests/lexer/storage_and_flow.c:1:36: invalid storage class
+Parse error at tests/lexer/storage_and_flow.c:1:36: unexpected token

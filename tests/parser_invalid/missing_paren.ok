@@ -1,1 +1,1 @@
-Parse error at tests/parser_invalid/missing_paren.c:1:1: unexpected token
+Parse error at tests/parser_invalid/missing_paren.c:1:10: unexpected token

@@ -1,1 +1,1 @@
-Parse error at tests/parser_invalid/missing_semicolon.c:1:1: unexpected token
+Parse error at tests/parser_invalid/missing_semicolon.c:2:10: unexpected token

@@ -1,1 +1,1 @@
-Parse error at tests/parser_invalid/invalid_return_void.c:1:1: unexpected token
+Parse error at tests/parser_invalid/invalid_return_void.c:2:3: unexpected token

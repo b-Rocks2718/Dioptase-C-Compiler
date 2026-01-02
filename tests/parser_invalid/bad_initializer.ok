@@ -1,1 +1,1 @@
-Parse error at tests/parser_invalid/bad_initializer.c:1:1: unexpected token
+Parse error at tests/parser_invalid/bad_initializer.c:2:9: unexpected token
