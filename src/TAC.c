@@ -1,575 +1,1707 @@
+#define TAC_INTERNAL
 #include "TAC.h"
+#include "arena.h"
+#include "label_resolution.h"
+#include "source_location.h"
+#include "unique_name.h"
 
-int tac_temp_counter = 0;
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
 
-/*
--- create a unique temporary variable name
-makeTemp :: String -> Type_ -> TACState Val
-makeTemp name type_ = do
-  n <- gets getN
-  putN (n + 1)
-  let varName = name ++ ".tmp." ++ show n
-  -- add to symbol table
-  symbols <- gets getSymbols
-  putSymbols $ (varName, (type_, LocalAttr)) : symbols
-  return (Var varName)
-*/
-struct Val* make_temp(const char* func_name, struct Type* type) {
-    
+static int tac_temp_counter = 0;
+static int tac_label_counter = 0;
+
+// Purpose: Print a TAC error with optional source location context and exit.
+// Inputs: loc may be NULL; fmt is a printf-style format.
+// Outputs: Writes a message to stdout; terminates with non-zero exit code.
+// Invariants/Assumptions: Source context must be initialized for locations.
+static void tac_error_at(const char* loc, const char* fmt, ...) {
+  struct SourceLocation where = source_location_from_ptr(loc);
+  const char* filename = source_filename_for_ptr(loc);
+  if (where.line == 0) {
+    printf("TAC Error: ");
+  } else {
+    printf("TAC Error at %s:%zu:%zu: ", filename, where.line, where.column);
+  }
+  va_list args;
+  va_start(args, fmt);
+  vprintf(fmt, args);
+  va_end(args);
+  printf("\n");
+  exit(EXIT_FAILURE);
 }
 
+// Purpose: Allocate and initialize a single TAC instruction node.
+// Inputs: type selects the instruction variant to populate later.
+// Outputs: Returns a node with next == NULL and last == self.
+// Invariants/Assumptions: Callers must fill the variant fields.
+static struct TACInstr* tac_instr_create(enum TACInstrType type) {
+  struct TACInstr* instr = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
+  instr->type = type;
+  instr->next = NULL;
+  instr->last = instr;
+  return instr;
+}
 
-/*
--- initialize global counter here
-progToTAC :: SymbolTable -> TypedAST.Prog -> (SymbolTable, Prog)
-progToTAC symbols (TypedAST.Prog p) =
-  let evalDclr d =
-        evalState (fileScopeDclrToTAC symbols d) (tacDataInit symbols)
-      rslt = evalDclr <$> p
-      newSymbols = last $ fst <$> rslt
-      instrs = concatMap snd rslt
-  in (newSymbols, Prog ([Comment "Data Section:"] ++ concatMap symbolToTAC symbols ++
-              [Comment "Code Section:"] ++ instrs))
-*/
+// Purpose: Find the last node in a TAC instruction list.
+// Inputs: instr is the head of a TAC list.
+// Outputs: Returns the final node (or NULL if instr is NULL).
+// Invariants/Assumptions: List links are well-formed (acyclic).
+static struct TACInstr* tac_find_last(struct TACInstr* instr) {
+  if (instr == NULL) {
+    return NULL;
+  }
+  struct TACInstr* cur = instr;
+  while (cur->next != NULL) {
+    cur = cur->next;
+  }
+  return cur;
+}
 
-/*
-fileScopeDclrToTAC :: SymbolTable -> TypedAST.Declaration -> TACState (SymbolTable, [TopLevel])
-fileScopeDclrToTAC symbols dclr = case dclr of
-  TypedAST.VarDclr (TypedAST.VariableDclr {}) -> return (symbols, []) -- returns empty list (will process later)
-  TypedAST.FunDclr f -> do
-    instrs <- funcToTAC f symbols -- returns singleton list
-    symbols' <- getSymbols <$> get
-    return (symbols', instrs)
-*/
+// Purpose: Allocate a constant TAC value.
+// Inputs: value is truncated to int per TAC Val constraints.
+// Outputs: Returns a Val tagged as CONSTANT.
+// Invariants/Assumptions: Constant values fit in int (see TAC.h).
+static struct Val* tac_make_const(int value) {
+  struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
+  val->val_type = CONSTANT;
+  val->val.const_value = value;
+  return val;
+}
 
-/*
--- takes an element of the symbol table, returns a global var or empty list
-symbolToTAC :: (String, (Type_, IdentAttrs)) -> [TopLevel]
-symbolToTAC (_, (FunType {}, _)) = []
-symbolToTAC (name, (type_, StaticAttr init_ global)) =
-  case init_ of
-    Tentative -> [StaticVar name global IntType [ZeroInit (typeSize type_)]]
-    NoInit -> []
-    Initial vs -> [StaticVar name global IntType vs]
-symbolToTAC _ = []
-*/
+// Purpose: Allocate a variable TAC value referencing an existing name.
+// Inputs: name is a Slice that must outlive the TAC.
+// Outputs: Returns a Val tagged as VARIABLE.
+// Invariants/Assumptions: The Slice points to stable memory (arena or source).
+static struct Val* tac_make_var(struct Slice* name) {
+  struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
+  val->val_type = VARIABLE;
+  val->val.var_name = name;
+  return val;
+}
 
-/*
-funcToTAC :: TypedAST.FunctionDclr -> SymbolTable -> TACState [TopLevel]
-funcToTAC (TypedAST.FunctionDclr name _ _ params mBody) symbols =
-  case mBody of
-    Just _ -> do
-      body <- mBodyToTAC name mBody
-      case lookup name symbols of
-        Just (FunType _ _, attrs) ->
-          return [Func name (TypedAST.isGlobal attrs) (paramToTAC <$> params) $
-          body ++ [Return (makeConstant IntType 0)]]
-        _ -> error "Compiler Error: missing or invalid symbol table entry"
-    Nothing -> return []
-*/
+// Purpose: Copy a Val payload into a pre-allocated destination.
+// Inputs: dst must be non-NULL; src must be non-NULL.
+// Outputs: dst receives a shallow copy of src.
+// Invariants/Assumptions: This does not deep-copy slices.
+static void tac_copy_val(struct Val* dst, const struct Val* src) {
+  if (dst == NULL || src == NULL) {
+    return;
+  }
+  *dst = *src;
+}
 
-/*
-mBodyToTAC :: String -> Maybe TypedAST.Block -> TACState [Instr]
-mBodyToTAC name mBody = case mBody of
-  Just body -> blockToTAC name body
-  Nothing -> return []
-*/
+// Purpose: Build a unique TAC label under the current function name.
+// Inputs: func_name is the owning function; suffix differentiates labels.
+// Outputs: Returns a new Slice for the label name.
+// Invariants/Assumptions: Uses a monotonically increasing counter.
+static struct Slice* tac_make_label(struct Slice* func_name, const char* suffix) {
+  size_t suffix_len = 0;
+  while (suffix[suffix_len] != '\0') {
+    suffix_len++;
+  }
+  unsigned id_len = counter_len(tac_label_counter);
+  size_t new_len = func_name->len + 1 + suffix_len + 1 + id_len;
 
-/*
-paramToTAC :: TypedAST.VariableDclr -> String
-paramToTAC (TypedAST.VariableDclr name _ _ _) = name
-*/
+  char* new_str = (char*)arena_alloc(new_len);
+  for (size_t i = 0; i < func_name->len; i++) {
+    new_str[i] = func_name->start[i];
+  }
+  new_str[func_name->len] = '.';
+  for (size_t i = 0; i < suffix_len; i++) {
+    new_str[func_name->len + 1 + i] = suffix[i];
+  }
+  new_str[func_name->len + 1 + suffix_len] = '.';
 
-/*
-blockToTAC :: String -> TypedAST.Block -> TACState [Instr]
-blockToTAC name (TypedAST.Block items) = do
-  init_ <- get
-  foldl' (blockItemsToTAC name) (state $ const ([], init_)) items
+  int id = tac_label_counter;
+  for (unsigned i = 0; i < id_len; i++) {
+    new_str[new_len - 1 - i] = '0' + (id % 10);
+    id /= 10;
+  }
 
-blockItemsToTAC :: String -> TACState [Instr] ->
-    TypedAST.BlockItem -> TACState [Instr]
-blockItemsToTAC name tacState item = case item of
-  TypedAST.StmtBlock stmt -> do
-    instrs <- tacState
-    newInstrs <- stmtToTAC name stmt
-    return (instrs ++ newInstrs)
-  TypedAST.DclrBlock dclr -> do
-    instrs <- tacState
-    newInstrs <- localDclrToTAC name dclr
-    return (instrs ++ newInstrs)
-*/
+  tac_label_counter++;
 
-/*
-localDclrToTAC :: String -> TypedAST.Declaration -> TACState [Instr]
-localDclrToTAC name dclr = case dclr of
-  TypedAST.VarDclr v -> varDclrToTAC name v
-  TypedAST.FunDclr f -> case f of
-    (TypedAST.FunctionDclr _ _ _ _ Nothing) -> return []
-    _ -> error "Compiler Error: Local function should have been found by now"
-      -- local functions definitions should have been caught by now
-*/
+  struct Slice* unique_label = (struct Slice*)arena_alloc(sizeof(struct Slice));
+  unique_label->start = new_str;
+  unique_label->len = new_len;
 
-/*
-varDclrToTAC :: String -> TypedAST.VariableDclr -> TACState [Instr]
-varDclrToTAC name (TypedAST.VariableDclr varName type_ mStorage mExpr) = case mExpr of
-  Just init_ ->
-    case init_ of
-      TypedAST.SingleInit expr _ -> case mStorage of
-        Just _ -> pure []
-        Nothing -> fst <$> exprToTACConvert name
-          (TypedAST.Assign (TypedAST.Var varName type_) expr type_)
-      TypedAST.CompoundInit inits arrType -> arrayInitTAC name varName inits arrType 0
-  Nothing -> pure []
-*/
+  return unique_label;
+}
 
-/*
-arrayInitTAC :: String -> String -> [TypedAST.VarInit] -> Type_ -> Int -> TACState [Instr]
-arrayInitTAC name vName inits type_ n = do
-  symbols <- gets getSymbols
-  putSymbols $ (vName, (type_, LocalAttr)) : symbols
-  let dst = Var vName
-  case inits of
-    x : xs -> do
-      case x of
-        TypedAST.SingleInit expr inner -> do
-          instrs <- arrayInitTAC name vName xs type_ (n + typeSize inner)
-          (instrs2, rslt) <- exprToTAC name expr
-          let src = getVal rslt
-          return $ instrs2 ++ (CopyToOffset dst src (n * typeSize inner) : instrs)
-        TypedAST.CompoundInit comp inner -> do
-          instrs <- arrayInitTAC name vName xs type_ (n + typeSize inner)
-          instrs2 <- arrayInitTAC name vName comp inner n
-          return $ instrs2 ++  instrs
-    [] -> return []
-*/
+// Purpose: Identify relational binary operators that yield boolean results.
+// Inputs: op is the AST binary operator.
+// Outputs: Returns true if op is a relational comparison.
+// Invariants/Assumptions: Equality and ordering ops are the only relational ops.
+static bool is_relational_op(enum BinOp op) {
+  switch (op) {
+    case BOOL_EQ:
+    case BOOL_NEQ:
+    case BOOL_LE:
+    case BOOL_LEQ:
+    case BOOL_GE:
+    case BOOL_GEQ:
+      return true;
+    default:
+      return false;
+  }
+}
 
-/*
-stmtToTAC :: String -> TypedAST.Stmt -> TACState [Instr]
-stmtToTAC name stmt = case stmt of
-  (TypedAST.RetStmt expr) -> do
-    (instrs, dst) <- exprToTACConvert name expr
-    return (instrs ++ [Return dst])
-  (TypedAST.ExprStmt expr) -> fst <$> exprToTACConvert name expr
-  (TypedAST.IfStmt condition left right) -> case right of
-    Just stmt' -> ifElseToTAC name condition left stmt'
-    Nothing -> ifToTAC name condition left
-  (TypedAST.GoToStmt label) -> return [Jump label]
-  (TypedAST.LabeledStmt label stmt') -> do
-    instrs <- stmtToTAC name stmt'
-    return $ Label label : instrs
-  (TypedAST.CompoundStmt block) -> blockToTAC name block
-  (TypedAST.BreakStmt mLabel) -> case mLabel of
-    Just label -> return [Jump $ label ++ ".break"]
-    Nothing -> error "Compiler Error: Loops should be labeled by now"
-  (TypedAST.ContinueStmt mLabel) -> case mLabel of
-    Just label -> return [Jump $ label ++ ".continue"]
-    Nothing -> error "Compiler Error: Loops should be labeled by now"
-  (TypedAST.DoWhileStmt body condition mLabel) -> doWhileToTAC name body condition mLabel
-  (TypedAST.WhileStmt condition body mLabel) -> whileToTAC name condition body mLabel
-  (TypedAST.ForStmt init_ condition end body mLabel) -> forToTAC name init_ condition end body mLabel
-  (TypedAST.SwitchStmt expr stmt' mLabel cases) -> do
-    let label = case mLabel of
-          Just l -> l
-          Nothing -> error "Compiler Error: Switch statement should be labeled by now"
-    (exprInstrs, dst) <- exprToTACConvert name expr
-    casesInstrs <- casesToTAC label cases dst
-    stmtInstrs <- stmtToTAC name stmt'
-    return (exprInstrs ++ casesInstrs ++ stmtInstrs ++ [Label $ label ++ ".break"])
-  (TypedAST.CaseStmt _ stmt' label) -> case label of
-    Just l -> do
-      stmtInstrs <- stmtToTAC name stmt'
-      return (Label l : stmtInstrs)
-    Nothing -> error "Compiler Error: Case statement should be labeled by now"
-  (TypedAST.DefaultStmt stmt' label) -> case label of
-    Just l -> do
-      stmtInstrs <- stmtToTAC name stmt'
-      return (Label l : stmtInstrs)
-    Nothing -> error "Compiler Error: Default statement should be labeled by now"
-  TypedAST.NullStmt -> return []
-*/
+// Purpose: Identify compound-assignment operators.
+// Inputs: op is the AST binary operator.
+// Outputs: Returns true for +=, -=, etc.
+// Invariants/Assumptions: ASSIGN_OP is handled separately.
+static bool is_compound_op(enum BinOp op) {
+  switch (op) {
+    case PLUS_EQ_OP:
+    case MINUS_EQ_OP:
+    case MUL_EQ_OP:
+    case DIV_EQ_OP:
+    case MOD_EQ_OP:
+    case AND_EQ_OP:
+    case OR_EQ_OP:
+    case XOR_EQ_OP:
+    case SHL_EQ_OP:
+    case SHR_EQ_OP:
+      return true;
+    default:
+      return false;
+  }
+}
 
-/*
-casesToTAC :: String -> Maybe [CaseLabel] -> Val -> TACState [Instr]
-casesToTAC label mCases rslt = case mCases of
-  Nothing -> error "Compiler Error: cases should be collected by now"
-  Just cases -> do
-    instrs <- mapM (caseToTAC label rslt) cases
-    return (concat instrs ++ [Jump $ label ++ ".break"])
+// Purpose: Map a compound-assignment operator to its binary operator.
+// Inputs: op must satisfy is_compound_op(op).
+// Outputs: Returns the underlying arithmetic/bitwise operator.
+// Invariants/Assumptions: Caller must validate op.
+static enum BinOp compound_to_binop(enum BinOp op) {
+  switch (op) {
+    case PLUS_EQ_OP:
+      return ADD_OP;
+    case MINUS_EQ_OP:
+      return SUB_OP;
+    case MUL_EQ_OP:
+      return MUL_OP;
+    case DIV_EQ_OP:
+      return DIV_OP;
+    case MOD_EQ_OP:
+      return MOD_OP;
+    case AND_EQ_OP:
+      return BIT_AND;
+    case OR_EQ_OP:
+      return BIT_OR;
+    case XOR_EQ_OP:
+      return BIT_XOR;
+    case SHL_EQ_OP:
+      return BIT_SHL;
+    case SHR_EQ_OP:
+      return BIT_SHR;
+    default:
+      return op;
+  }
+}
 
-caseToTAC :: String -> Val -> CaseLabel -> TACState [Instr]
-caseToTAC label rslt (IntCase n) = do
-  return [Cmp rslt (Constant (ConstInt n)), CondJump CondE $ label ++ "." ++ show n]
-caseToTAC label _ DefaultCase = return [Jump $ label ++ ".default"]
-*/
+// Purpose: Map a relational operator to a TAC condition, using signedness.
+// Inputs: op is a relational operator; type describes the operand type.
+// Outputs: Returns the TAC condition used for a successful comparison.
+// Invariants/Assumptions: type is arithmetic; signedness follows typechecking.
+static enum TACCondition relation_to_cond(enum BinOp op, struct Type* type) {
+  bool is_signed = is_signed_type(type);
+  switch (op) {
+    case BOOL_EQ:
+      return CondE;
+    case BOOL_NEQ:
+      return CondNE;
+    case BOOL_GE:
+      return is_signed ? CondG : CondA;
+    case BOOL_GEQ:
+      return is_signed ? CondGE : CondAE;
+    case BOOL_LE:
+      return is_signed ? CondL : CondB;
+    case BOOL_LEQ:
+      return is_signed ? CondLE : CondBE;
+    default:
+      return CondE;
+  }
+}
 
-/*
-doWhileToTAC :: String -> TypedAST.Stmt -> TypedAST.Expr -> Maybe String -> TACState [Instr]
-doWhileToTAC name body condition mLabel = do
-  let label = case mLabel of
-        Just x -> x
-        Nothing -> error "Compiler Error: loops should be labeled by now"
-  bodyInstrs <- stmtToTAC name body
-  (conditionInstrs, rslt) <- exprToTACConvert name condition
-  return ( [Label $ label ++ ".start"] ++
-    bodyInstrs ++
-    [Label $ label ++ ".continue"] ++
-    conditionInstrs ++
-    [Cmp rslt (makeConstant IntType 0),
-    CondJump CondNE $ label ++ ".start"] ++
-    [Label $ label ++ ".break"])
-*/
+// Purpose: Allocate a new temporary variable for TAC lowering.
+// Inputs: func_name identifies the owning function; type documents the value type.
+// Outputs: Returns a Val naming the temporary.
+// Invariants/Assumptions: The temp counter is global and monotonically increasing.
+struct Val* make_temp(struct Slice* func_name, struct Type* type) {
+  // The temp name encodes uniqueness only; type is tracked by instructions.
+  (void)type;
+  unsigned id_len = counter_len(tac_temp_counter);
+  size_t new_len = func_name->len + 5 + id_len; // len(".tmp.") == 5
 
-/*
-whileToTAC :: String -> TypedAST.Expr -> TypedAST.Stmt -> Maybe String -> TACState [Instr]
-whileToTAC name condition body mLabel = do
-  let label = case mLabel of
-        Just x -> x
-        Nothing -> error "Compiler Error: loops should be labeled by now"
-  bodyInstrs <- stmtToTAC name body
-  (conditionInstrs, rslt) <- exprToTACConvert name condition
-  return ([Label $ label ++ ".continue"] ++
-    conditionInstrs ++
-    [Cmp rslt (makeConstant IntType 0),
-    CondJump CondE $ label ++ ".break"] ++
-    bodyInstrs ++
-    [Jump $ label ++ ".continue"] ++
-    [Label $ label ++ ".break"])
-*/
+  char* new_str = (char*)arena_alloc(new_len);
+  for (size_t i = 0; i < func_name->len; i++) {
+    new_str[i] = func_name->start[i];
+  }
+  new_str[func_name->len] = '.';
+  new_str[func_name->len + 1] = 't';
+  new_str[func_name->len + 2] = 'm';
+  new_str[func_name->len + 3] = 'p';
+  new_str[func_name->len + 4] = '.';
 
-/*
-forToTAC :: String -> TypedAST.ForInit -> Maybe TypedAST.Expr -> Maybe TypedAST.Expr ->
-  TypedAST.Stmt -> Maybe String -> TACState [Instr]
-forToTAC name init_ condition end body mLabel = do
-  let label = case mLabel of
-        Just x -> x
-        Nothing -> error "Compiler Error: Loops should be labeled by now"
-  initInstrs <- initToTAC name init_
-  bodyInstrs <- stmtToTAC name body
-  conditionInstrs <- case condition of
-    Just c -> do
-      (cExprInstrs, rslt) <- exprToTACConvert name c
-      return (cExprInstrs ++
-            [Cmp rslt (makeConstant IntType 0),
-            CondJump CondE $ label ++ ".break"])
-    Nothing -> pure []
-  (endInstrs, _) <- case end of
-    Just e -> exprToTAC name e
-    Nothing -> pure ([], PlainOperand $ Constant $ ConstInt 0)
-  return (initInstrs ++
-    [Label $ label ++ ".start"] ++
-    conditionInstrs ++    bodyInstrs ++
-    [Label $ label ++ ".continue"] ++
-    endInstrs ++
-    [Jump $ label ++ ".start"] ++
-    [Label $ label ++ ".break"])
-*/
+  // append unique id
+  int id = tac_temp_counter;
+  for (unsigned i = 0; i < id_len; i++) {
+    new_str[new_len - 1 - i] = '0' + (id % 10);
+    id /= 10;
+  }
 
-/*
-initToTAC :: String -> TypedAST.ForInit -> TACState [Instr]
-initToTAC name init_ = case init_ of
-  TypedAST.InitDclr d -> varDclrToTAC name d
-  TypedAST.InitExpr e -> case e of
-    Just expr -> fst <$> exprToTAC name expr
-    Nothing -> pure []
+  tac_temp_counter++;
 
-ifToTAC :: String -> TypedAST.Expr ->
-    TypedAST.Stmt -> TACState [Instr]
-ifToTAC name condition left = do
-  (rslt1, src1) <- exprToTACConvert name condition
-  rslt2 <- stmtToTAC name left
-  n <- getN <$> get
-  let endStr = name ++ ".end." ++ show n
-  putN (n + 1)
-  return (rslt1 ++
-          [Cmp src1 (makeConstant IntType 0),
-           CondJump CondE endStr] ++
-           rslt2 ++
-          [Label endStr])
-*/
+  struct Slice* unique_label = (struct Slice*)arena_alloc(sizeof(struct Slice));
+  unique_label->start = new_str;
+  unique_label->len = new_len;
 
-/*
-ifElseToTAC :: String -> TypedAST.Expr ->
-    TypedAST.Stmt -> TypedAST.Stmt -> TACState [Instr]
-ifElseToTAC name condition left right = do
-  (rslt1, src1) <- exprToTACConvert name condition
-  rslt2 <- stmtToTAC name left
-  n <- getN <$> get
-  let elseStr = name ++ ".else." ++ show n
-  putN (n + 1)
-  rslt3 <- stmtToTAC name right
-  n' <- getN <$> get
-  let endStr = name ++ ".end." ++ show n'
-  putN (n' + 1)
-  return (rslt1 ++
-    [Cmp src1 (makeConstant IntType 0),
-     CondJump CondE elseStr] ++
-     rslt2 ++
-     [Jump endStr,
-     Label elseStr] ++
-     rslt3 ++
-    [Label endStr])
-*/
+  struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
+  val->val_type = VARIABLE;
+  val->val.var_name = unique_label;
 
-/*
-argsToTAC :: String -> [TypedAST.Expr] -> TACState ([Instr], [Val])
-argsToTAC name = foldl' (argsFold name) (return ([], []))
+  return val;
+}
 
-argsFold :: String -> TACState ([Instr], [Val]) ->
-    TypedAST.Expr -> TACState ([Instr], [Val])
-argsFold name oldState expr = do
-  (instrs, srcs) <- oldState
-  (newInstrs, src) <- exprToTACConvert name expr
-  return (instrs ++ newInstrs, srcs ++ [src])
-*/
+// Purpose: Lower a full program into a TAC program containing top-level items.
+// Inputs: program is a fully labeled and typechecked AST.
+// Outputs: Returns a TAC program with a linked list of TopLevel entries.
+// Invariants/Assumptions: Program declarations are in source order.
+struct TACProg* prog_to_TAC(struct Program* program) {
+  struct TACProg* tac_prog = (struct TACProg*)arena_alloc(sizeof(struct TACProg));
+  tac_prog->head = NULL;
+  tac_prog->tail = NULL;
 
-/*
-relationToCond :: BinOp -> Type_ -> Condition
-relationToCond op type_ = case op of
-  BoolEq -> CondE
-  BoolNeq -> CondNE
-  BoolGe -> if isSigned type_ then CondG else CondA
-  BoolGeq -> if isSigned type_ then CondGE else CondAE
-  BoolLe -> if isSigned type_ then CondL else CondB
-  BoolLeq -> if isSigned type_ then CondLE else CondBE
-  _ -> error "Compiler Error: not a relational condition"
-*/
+  for (struct DeclarationList* decl = program->dclrs; decl != NULL; decl = decl->next) {
+    struct TopLevel* top_level = file_scope_dclr_to_TAC(&decl->dclr);
 
-/*
-relationalToTAC :: String -> BinOp -> TypedAST.Expr -> TypedAST.Expr -> Type_ -> TACState ([Instr], ExprResult)
-relationalToTAC name op left right type_ = do
-  (rslt1, src1) <- exprToTACConvert name left
-  (rslt2, src2) <- exprToTACConvert name right
-  dst <- makeTemp name IntType -- relationals always return int
-  n <- getN <$> get
-  let endStr = name ++ ".end." ++ show n
-  putN (n + 1)
-  return ([Copy dst (makeConstant IntType 1)] ++
-          rslt1 ++ rslt2 ++
-          [Cmp src1 src2,
-          CondJump (relationToCond op type_) endStr,
-          Copy dst (makeConstant IntType 0),
-          Label endStr], PlainOperand dst)
-*/
+    // append TopLevel to TACProg
+    if (top_level != NULL) {
+      if (tac_prog->head == NULL) {
+        tac_prog->head = top_level;
+        tac_prog->tail = top_level;
+      } else {
+        tac_prog->tail->next = top_level;
+        tac_prog->tail = top_level;
+      }
+    }
+  }
 
-/*
-exprToTACConvert :: String -> TypedAST.Expr -> TACState ([Instr], Val)
-exprToTACConvert name expr = do
-  (instrs, rslt) <- exprToTAC name expr
-  case rslt of
-    PlainOperand val -> return (instrs, val)
-    DereferencedPointer ptr -> do
-      dst <- makeTemp name (getExprType expr)
-      return (instrs ++ [Load dst ptr], dst)
-*/
+  return tac_prog;
+}
 
-/*
-exprToTAC :: String -> TypedAST.Expr -> TACState ([Instr], ExprResult)
-exprToTAC name expr =
-  case expr of
-    -- short-circuiting operators
-    (TypedAST.Binary BoolAnd left right type_) -> do
-      (rslt1, src1) <- exprToTACConvert name left
-      (rslt2, src2) <- exprToTACConvert name right
-      dst <- makeTemp name type_
-      n <- getN <$> get
-      let endStr = name ++ ".end." ++ show n
-      putN (n + 1)
-      return ([Copy dst (makeConstant IntType 0)] ++
-        rslt1 ++
-        [Cmp src1 (makeConstant IntType 0),
-        CondJump CondE endStr] ++
-        rslt2 ++
-        [Cmp src2 (makeConstant IntType 0),
-        CondJump CondE endStr,
-        Copy dst (makeConstant IntType 1),
-        Label endStr], PlainOperand dst)
-    (TypedAST.Binary BoolOr left right type_) -> do
-      (rslt1, src1) <- exprToTACConvert name left
-      (rslt2, src2) <- exprToTACConvert name right
-      dst <- makeTemp name type_
-      n <- getN <$> get
-      let endStr = name ++ ".end." ++ show n
-      putN (n + 1)
-      return ([Copy dst (makeConstant IntType 1)] ++
-              rslt1 ++
-              [Cmp src1 (makeConstant IntType 0),
-              CondJump CondNE endStr] ++
-              rslt2 ++
-              [Cmp src2 (makeConstant IntType 0),
-              CondJump CondNE endStr,
-              Copy dst (makeConstant IntType 0),
-              Label endStr], PlainOperand dst)
-    (TypedAST.Binary AddOp left right type_) ->
-      if isArithmeticType (getExprType left) && isArithmeticType (getExprType right) then do
-        (rslt1, src1) <- exprToTACConvert name left
-        --dst1 <- makeTemp name
-        (rslt2, src2) <- exprToTACConvert name right
-        dst2 <- makeTemp name type_ -- non compound op makes new variable for result
-        -- possible optimization: return dst1
-        return (rslt1 ++ rslt2 ++ [Binary AddOp dst2 src1 src2 type_], PlainOperand dst2)
-      else if isArithmeticType (getExprType left) && isPointerType (getExprType right) then do
-        (rslt1, src1) <- exprToTACConvert name left
-        --dst1 <- makeTemp name
-        (rslt2, src2) <- exprToTACConvert name right
-        dst2 <- makeTemp name type_
-        dst3 <- makeTemp name type_ -- non compound op makes new variable for result
-        -- possible optimization: return dst1
-        let refType = getRefType $ getExprType right
-        let leftType = getExprType left
-        return (rslt1 ++ rslt2 ++
-          [ Binary MulOp dst2 src1 (makeConstant leftType $ typeSize refType) leftType,
-            Binary AddOp dst3 dst2 src2 type_], PlainOperand dst3)
-      else if isPointerType (getExprType left) && isArithmeticType (getExprType right) then do
-        (rslt1, src1) <- exprToTACConvert name left
-        --dst1 <- makeTemp name
-        (rslt2, src2) <- exprToTACConvert name right
-        dst2 <- makeTemp name type_
-        dst3 <- makeTemp name type_ -- non compound op makes new variable for result
-        -- possible optimization: return dst1
-        let refType = getRefType $ getExprType left
-        let rightType = getExprType right
-        return (rslt1 ++ rslt2 ++
-          [ Binary MulOp dst2 src2 (makeConstant rightType $ typeSize refType) rightType,
-            Binary AddOp dst3 src1 dst2 type_], PlainOperand dst3)
-      else return $ error "Compiler Error: invalid add made it past typechecking"
-    (TypedAST.Binary SubOp left right type_) -> do
-      if isArithmeticType (getExprType left) && isArithmeticType (getExprType right) then do
-        (rslt1, src1) <- exprToTACConvert name left
-        --dst1 <- makeTemp name
-        (rslt2, src2) <- exprToTACConvert name right
-        dst2 <- makeTemp name type_ -- non compound op makes new variable for result
-        -- possible optimization: return dst1
-        return (rslt1 ++ rslt2 ++ [Binary SubOp dst2 src1 src2 type_], PlainOperand dst2)
-      else if isPointerType (getExprType left) && isArithmeticType (getExprType right) then do
-        (rslt1, src1) <- exprToTACConvert name left
-        --dst1 <- makeTemp name
-        (rslt2, src2) <- exprToTACConvert name right
-        dst2 <- makeTemp name type_
-        dst3 <- makeTemp name type_ -- non compound op makes new variable for result
-        -- possible optimization: return dst1
-        let refType = getRefType $ getExprType left
-        let rightType = getExprType right
-        return (rslt1 ++ rslt2 ++
-          [ Binary MulOp dst2 src2 (makeConstant rightType $ typeSize refType) rightType,
-            Binary SubOp dst3 src1 dst2 type_], PlainOperand dst3)
-      else return $ error "Compiler Error: invalid add made it past typechecking"
-    (TypedAST.Binary op left right type_) -> if op `elem` relationalOps
-      then relationalToTAC name op left right (getExprType left)
-      else if op `elem` compoundOps
-        then do
-          (rslt1, src1) <- exprToTACConvert name left
-          (rslt2, src2) <- exprToTACConvert name right
-          -- compound op stores result back in src1
-          return (rslt1 ++ rslt2 ++ [Binary (getCompoundOp op) src1 src1 src2 type_], PlainOperand src1)
-      else do
-        (rslt1, src1) <- exprToTACConvert name left
-        --dst1 <- makeTemp name
-        (rslt2, src2) <- exprToTACConvert name right
-        dst2 <- makeTemp name type_ -- non compound op makes new variable for result
-        -- possible optimization: return dst1
-        return (rslt1 ++ rslt2 ++ [Binary op dst2 src1 src2 type_], PlainOperand dst2)
-    (TypedAST.Assign left right _) -> do
-      -- possible optimization: remove the Copy here, pass dst to expr function
-      (rslt1, lval) <- exprToTAC name left
-      (rslt2, rval) <- exprToTACConvert name right
-      case lval of
-        PlainOperand obj ->
-          return (rslt1 ++ rslt2 ++ [Copy obj rval], lval)
-        DereferencedPointer ptr ->
-          return (rslt1 ++ rslt2 ++ [Store ptr rval], PlainOperand rval)
-    (TypedAST.PostAssign (TypedAST.Var v _) op type_) -> do
-      let src = Var v
-      oldVal <- makeTemp name type_
-      let binOp = if op == PostInc then AddOp else SubOp
-      return ([Copy oldVal src,
-              Binary binOp src src (makeConstant IntType 1) type_],
-              PlainOperand oldVal)
-    (TypedAST.PostAssign {}) -> error "Compiler Error: missed invalid lvalue"
-    (TypedAST.Conditional condition left right type_) -> do
-      (rslt1, src1) <- exprToTACConvert name condition
-      (rslt2, src2) <- exprToTACConvert name left
-      n <- getN <$> get
-      let elseStr = name ++ ".else." ++ show n
-      putN (n + 1)
-      (rslt3, src3) <- exprToTACConvert name right
-      dst <- makeTemp name type_
-      n' <- getN <$> get
-      let endStr = name ++ ".end." ++ show n'
-      putN (n' + 1)
-      return (rslt1 ++
-        [Cmp src1 (makeConstant IntType 0),
-         CondJump CondE elseStr] ++
-         rslt2 ++
-         [Copy dst src2,
-         Jump endStr,
-         Label elseStr] ++
-         rslt3 ++
-        [Copy dst src3,
-         Label endStr], PlainOperand dst)
-    (TypedAST.Lit m _) -> return ([], PlainOperand $ Constant m)
-    (TypedAST.Unary BoolNot fctr _) -> do
-      (rslt1, src1) <- exprToTACConvert name fctr
-      dst <- makeTemp name IntType -- bool ops always return int
-      n <- getN <$> get
-      let endStr = name ++ ".end." ++ show n
-      putN (n + 1)
-      return ([Copy dst (makeConstant IntType 1)] ++
-              rslt1 ++
-              [Cmp src1 (makeConstant IntType 0),
-              CondJump CondE endStr,
-              Copy dst (makeConstant IntType 0),
-              Label endStr], PlainOperand dst)
-    (TypedAST.Unary op expr' type_) -> do
-      (rslt, src) <- exprToTACConvert name expr'
-      dst <- makeTemp name type_
-      return (rslt ++ [Unary op dst src], PlainOperand dst)
-    (TypedAST.Var v _) -> return ([], PlainOperand $ Var v)
-    (TypedAST.FunctionCall funcName args type_) -> do
-      (rslts, srcs) <- argsToTAC name args
-      dst <- makeTemp name type_
-      return (rslts ++ [Call funcName dst srcs], PlainOperand dst)
-    (TypedAST.Cast type_ expr') -> do
-      (rslt, src) <- exprToTACConvert name expr'
-      (cast, dst) <-
-        if type_ == getExprType expr' then
-          return ([], src) -- return rslt
-        else do
-          -- extend or truncate
-          let oldType = getExprType expr'
-          dst <- makeTemp name type_
-          if typeSize type_ == typeSize oldType then
-            return ([Copy dst src], dst)
-          else error "long types not supported yet"
-          --else if typeSize type_ < typeSize oldType then
-          --  return [Truncate dst src]
-          --else if isSigned type_ then
-          --  return [SignExtend dst src]
-          --else
-          --  return [ZeroExtend dst src]
-      return (rslt ++ cast, PlainOperand dst)
-    (TypedAST.Dereference inner _) -> do
-      (instrs, rslt) <- exprToTACConvert name inner
-      return (instrs, DereferencedPointer rslt)
-    (TypedAST.AddrOf inner type_) -> do
-      (instrs, rslt) <- exprToTAC name inner
-      case rslt of
-        PlainOperand obj -> do
-          dst <- makeTemp name type_
-          return (instrs ++ [GetAddress dst obj], PlainOperand dst)
-        DereferencedPointer ptr -> return (instrs, PlainOperand ptr)
-    (TypedAST.Subscript left right type_) ->
-      -- TODO: maybe optimize this
-      if isPointerType (getExprType left) && isArithmeticType (getExprType right) then do
-        (rslt1, src1) <- exprToTACConvert name left
-        --dst1 <- makeTemp name
-        (rslt2, src2) <- exprToTACConvert name right
-        dst2 <- makeTemp name type_
-        dst3 <- makeTemp name type_
-        -- possible optimization: return dst1
-        let refType = getRefType $ getExprType left
-        let rightType = getExprType right
-        return (rslt1 ++ rslt2 ++
-          [ Binary MulOp dst2 src2 (makeConstant rightType $ typeSize refType) rightType,
-            Binary AddOp dst3 src1 dst2 type_], DereferencedPointer dst3)
-      else return $ error "Compiler Error: invalid add made it past typechecking"
-*/
+// Purpose: Lower a file-scope declaration into a TopLevel TAC node.
+// Inputs: declaration points to a parsed, typechecked declaration.
+// Outputs: Returns a TopLevel node or NULL if no TAC is generated.
+// Invariants/Assumptions: Non-function definitions are handled via the symbol table.
+struct TopLevel* file_scope_dclr_to_TAC(struct Declaration* declaration) {
+  switch (declaration->type) {
+    case FUN_DCLR:
+      return func_to_TAC(&declaration->dclr.fun_dclr);
+    case VAR_DCLR:
+      // TAC for static variables is generated from the symbol table later.
+      return NULL;
+    default:
+      tac_error_at(NULL, "invalid declaration type in file scope");
+      return NULL;
+  }
+}
+
+// Purpose: Lower a symbol table entry into a TopLevel static variable node.
+// Inputs: symbol is a file-scope entry from the global symbol table.
+// Outputs: Returns a TopLevel node or NULL if not a static variable.
+// Invariants/Assumptions: Only STATIC_ATTR entries produce TAC output.
+struct TopLevel* symbol_to_TAC(struct SymbolEntry* symbol) {
+  switch (symbol->attrs->attr_type) {
+    case FUN_ATTR:
+      return NULL;
+    case STATIC_ATTR: {
+      struct TopLevel* top_level = (struct TopLevel*)arena_alloc(sizeof(struct TopLevel));
+      top_level->type = STATIC_VAR;
+      top_level->name = symbol->key;
+      top_level->global = symbol->attrs->is_global;
+
+      top_level->var_type = symbol->type;
+      top_level->init_values = &symbol->attrs->init;
+      top_level->num_inits = 0;
+      if (symbol->attrs->init.init_type == INITIAL && symbol->attrs->init.init_list != NULL) {
+        size_t count = 0;
+        for (struct InitList* init = symbol->attrs->init.init_list;
+             init != NULL;
+             init = init->next) {
+          count++;
+        }
+        top_level->num_inits = count;
+      }
+      
+      top_level->next = NULL;
+      return top_level;
+    }
+    case LOCAL_ATTR:
+      // local variables do not produce file-scope TAC
+      return NULL;
+    default:
+      tac_error_at(NULL, "invalid symbol attribute type in file scope");
+      return NULL;
+  }
+}
+
+// Purpose: Lower a function definition into a TopLevel TAC node.
+// Inputs: declaration points to a function declaration with an optional body.
+// Outputs: Returns a TopLevel node or NULL for declarations without a body.
+// Invariants/Assumptions: The symbol table entry must already exist.
+struct TopLevel* func_to_TAC(struct FunctionDclr* declaration) {
+  if (declaration->body == NULL) {
+    // function declaration without body; return NULL
+    return NULL;
+  }
+
+  struct TACInstr* body = block_to_TAC(declaration->name, declaration->body);
+  struct SymbolEntry* symbol = symbol_table_get(global_symbol_table, declaration->name);
+  if (symbol == NULL || symbol->attrs->attr_type != FUN_ATTR) {
+    tac_error_at(declaration->name ? declaration->name->start : NULL,
+                 "missing or invalid symbol table entry for function");
+    return NULL;
+  }
+
+  struct TopLevel* top_level = (struct TopLevel*)arena_alloc(sizeof(struct TopLevel));
+  top_level->type = FUNC;
+  top_level->name = declaration->name;
+  top_level->global = symbol->attrs->is_global;
+
+  top_level->body = body;
+
+  // collect parameter names
+  size_t num_params = 0;
+  for (struct ParamList* param = declaration->params; param != NULL; param = param->next) {
+    num_params++;
+  }
+  top_level->num_params = num_params;
+  top_level->params = (struct Slice**)arena_alloc(sizeof(struct Slice*) * num_params);
+  size_t i = 0;
+  for (struct ParamList* param = declaration->params; param != NULL; param = param->next, i++) {
+    top_level->params[i] = param->param.name;
+  }
+  top_level->next = NULL;
+
+  // append return instruction in case function does not end with return
+  struct TACInstr* ret_instr = tac_instr_create(TACRETURN);
+  ret_instr->instr.tac_return.dst = tac_make_const(0); // default return 0
+
+  concat_TAC_instrs(&top_level->body, ret_instr);
+
+  return top_level;
+}
+
+// Purpose: Lower a block of statements/declarations into a TAC instruction list.
+// Inputs: func_name is the owning function; block is the linked list of items.
+// Outputs: Returns the head of the TAC instruction list (or NULL if empty).
+// Invariants/Assumptions: Block items are lowered in source order.
+struct TACInstr* block_to_TAC(struct Slice* func_name, struct Block* block) {
+  struct TACInstr* head = NULL;
+
+  for (struct Block* cur = block; cur != NULL; cur = cur->next) {
+    struct TACInstr* item_instrs = NULL;
+    switch (cur->item->type) {
+      case STMT_ITEM:
+        item_instrs = stmt_to_TAC(func_name, cur->item->item.stmt);
+        break;
+      case DCLR_ITEM:
+        item_instrs = local_dclr_to_TAC(func_name, cur->item->item.dclr);
+        break;
+      default:
+        tac_error_at(NULL, "invalid block item type");
+        return NULL;
+    }
+
+    concat_TAC_instrs(&head, item_instrs);
+  }
+
+  return head;
+}
+
+// Purpose: Lower a local declaration into TAC instructions.
+// Inputs: func_name is the owning function; dclr is a local declaration.
+// Outputs: Returns a TAC list for initialization, or NULL if no code emitted.
+// Invariants/Assumptions: Local function definitions are rejected earlier.
+struct TACInstr* local_dclr_to_TAC(struct Slice* func_name, struct Declaration* dclr) {
+  switch (dclr->type) {
+    case VAR_DCLR:
+      return var_dclr_to_TAC(func_name, dclr);
+    case FUN_DCLR:
+      if (dclr->dclr.fun_dclr.body == NULL) {
+        // function declaration without body is okay; return NULL
+        return NULL;
+      }
+      // local function definitions should have been caught by now
+      tac_error_at(NULL, "local function definition reached TAC lowering");
+      return NULL;
+    default:
+      tac_error_at(NULL, "invalid declaration type in local scope");
+      return NULL;
+  }
+}
+
+// Purpose: Lower a local variable declaration initializer into TAC.
+// Inputs: func_name is the owning function; dclr is a variable declaration.
+// Outputs: Returns TAC instructions for the initializer, or NULL if none.
+// Invariants/Assumptions: Static initializers are handled at file scope.
+struct TACInstr* var_dclr_to_TAC(struct Slice* func_name, struct Declaration* dclr) {
+  struct VariableDclr* var_dclr = &dclr->dclr.var_dclr;
+  if (var_dclr->init == NULL) {
+    // no initialization; return NULL
+    return NULL;
+  }
+
+  switch (var_dclr->storage) {
+    case STATIC:
+      // static variable initialization is handled in the TopLevel generation
+      return NULL;
+    case NONE: {
+      // local variable initialization
+
+      // create assignment statement and convert to TAC
+      struct Expr assign_expr;
+      assign_expr.type = ASSIGN;
+      assign_expr.loc = var_dclr->init->loc;
+      assign_expr.value_type = var_dclr->type;
+
+      struct Expr var_expr;
+      var_expr.type = VAR;
+      var_expr.loc = var_dclr->init->loc;
+      var_expr.value_type = var_dclr->type;
+      var_expr.expr.var_expr.name = var_dclr->name;
+
+      assign_expr.expr.assign_expr.left = &var_expr;
+      assign_expr.expr.assign_expr.right = var_dclr->init;
+
+      return expr_to_TAC_convert(func_name, &assign_expr, NULL);
+    }
+    default:
+      tac_error_at(var_dclr->name ? var_dclr->name->start : NULL,
+                   "invalid storage class for local variable declaration");
+      return NULL;
+  }
+}
+
+// Purpose: Lower a statement into a TAC instruction list.
+// Inputs: func_name is the owning function; stmt is a typechecked statement.
+// Outputs: Returns the TAC list for the statement, or NULL for empty statements.
+// Invariants/Assumptions: Loop/switch labels are resolved before lowering.
+struct TACInstr* stmt_to_TAC(struct Slice* func_name, struct Statement* stmt) {
+  switch (stmt->type) {
+    case RETURN_STMT: {
+      struct Val* dst = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct TACInstr* expr_instrs = expr_to_TAC_convert(func_name, stmt->statement.ret_stmt.expr, dst);
+
+      struct TACInstr* ret_instr = tac_instr_create(TACRETURN);
+      ret_instr->instr.tac_return.dst = dst;
+      
+      concat_TAC_instrs(&expr_instrs, ret_instr);
+      return expr_instrs;
+    }
+    case EXPR_STMT:
+      return expr_to_TAC_convert(func_name, stmt->statement.expr_stmt.expr, NULL);
+    case IF_STMT: {
+      if (stmt->statement.if_stmt.else_stmt != NULL) {
+        // if-else statement
+        return if_else_to_TAC(func_name, stmt->statement.if_stmt.condition,
+                              stmt->statement.if_stmt.if_stmt,
+                              stmt->statement.if_stmt.else_stmt);
+      } else {
+        // if statement without else
+        return if_to_TAC(func_name, stmt->statement.if_stmt.condition, stmt->statement.if_stmt.if_stmt);
+      }
+    }
+    case GOTO_STMT: {
+      struct TACInstr* jump_instr = tac_instr_create(TACJUMP);
+      jump_instr->instr.tac_jump.label = stmt->statement.goto_stmt.label;
+
+      return jump_instr;
+    }
+    case LABELED_STMT: {
+      struct TACInstr* stmt_instrs = stmt_to_TAC(func_name, stmt->statement.labeled_stmt.stmt);
+
+      struct TACInstr* label_instr = tac_instr_create(TACLABEL);
+      label_instr->instr.tac_label.label = stmt->statement.labeled_stmt.label;
+
+      concat_TAC_instrs(&label_instr, stmt_instrs);
+      return label_instr;
+    }
+    case COMPOUND_STMT: {
+      return block_to_TAC(func_name, stmt->statement.compound_stmt.block);
+    }
+    case BREAK_STMT: {
+      struct TACInstr* jump_instr = tac_instr_create(TACJUMP);
+      jump_instr->instr.tac_jump.label = slice_concat(stmt->statement.break_stmt.label, ".break");
+
+      return jump_instr;
+    }
+    case CONTINUE_STMT: {
+      struct TACInstr* jump_instr = tac_instr_create(TACJUMP);
+      jump_instr->instr.tac_jump.label = slice_concat(stmt->statement.continue_stmt.label, ".continue");
+
+      return jump_instr;
+    }
+    case WHILE_STMT: {
+      return while_to_TAC(func_name, stmt->statement.while_stmt.condition,
+                          stmt->statement.while_stmt.statement,
+                          stmt->statement.while_stmt.label);
+    }
+    case DO_WHILE_STMT: { 
+      return do_while_to_TAC(func_name, stmt->statement.do_while_stmt.statement,
+                             stmt->statement.do_while_stmt.condition,
+                             stmt->statement.do_while_stmt.label);
+
+    }
+    case FOR_STMT: {
+      return for_to_TAC(func_name,
+                        stmt->statement.for_stmt.init,
+                        stmt->statement.for_stmt.condition,
+                        stmt->statement.for_stmt.end,
+                        stmt->statement.for_stmt.statement,
+                        stmt->statement.for_stmt.label);
+    }
+    case SWITCH_STMT: {
+      struct Val* dst = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct TACInstr* expr_instrs = expr_to_TAC_convert(func_name, stmt->statement.switch_stmt.condition, dst);
+
+      struct TACInstr* cases_instrs = cases_to_TAC(stmt->statement.switch_stmt.label,
+                                                   stmt->statement.switch_stmt.cases,
+                                                   dst);
+      struct TACInstr* stmt_instrs = stmt_to_TAC(func_name, stmt->statement.switch_stmt.statement);
+
+      struct TACInstr* break_label_instr = tac_instr_create(TACLABEL);
+      break_label_instr->instr.tac_label.label = slice_concat(stmt->statement.switch_stmt.label, ".break");
+
+      concat_TAC_instrs(&expr_instrs, cases_instrs);
+      concat_TAC_instrs(&expr_instrs, stmt_instrs);
+      concat_TAC_instrs(&expr_instrs, break_label_instr);
+
+      return expr_instrs;
+    }
+    case CASE_STMT: {
+      struct TACInstr* stmt_instrs = stmt_to_TAC(func_name, stmt->statement.case_stmt.statement);
+
+      struct TACInstr* label_instr = tac_instr_create(TACLABEL);
+      label_instr->instr.tac_label.label = stmt->statement.case_stmt.label;
+
+      concat_TAC_instrs(&label_instr, stmt_instrs);
+      return label_instr;
+    }
+    case DEFAULT_STMT: {
+      struct TACInstr* stmt_instrs = stmt_to_TAC(func_name, stmt->statement.default_stmt.statement);
+
+      struct TACInstr* label_instr = tac_instr_create(TACLABEL);
+      label_instr->instr.tac_label.label = stmt->statement.default_stmt.label;
+
+      concat_TAC_instrs(&label_instr, stmt_instrs);
+      return label_instr;
+    }
+    case NULL_STMT: {
+      return NULL;
+    }
+    default:
+      tac_error_at(stmt->loc, "statement type not implemented yet");
+      return NULL;
+  }
+}
+
+// Purpose: Emit TAC comparisons and jumps for a switch case list.
+// Inputs: label is the switch label; cases is the collected CaseList; rslt is the switch value.
+// Outputs: Returns a TAC list that dispatches to case/default or break.
+// Invariants/Assumptions: Case labels are unique; default is optional.
+struct TACInstr* cases_to_TAC(struct Slice* label, struct CaseList* cases, struct Val* rslt) {
+  struct TACInstr* case_instrs = NULL;
+  struct Slice* default_label = NULL;
+
+  for (struct CaseList* case_item = cases; case_item != NULL; case_item = case_item->next) {
+    switch (case_item->case_label.type) {
+      case INT_CASE: {
+        struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
+        cmp_instr->instr.tac_cmp.src1 = rslt;
+        cmp_instr->instr.tac_cmp.src2 = tac_make_const(case_item->case_label.data);
+
+        struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+        cond_jump_instr->instr.tac_cond_jump.condition = CondE;
+        cond_jump_instr->instr.tac_cond_jump.label = make_case_label(label, case_item->case_label.data);
+
+        concat_TAC_instrs(&case_instrs, cmp_instr);
+        concat_TAC_instrs(&case_instrs, cond_jump_instr);
+        break;
+      }
+      case DEFAULT_CASE:
+        default_label = slice_concat(label, ".default");
+        break;
+      default:
+        tac_error_at(NULL, "invalid case label type");
+        return NULL;
+    }
+  }
+
+  struct Slice* fallthrough_label = default_label;
+  if (fallthrough_label == NULL) {
+    fallthrough_label = slice_concat(label, ".break");
+  }
+
+  struct TACInstr* jump_instr = tac_instr_create(TACJUMP);
+  jump_instr->instr.tac_jump.label = fallthrough_label;
+  concat_TAC_instrs(&case_instrs, jump_instr);
+
+  return case_instrs;
+}
+
+// Purpose: Lower a for-loop initializer into TAC instructions.
+// Inputs: func_name is the owning function; init_ may be a declaration or expression.
+// Outputs: Returns a TAC list for the initializer, or NULL if empty.
+// Invariants/Assumptions: The initializer is already typechecked.
+static struct TACInstr* for_init_to_TAC(struct Slice* func_name, struct ForInit* init_) {
+  if (init_ == NULL) {
+    return NULL;
+  }
+
+  switch (init_->type) {
+    case DCLR_INIT: {
+      if (init_->init.dclr_init == NULL) {
+        tac_error_at(NULL, "for-init declaration is missing");
+        return NULL;
+      }
+      struct Declaration tmp;
+      tmp.type = VAR_DCLR;
+      tmp.dclr.var_dclr = *init_->init.dclr_init;
+      return var_dclr_to_TAC(func_name, &tmp);
+    }
+    case EXPR_INIT: {
+      if (init_->init.expr_init == NULL) {
+        return NULL;
+      }
+      struct ExprResult init_result;
+      return expr_to_TAC(func_name, init_->init.expr_init, &init_result);
+    }
+    default:
+      tac_error_at(NULL, "invalid for-init type");
+      return NULL;
+  }
+}
+
+// Purpose: Lower a while loop into TAC control-flow instructions.
+// Inputs: func_name is the owning function; condition/body are loop components.
+// Outputs: Returns a TAC list implementing the loop.
+// Invariants/Assumptions: label must be non-NULL after loop labeling.
+static struct TACInstr* while_to_TAC(struct Slice* func_name,
+                                     struct Expr* condition,
+                                     struct Statement* body,
+                                     struct Slice* label) {
+  if (label == NULL) {
+    tac_error_at(condition ? condition->loc : NULL, "while loop label missing");
+    return NULL;
+  }
+
+  struct Slice* continue_label = slice_concat(label, ".continue");
+  struct Slice* break_label = slice_concat(label, ".break");
+
+  struct TACInstr* body_instrs = stmt_to_TAC(func_name, body);
+  struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstr* cond_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
+
+  struct TACInstr* instrs = NULL;
+
+  struct TACInstr* continue_label_instr = tac_instr_create(TACLABEL);
+  continue_label_instr->instr.tac_label.label = continue_label;
+  concat_TAC_instrs(&instrs, continue_label_instr);
+
+  concat_TAC_instrs(&instrs, cond_instrs);
+
+  struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
+  cmp_instr->instr.tac_cmp.src1 = cond_val;
+  cmp_instr->instr.tac_cmp.src2 = tac_make_const(0);
+
+  struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+  cond_jump_instr->instr.tac_cond_jump.condition = CondE;
+  cond_jump_instr->instr.tac_cond_jump.label = break_label;
+
+  concat_TAC_instrs(&instrs, cmp_instr);
+  concat_TAC_instrs(&instrs, cond_jump_instr);
+  concat_TAC_instrs(&instrs, body_instrs);
+
+  struct TACInstr* jump_back = tac_instr_create(TACJUMP);
+  jump_back->instr.tac_jump.label = continue_label;
+  concat_TAC_instrs(&instrs, jump_back);
+
+  struct TACInstr* break_label_instr = tac_instr_create(TACLABEL);
+  break_label_instr->instr.tac_label.label = break_label;
+  concat_TAC_instrs(&instrs, break_label_instr);
+
+  return instrs;
+}
+
+// Purpose: Lower a do-while loop into TAC control-flow instructions.
+// Inputs: func_name is the owning function; condition/body are loop components.
+// Outputs: Returns a TAC list implementing the loop.
+// Invariants/Assumptions: label must be non-NULL after loop labeling.
+static struct TACInstr* do_while_to_TAC(struct Slice* func_name,
+                                        struct Statement* body,
+                                        struct Expr* condition,
+                                        struct Slice* label) {
+  if (label == NULL) {
+    tac_error_at(condition ? condition->loc : NULL, "do-while loop label missing");
+    return NULL;
+  }
+
+  struct Slice* start_label = slice_concat(label, ".start");
+  struct Slice* continue_label = slice_concat(label, ".continue");
+  struct Slice* break_label = slice_concat(label, ".break");
+
+  struct TACInstr* body_instrs = stmt_to_TAC(func_name, body);
+  struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstr* cond_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
+
+  struct TACInstr* instrs = NULL;
+
+  struct TACInstr* start_label_instr = tac_instr_create(TACLABEL);
+  start_label_instr->instr.tac_label.label = start_label;
+  concat_TAC_instrs(&instrs, start_label_instr);
+
+  concat_TAC_instrs(&instrs, body_instrs);
+
+  struct TACInstr* continue_label_instr = tac_instr_create(TACLABEL);
+  continue_label_instr->instr.tac_label.label = continue_label;
+  concat_TAC_instrs(&instrs, continue_label_instr);
+
+  concat_TAC_instrs(&instrs, cond_instrs);
+
+  struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
+  cmp_instr->instr.tac_cmp.src1 = cond_val;
+  cmp_instr->instr.tac_cmp.src2 = tac_make_const(0);
+
+  struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+  cond_jump_instr->instr.tac_cond_jump.condition = CondNE;
+  cond_jump_instr->instr.tac_cond_jump.label = start_label;
+
+  concat_TAC_instrs(&instrs, cmp_instr);
+  concat_TAC_instrs(&instrs, cond_jump_instr);
+
+  struct TACInstr* break_label_instr = tac_instr_create(TACLABEL);
+  break_label_instr->instr.tac_label.label = break_label;
+  concat_TAC_instrs(&instrs, break_label_instr);
+
+  return instrs;
+}
+
+// Purpose: Lower a for loop into TAC control-flow instructions.
+// Inputs: func_name is the owning function; init/condition/end/body form the loop.
+// Outputs: Returns a TAC list implementing the loop.
+// Invariants/Assumptions: label must be non-NULL after loop labeling.
+static struct TACInstr* for_to_TAC(struct Slice* func_name,
+                                   struct ForInit* init_,
+                                   struct Expr* condition,
+                                   struct Expr* end,
+                                   struct Statement* body,
+                                   struct Slice* label) {
+  if (label == NULL) {
+    tac_error_at(condition ? condition->loc : NULL, "for loop label missing");
+    return NULL;
+  }
+
+  struct Slice* start_label = slice_concat(label, ".start");
+  struct Slice* continue_label = slice_concat(label, ".continue");
+  struct Slice* break_label = slice_concat(label, ".break");
+
+  struct TACInstr* init_instrs = for_init_to_TAC(func_name, init_);
+  struct TACInstr* body_instrs = stmt_to_TAC(func_name, body);
+
+  struct TACInstr* condition_instrs = NULL;
+  if (condition != NULL) {
+    struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
+    condition_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
+
+    struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
+    cmp_instr->instr.tac_cmp.src1 = cond_val;
+    cmp_instr->instr.tac_cmp.src2 = tac_make_const(0);
+
+    struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+    cond_jump_instr->instr.tac_cond_jump.condition = CondE;
+    cond_jump_instr->instr.tac_cond_jump.label = break_label;
+
+    concat_TAC_instrs(&condition_instrs, cmp_instr);
+    concat_TAC_instrs(&condition_instrs, cond_jump_instr);
+  }
+
+  struct TACInstr* end_instrs = NULL;
+  if (end != NULL) {
+    struct ExprResult end_result;
+    end_instrs = expr_to_TAC(func_name, end, &end_result);
+  }
+
+  struct TACInstr* instrs = NULL;
+  concat_TAC_instrs(&instrs, init_instrs);
+
+  struct TACInstr* start_label_instr = tac_instr_create(TACLABEL);
+  start_label_instr->instr.tac_label.label = start_label;
+  concat_TAC_instrs(&instrs, start_label_instr);
+
+  concat_TAC_instrs(&instrs, condition_instrs);
+  concat_TAC_instrs(&instrs, body_instrs);
+
+  struct TACInstr* continue_label_instr = tac_instr_create(TACLABEL);
+  continue_label_instr->instr.tac_label.label = continue_label;
+  concat_TAC_instrs(&instrs, continue_label_instr);
+
+  concat_TAC_instrs(&instrs, end_instrs);
+
+  struct TACInstr* jump_back = tac_instr_create(TACJUMP);
+  jump_back->instr.tac_jump.label = start_label;
+  concat_TAC_instrs(&instrs, jump_back);
+
+  struct TACInstr* break_label_instr = tac_instr_create(TACLABEL);
+  break_label_instr->instr.tac_label.label = break_label;
+  concat_TAC_instrs(&instrs, break_label_instr);
+
+  return instrs;
+}
+
+// Purpose: Lower an if statement without an else into TAC control flow.
+// Inputs: func_name is the owning function; condition/if_stmt are the branches.
+// Outputs: Returns a TAC list implementing the conditional.
+// Invariants/Assumptions: condition is typechecked to an arithmetic value.
+struct TACInstr* if_to_TAC(struct Slice* func_name, struct Expr* condition, struct Statement* if_stmt) {
+  struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstr* cond_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
+  struct TACInstr* body_instrs = stmt_to_TAC(func_name, if_stmt);
+
+  struct Slice* end_label = tac_make_label(func_name, "end");
+
+  struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
+  cmp_instr->instr.tac_cmp.src1 = cond_val;
+  cmp_instr->instr.tac_cmp.src2 = tac_make_const(0);
+
+  struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+  cond_jump_instr->instr.tac_cond_jump.condition = CondE;
+  cond_jump_instr->instr.tac_cond_jump.label = end_label;
+
+  struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
+  end_label_instr->instr.tac_label.label = end_label;
+
+  struct TACInstr* instrs = NULL;
+  concat_TAC_instrs(&instrs, cond_instrs);
+  concat_TAC_instrs(&instrs, cmp_instr);
+  concat_TAC_instrs(&instrs, cond_jump_instr);
+  concat_TAC_instrs(&instrs, body_instrs);
+  concat_TAC_instrs(&instrs, end_label_instr);
+
+  return instrs;
+}
+
+// Purpose: Lower an if/else statement into TAC control flow.
+// Inputs: func_name is the owning function; condition/if_stmt/else_stmt define branches.
+// Outputs: Returns a TAC list implementing the conditional.
+// Invariants/Assumptions: condition is typechecked to an arithmetic value.
+struct TACInstr* if_else_to_TAC(struct Slice* func_name,
+                                struct Expr* condition,
+                                struct Statement* if_stmt,
+                                struct Statement* else_stmt) {
+  struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstr* cond_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
+  struct TACInstr* if_instrs = stmt_to_TAC(func_name, if_stmt);
+  struct TACInstr* else_instrs = stmt_to_TAC(func_name, else_stmt);
+
+  struct Slice* else_label = tac_make_label(func_name, "else");
+  struct Slice* end_label = tac_make_label(func_name, "end");
+
+  struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
+  cmp_instr->instr.tac_cmp.src1 = cond_val;
+  cmp_instr->instr.tac_cmp.src2 = tac_make_const(0);
+
+  struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+  cond_jump_instr->instr.tac_cond_jump.condition = CondE;
+  cond_jump_instr->instr.tac_cond_jump.label = else_label;
+
+  struct TACInstr* jump_end_instr = tac_instr_create(TACJUMP);
+  jump_end_instr->instr.tac_jump.label = end_label;
+
+  struct TACInstr* else_label_instr = tac_instr_create(TACLABEL);
+  else_label_instr->instr.tac_label.label = else_label;
+
+  struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
+  end_label_instr->instr.tac_label.label = end_label;
+
+  struct TACInstr* instrs = NULL;
+  concat_TAC_instrs(&instrs, cond_instrs);
+  concat_TAC_instrs(&instrs, cmp_instr);
+  concat_TAC_instrs(&instrs, cond_jump_instr);
+  concat_TAC_instrs(&instrs, if_instrs);
+  concat_TAC_instrs(&instrs, jump_end_instr);
+  concat_TAC_instrs(&instrs, else_label_instr);
+  concat_TAC_instrs(&instrs, else_instrs);
+  concat_TAC_instrs(&instrs, end_label_instr);
+
+  return instrs;
+}
+
+// Purpose: Lower a function call argument list into TAC and collect argument values.
+// Inputs: func_name is the owning function; args is the linked list of expressions.
+// Outputs: Returns TAC instructions for argument evaluation and fills out_args/count.
+// Invariants/Assumptions: Arguments are evaluated left-to-right.
+static struct TACInstr* args_to_TAC(struct Slice* func_name,
+                                    struct ArgList* args,
+                                    struct Val** out_args,
+                                    size_t* out_count) {
+  size_t count = 0;
+  for (struct ArgList* cur = args; cur != NULL; cur = cur->next) {
+    count++;
+  }
+
+  *out_count = count;
+  if (count == 0) {
+    *out_args = NULL;
+    return NULL;
+  }
+
+  struct Val* vals = (struct Val*)arena_alloc(sizeof(struct Val) * count);
+  struct TACInstr* instrs = NULL;
+
+  size_t idx = 0;
+  for (struct ArgList* cur = args; cur != NULL; cur = cur->next) {
+    struct TACInstr* arg_instrs = expr_to_TAC_convert(func_name, cur->arg, &vals[idx]);
+    concat_TAC_instrs(&instrs, arg_instrs);
+    idx++;
+  }
+
+  *out_args = vals;
+  return instrs;
+}
+
+// Purpose: Lower a relational expression into TAC that yields a boolean int.
+// Inputs: func_name is the owning function; expr/op/left/right describe the comparison.
+// Outputs: Returns a TAC list and sets result to the boolean value.
+// Invariants/Assumptions: Operand types are already typechecked for comparison.
+static struct TACInstr* relational_to_TAC(struct Slice* func_name,
+                                          struct Expr* expr,
+                                          enum BinOp op,
+                                          struct Expr* left,
+                                          struct Expr* right,
+                                          struct ExprResult* result) {
+  struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstr* left_instrs = expr_to_TAC_convert(func_name, left, left_val);
+  struct TACInstr* right_instrs = expr_to_TAC_convert(func_name, right, right_val);
+
+  struct Val* dst = make_temp(func_name, expr->value_type);
+  struct Slice* end_label = tac_make_label(func_name, "end");
+
+  struct TACInstr* instrs = NULL;
+
+  struct TACInstr* init_copy = tac_instr_create(TACCOPY);
+  init_copy->instr.tac_copy.dst = dst;
+  init_copy->instr.tac_copy.src = tac_make_const(1);
+  concat_TAC_instrs(&instrs, init_copy);
+
+  concat_TAC_instrs(&instrs, left_instrs);
+  concat_TAC_instrs(&instrs, right_instrs);
+
+  struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
+  cmp_instr->instr.tac_cmp.src1 = left_val;
+  cmp_instr->instr.tac_cmp.src2 = right_val;
+
+  struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+  cond_jump_instr->instr.tac_cond_jump.condition = relation_to_cond(op, left->value_type);
+  cond_jump_instr->instr.tac_cond_jump.label = end_label;
+
+  struct TACInstr* clear_copy = tac_instr_create(TACCOPY);
+  clear_copy->instr.tac_copy.dst = dst;
+  clear_copy->instr.tac_copy.src = tac_make_const(0);
+
+  struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
+  end_label_instr->instr.tac_label.label = end_label;
+
+  concat_TAC_instrs(&instrs, cmp_instr);
+  concat_TAC_instrs(&instrs, cond_jump_instr);
+  concat_TAC_instrs(&instrs, clear_copy);
+  concat_TAC_instrs(&instrs, end_label_instr);
+
+  result->type = PLAIN_OPERAND;
+  result->val = dst;
+
+  return instrs;
+}
+
+// Purpose: Lower an expression and ensure the result is a plain operand.
+// Inputs: func_name is the owning function; expr is the expression to lower.
+// Outputs: Returns TAC instructions; out_val receives the computed value if provided.
+// Invariants/Assumptions: Loads are emitted when an lvalue is dereferenced.
+struct TACInstr* expr_to_TAC_convert(struct Slice* func_name, struct Expr* expr, struct Val* out_val) {
+  struct ExprResult raw_result;
+  struct TACInstr* instrs = expr_to_TAC(func_name, expr, &raw_result);
+
+  if (raw_result.type == PLAIN_OPERAND) {
+    if (out_val != NULL) {
+      tac_copy_val(out_val, raw_result.val);
+    }
+    return instrs;
+  }
+
+  struct Val* dst = out_val;
+  if (dst == NULL) {
+    dst = make_temp(func_name, expr->value_type);
+  } else {
+    struct Val* tmp = make_temp(func_name, expr->value_type);
+    tac_copy_val(dst, tmp);
+  }
+
+  struct TACInstr* load_instr = tac_instr_create(TACLOAD);
+  load_instr->instr.tac_load.dst = dst;
+  load_instr->instr.tac_load.src_ptr = raw_result.val;
+  concat_TAC_instrs(&instrs, load_instr);
+
+  return instrs;
+}
+
+// Purpose: Lower an expression into TAC instructions and an ExprResult.
+// Inputs: func_name is the owning function; expr is the expression to lower.
+// Outputs: Returns TAC instruction list; result describes the computed value.
+// Invariants/Assumptions: Expression types are already validated by typechecking.
+struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct ExprResult* result) {
+  if (result == NULL) {
+    tac_error_at(expr ? expr->loc : NULL, "expr_to_TAC requires a result output");
+    return NULL;
+  }
+
+  switch (expr->type) {
+    case BINARY: {
+      struct BinaryExpr* bin_expr = &expr->expr.bin_expr;
+      enum BinOp op = bin_expr->op;
+
+      if (op == BOOL_AND || op == BOOL_OR) {
+        struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
+        struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
+        struct TACInstr* left_instrs = expr_to_TAC_convert(func_name, bin_expr->left, left_val);
+        struct TACInstr* right_instrs = expr_to_TAC_convert(func_name, bin_expr->right, right_val);
+
+        struct Val* dst = make_temp(func_name, expr->value_type);
+        struct Slice* end_label = tac_make_label(func_name, "end");
+
+        struct TACInstr* instrs = NULL;
+
+        // Default result matches the short-circuit outcome before evaluating RHS.
+        struct TACInstr* init_copy = tac_instr_create(TACCOPY);
+        init_copy->instr.tac_copy.dst = dst;
+        init_copy->instr.tac_copy.src = tac_make_const(op != BOOL_AND);
+        concat_TAC_instrs(&instrs, init_copy);
+        concat_TAC_instrs(&instrs, left_instrs);
+
+        struct TACInstr* cmp_left = tac_instr_create(TACCMP);
+        cmp_left->instr.tac_cmp.src1 = left_val;
+        cmp_left->instr.tac_cmp.src2 = tac_make_const(0);
+
+        // If the left side decides the result, skip RHS evaluation.
+        struct TACInstr* jump_left = tac_instr_create(TACCOND_JUMP);
+        jump_left->instr.tac_cond_jump.condition = (op == BOOL_AND) ? CondE : CondNE;
+        jump_left->instr.tac_cond_jump.label = end_label;
+
+        concat_TAC_instrs(&instrs, cmp_left);
+        concat_TAC_instrs(&instrs, jump_left);
+        concat_TAC_instrs(&instrs, right_instrs);
+
+        struct TACInstr* cmp_right = tac_instr_create(TACCMP);
+        cmp_right->instr.tac_cmp.src1 = right_val;
+        cmp_right->instr.tac_cmp.src2 = tac_make_const(0);
+
+        struct TACInstr* jump_right = tac_instr_create(TACCOND_JUMP);
+        jump_right->instr.tac_cond_jump.condition = (op == BOOL_AND) ? CondE : CondNE;
+        jump_right->instr.tac_cond_jump.label = end_label;
+
+        concat_TAC_instrs(&instrs, cmp_right);
+        concat_TAC_instrs(&instrs, jump_right);
+
+        struct TACInstr* final_copy = tac_instr_create(TACCOPY);
+        final_copy->instr.tac_copy.dst = dst;
+        final_copy->instr.tac_copy.src = tac_make_const(op == BOOL_AND);
+
+        struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
+        end_label_instr->instr.tac_label.label = end_label;
+
+        concat_TAC_instrs(&instrs, final_copy);
+        concat_TAC_instrs(&instrs, end_label_instr);
+
+        result->type = PLAIN_OPERAND;
+        result->val = dst;
+        return instrs;
+      }
+
+      if (is_relational_op(op)) {
+        return relational_to_TAC(func_name, expr, op, bin_expr->left, bin_expr->right, result);
+      }
+
+      if (is_compound_op(op)) {
+        struct ExprResult lhs_result;
+        struct TACInstr* lhs_instrs = expr_to_TAC(func_name, bin_expr->left, &lhs_result);
+
+        struct Val* rhs_val = (struct Val*)arena_alloc(sizeof(struct Val));
+        struct TACInstr* rhs_instrs = expr_to_TAC_convert(func_name, bin_expr->right, rhs_val);
+
+        struct TACInstr* instrs = NULL;
+        concat_TAC_instrs(&instrs, lhs_instrs);
+        concat_TAC_instrs(&instrs, rhs_instrs);
+
+        enum BinOp base_op = compound_to_binop(op);
+        struct Type* lhs_type = bin_expr->left->value_type;
+        struct Type* rhs_type = bin_expr->right->value_type;
+        bool pointer_lhs = is_pointer_type(lhs_type);
+
+        if (lhs_result.type == PLAIN_OPERAND) {
+          struct Val* rhs_for_op = rhs_val;
+          if (pointer_lhs && (base_op == ADD_OP || base_op == SUB_OP) && is_arithmetic_type(rhs_type)) {
+            struct Type* ref_type = lhs_type->type_data.pointer_type.referenced_type;
+            int scale = (int)get_type_size(ref_type);
+            struct Val* scaled = make_temp(func_name, rhs_type);
+
+            // Scale integer offsets by element size for pointer arithmetic.
+            struct TACInstr* mul_instr = tac_instr_create(TACBINARY);
+            mul_instr->instr.tac_binary.op = MUL_OP;
+            mul_instr->instr.tac_binary.dst = scaled;
+            mul_instr->instr.tac_binary.src1 = rhs_val;
+            mul_instr->instr.tac_binary.src2 = tac_make_const(scale);
+            mul_instr->instr.tac_binary.type = rhs_type;
+            concat_TAC_instrs(&instrs, mul_instr);
+            rhs_for_op = scaled;
+          }
+
+          struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
+          bin_instr->instr.tac_binary.op = base_op;
+          bin_instr->instr.tac_binary.dst = lhs_result.val;
+          bin_instr->instr.tac_binary.src1 = lhs_result.val;
+          bin_instr->instr.tac_binary.src2 = rhs_for_op;
+          bin_instr->instr.tac_binary.type = expr->value_type;
+          concat_TAC_instrs(&instrs, bin_instr);
+
+          result->type = PLAIN_OPERAND;
+          result->val = lhs_result.val;
+          return instrs;
+        }
+
+        if (lhs_result.type == DEREFERENCED_POINTER) {
+          struct Val* cur = make_temp(func_name, expr->value_type);
+          // Load lvalue before applying the compound operation.
+          struct TACInstr* load_instr = tac_instr_create(TACLOAD);
+          load_instr->instr.tac_load.dst = cur;
+          load_instr->instr.tac_load.src_ptr = lhs_result.val;
+          concat_TAC_instrs(&instrs, load_instr);
+
+          struct Val* rhs_for_op = rhs_val;
+          if (pointer_lhs && (base_op == ADD_OP || base_op == SUB_OP) && is_arithmetic_type(rhs_type)) {
+            struct Type* ref_type = lhs_type->type_data.pointer_type.referenced_type;
+            int scale = (int)get_type_size(ref_type);
+            struct Val* scaled = make_temp(func_name, rhs_type);
+
+            struct TACInstr* mul_instr = tac_instr_create(TACBINARY);
+            mul_instr->instr.tac_binary.op = MUL_OP;
+            mul_instr->instr.tac_binary.dst = scaled;
+            mul_instr->instr.tac_binary.src1 = rhs_val;
+            mul_instr->instr.tac_binary.src2 = tac_make_const(scale);
+            mul_instr->instr.tac_binary.type = rhs_type;
+            concat_TAC_instrs(&instrs, mul_instr);
+            rhs_for_op = scaled;
+          }
+
+          struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
+          bin_instr->instr.tac_binary.op = base_op;
+          bin_instr->instr.tac_binary.dst = cur;
+          bin_instr->instr.tac_binary.src1 = cur;
+          bin_instr->instr.tac_binary.src2 = rhs_for_op;
+          bin_instr->instr.tac_binary.type = expr->value_type;
+          concat_TAC_instrs(&instrs, bin_instr);
+
+          struct TACInstr* store_instr = tac_instr_create(TACSTORE);
+          store_instr->instr.tac_store.dst_ptr = lhs_result.val;
+          store_instr->instr.tac_store.src = cur;
+          concat_TAC_instrs(&instrs, store_instr);
+
+          result->type = PLAIN_OPERAND;
+          result->val = cur;
+          return instrs;
+        }
+
+        tac_error_at(expr->loc, "unsupported compound assignment lvalue");
+        return NULL;
+      }
+
+      if (op == ADD_OP || op == SUB_OP) {
+        struct Type* left_type = bin_expr->left->value_type;
+        struct Type* right_type = bin_expr->right->value_type;
+
+        bool left_ptr = is_pointer_type(left_type);
+        bool right_ptr = is_pointer_type(right_type);
+
+        struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
+        struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
+        struct TACInstr* left_instrs = expr_to_TAC_convert(func_name, bin_expr->left, left_val);
+        struct TACInstr* right_instrs = expr_to_TAC_convert(func_name, bin_expr->right, right_val);
+
+        struct TACInstr* instrs = NULL;
+        concat_TAC_instrs(&instrs, left_instrs);
+        concat_TAC_instrs(&instrs, right_instrs);
+
+        if (!left_ptr && !right_ptr) {
+          struct Val* dst = make_temp(func_name, expr->value_type);
+          struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
+          bin_instr->instr.tac_binary.op = op;
+          bin_instr->instr.tac_binary.dst = dst;
+          bin_instr->instr.tac_binary.src1 = left_val;
+          bin_instr->instr.tac_binary.src2 = right_val;
+          bin_instr->instr.tac_binary.type = expr->value_type;
+          concat_TAC_instrs(&instrs, bin_instr);
+          result->type = PLAIN_OPERAND;
+          result->val = dst;
+          return instrs;
+        }
+
+        if (op == ADD_OP && left_ptr && is_arithmetic_type(right_type)) {
+          struct Type* ref_type = left_type->type_data.pointer_type.referenced_type;
+          int scale = (int)get_type_size(ref_type);
+          struct Val* scaled = make_temp(func_name, right_type);
+
+          // Pointer +/- integer uses scaled byte offset.
+          struct TACInstr* mul_instr = tac_instr_create(TACBINARY);
+          mul_instr->instr.tac_binary.op = MUL_OP;
+          mul_instr->instr.tac_binary.dst = scaled;
+          mul_instr->instr.tac_binary.src1 = right_val;
+          mul_instr->instr.tac_binary.src2 = tac_make_const(scale);
+          mul_instr->instr.tac_binary.type = right_type;
+          concat_TAC_instrs(&instrs, mul_instr);
+
+          struct Val* dst = make_temp(func_name, expr->value_type);
+          struct TACInstr* add_instr = tac_instr_create(TACBINARY);
+          add_instr->instr.tac_binary.op = ADD_OP;
+          add_instr->instr.tac_binary.dst = dst;
+          add_instr->instr.tac_binary.src1 = left_val;
+          add_instr->instr.tac_binary.src2 = scaled;
+          add_instr->instr.tac_binary.type = expr->value_type;
+          concat_TAC_instrs(&instrs, add_instr);
+
+          result->type = PLAIN_OPERAND;
+          result->val = dst;
+          return instrs;
+        }
+
+        if (op == ADD_OP && right_ptr && is_arithmetic_type(left_type)) {
+          struct Type* ref_type = right_type->type_data.pointer_type.referenced_type;
+          int scale = (int)get_type_size(ref_type);
+          struct Val* scaled = make_temp(func_name, left_type);
+
+          struct TACInstr* mul_instr = tac_instr_create(TACBINARY);
+          mul_instr->instr.tac_binary.op = MUL_OP;
+          mul_instr->instr.tac_binary.dst = scaled;
+          mul_instr->instr.tac_binary.src1 = left_val;
+          mul_instr->instr.tac_binary.src2 = tac_make_const(scale);
+          mul_instr->instr.tac_binary.type = left_type;
+          concat_TAC_instrs(&instrs, mul_instr);
+
+          struct Val* dst = make_temp(func_name, expr->value_type);
+          struct TACInstr* add_instr = tac_instr_create(TACBINARY);
+          add_instr->instr.tac_binary.op = ADD_OP;
+          add_instr->instr.tac_binary.dst = dst;
+          add_instr->instr.tac_binary.src1 = scaled;
+          add_instr->instr.tac_binary.src2 = right_val;
+          add_instr->instr.tac_binary.type = expr->value_type;
+          concat_TAC_instrs(&instrs, add_instr);
+
+          result->type = PLAIN_OPERAND;
+          result->val = dst;
+          return instrs;
+        }
+
+        if (op == SUB_OP && left_ptr && is_arithmetic_type(right_type)) {
+          struct Type* ref_type = left_type->type_data.pointer_type.referenced_type;
+          int scale = (int)get_type_size(ref_type);
+          struct Val* scaled = make_temp(func_name, right_type);
+
+          struct TACInstr* mul_instr = tac_instr_create(TACBINARY);
+          mul_instr->instr.tac_binary.op = MUL_OP;
+          mul_instr->instr.tac_binary.dst = scaled;
+          mul_instr->instr.tac_binary.src1 = right_val;
+          mul_instr->instr.tac_binary.src2 = tac_make_const(scale);
+          mul_instr->instr.tac_binary.type = right_type;
+          concat_TAC_instrs(&instrs, mul_instr);
+
+          struct Val* dst = make_temp(func_name, expr->value_type);
+          struct TACInstr* sub_instr = tac_instr_create(TACBINARY);
+          sub_instr->instr.tac_binary.op = SUB_OP;
+          sub_instr->instr.tac_binary.dst = dst;
+          sub_instr->instr.tac_binary.src1 = left_val;
+          sub_instr->instr.tac_binary.src2 = scaled;
+          sub_instr->instr.tac_binary.type = expr->value_type;
+          concat_TAC_instrs(&instrs, sub_instr);
+
+          result->type = PLAIN_OPERAND;
+          result->val = dst;
+          return instrs;
+        }
+
+        tac_error_at(expr->loc, "invalid pointer arithmetic in binary operation");
+        return NULL;
+      }
+
+      {
+        struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
+        struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
+        struct TACInstr* left_instrs = expr_to_TAC_convert(func_name, bin_expr->left, left_val);
+        struct TACInstr* right_instrs = expr_to_TAC_convert(func_name, bin_expr->right, right_val);
+
+        struct Val* dst = make_temp(func_name, expr->value_type);
+        struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
+        bin_instr->instr.tac_binary.op = op;
+        bin_instr->instr.tac_binary.dst = dst;
+        bin_instr->instr.tac_binary.src1 = left_val;
+        bin_instr->instr.tac_binary.src2 = right_val;
+        bin_instr->instr.tac_binary.type = expr->value_type;
+
+        struct TACInstr* instrs = NULL;
+        concat_TAC_instrs(&instrs, left_instrs);
+        concat_TAC_instrs(&instrs, right_instrs);
+        concat_TAC_instrs(&instrs, bin_instr);
+
+        result->type = PLAIN_OPERAND;
+        result->val = dst;
+        return instrs;
+      }
+    }
+    case ASSIGN: {
+      struct AssignExpr* assign_expr = &expr->expr.assign_expr;
+      struct ExprResult lhs_result;
+      struct TACInstr* lhs_instrs = expr_to_TAC(func_name, assign_expr->left, &lhs_result);
+
+      struct Val* rhs_val = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct TACInstr* rhs_instrs = expr_to_TAC_convert(func_name, assign_expr->right, rhs_val);
+
+      struct TACInstr* instrs = NULL;
+      concat_TAC_instrs(&instrs, lhs_instrs);
+      concat_TAC_instrs(&instrs, rhs_instrs);
+
+      if (lhs_result.type == PLAIN_OPERAND) {
+        struct TACInstr* copy_instr = tac_instr_create(TACCOPY);
+        copy_instr->instr.tac_copy.dst = lhs_result.val;
+        copy_instr->instr.tac_copy.src = rhs_val;
+        concat_TAC_instrs(&instrs, copy_instr);
+
+        result->type = PLAIN_OPERAND;
+        result->val = lhs_result.val;
+        return instrs;
+      }
+
+      if (lhs_result.type == DEREFERENCED_POINTER) {
+        struct TACInstr* store_instr = tac_instr_create(TACSTORE);
+        store_instr->instr.tac_store.dst_ptr = lhs_result.val;
+        store_instr->instr.tac_store.src = rhs_val;
+        concat_TAC_instrs(&instrs, store_instr);
+
+        result->type = PLAIN_OPERAND;
+        result->val = rhs_val;
+        return instrs;
+      }
+
+      tac_error_at(expr->loc, "invalid assignment target");
+      return NULL;
+    }
+    case POST_ASSIGN: {
+      struct PostAssignExpr* post_assign = &expr->expr.post_assign_expr;
+      if (post_assign->expr == NULL || post_assign->expr->type != VAR) {
+        tac_error_at(expr->loc, "post-assignment requires a variable lvalue");
+        return NULL;
+      }
+
+      struct Slice* name = post_assign->expr->expr.var_expr.name;
+      struct Val* src = tac_make_var(name);
+      struct Val* old_val = make_temp(func_name, expr->value_type);
+
+      struct TACInstr* instrs = NULL;
+      // Preserve the pre-update value for post-increment/decrement semantics.
+      struct TACInstr* copy_instr = tac_instr_create(TACCOPY);
+      copy_instr->instr.tac_copy.dst = old_val;
+      copy_instr->instr.tac_copy.src = src;
+      concat_TAC_instrs(&instrs, copy_instr);
+
+      enum BinOp bin_op = (post_assign->op == POST_INC) ? ADD_OP : SUB_OP;
+      struct Val* step_val = tac_make_const(1);
+      if (is_pointer_type(expr->value_type)) {
+        struct Type* ref_type = expr->value_type->type_data.pointer_type.referenced_type;
+        step_val = tac_make_const((int)get_type_size(ref_type));
+      }
+
+      struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
+      bin_instr->instr.tac_binary.op = bin_op;
+      bin_instr->instr.tac_binary.dst = src;
+      bin_instr->instr.tac_binary.src1 = src;
+      bin_instr->instr.tac_binary.src2 = step_val;
+      bin_instr->instr.tac_binary.type = expr->value_type;
+      concat_TAC_instrs(&instrs, bin_instr);
+
+      result->type = PLAIN_OPERAND;
+      result->val = old_val;
+      return instrs;
+    }
+    case CONDITIONAL: {
+      struct ConditionalExpr* cond_expr = &expr->expr.conditional_expr;
+
+      struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct TACInstr* cond_instrs = expr_to_TAC_convert(func_name, cond_expr->condition, cond_val);
+
+      struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct TACInstr* left_instrs = expr_to_TAC_convert(func_name, cond_expr->left, left_val);
+
+      struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct TACInstr* right_instrs = expr_to_TAC_convert(func_name, cond_expr->right, right_val);
+
+      struct Slice* else_label = tac_make_label(func_name, "else");
+      struct Slice* end_label = tac_make_label(func_name, "end");
+      struct Val* dst = make_temp(func_name, expr->value_type);
+
+      // Lower ternary with explicit labels and copies to a shared destination.
+      struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
+      cmp_instr->instr.tac_cmp.src1 = cond_val;
+      cmp_instr->instr.tac_cmp.src2 = tac_make_const(0);
+
+      struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+      cond_jump_instr->instr.tac_cond_jump.condition = CondE;
+      cond_jump_instr->instr.tac_cond_jump.label = else_label;
+
+      struct TACInstr* copy_left = tac_instr_create(TACCOPY);
+      copy_left->instr.tac_copy.dst = dst;
+      copy_left->instr.tac_copy.src = left_val;
+
+      struct TACInstr* jump_end = tac_instr_create(TACJUMP);
+      jump_end->instr.tac_jump.label = end_label;
+
+      struct TACInstr* else_label_instr = tac_instr_create(TACLABEL);
+      else_label_instr->instr.tac_label.label = else_label;
+
+      struct TACInstr* copy_right = tac_instr_create(TACCOPY);
+      copy_right->instr.tac_copy.dst = dst;
+      copy_right->instr.tac_copy.src = right_val;
+
+      struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
+      end_label_instr->instr.tac_label.label = end_label;
+
+      struct TACInstr* instrs = NULL;
+      concat_TAC_instrs(&instrs, cond_instrs);
+      concat_TAC_instrs(&instrs, cmp_instr);
+      concat_TAC_instrs(&instrs, cond_jump_instr);
+      concat_TAC_instrs(&instrs, left_instrs);
+      concat_TAC_instrs(&instrs, copy_left);
+      concat_TAC_instrs(&instrs, jump_end);
+      concat_TAC_instrs(&instrs, else_label_instr);
+      concat_TAC_instrs(&instrs, right_instrs);
+      concat_TAC_instrs(&instrs, copy_right);
+      concat_TAC_instrs(&instrs, end_label_instr);
+
+      result->type = PLAIN_OPERAND;
+      result->val = dst;
+      return instrs;
+    }
+    case LIT: {
+      struct LitExpr* lit = &expr->expr.lit_expr;
+      int const_value = 0;
+      switch (lit->type) {
+        case INT_CONST:
+          const_value = lit->value.int_val;
+          break;
+        case UINT_CONST:
+          const_value = (int)lit->value.uint_val;
+          break;
+        case LONG_CONST:
+          const_value = (int)lit->value.long_val;
+          break;
+        case ULONG_CONST:
+          const_value = (int)lit->value.ulong_val;
+          break;
+        default:
+          tac_error_at(expr->loc, "unknown literal type in TAC lowering");
+          return NULL;
+      }
+
+      result->type = PLAIN_OPERAND;
+      result->val = tac_make_const(const_value);
+      return NULL;
+    }
+    case UNARY: {
+      struct UnaryExpr* unary_expr = &expr->expr.un_expr;
+      if (unary_expr->op == BOOL_NOT) {
+        struct Val* src_val = (struct Val*)arena_alloc(sizeof(struct Val));
+        struct TACInstr* src_instrs = expr_to_TAC_convert(func_name, unary_expr->expr, src_val);
+
+        struct Val* dst = make_temp(func_name, expr->value_type);
+        struct Slice* end_label = tac_make_label(func_name, "end");
+
+        struct TACInstr* instrs = NULL;
+
+        struct TACInstr* init_copy = tac_instr_create(TACCOPY);
+        init_copy->instr.tac_copy.dst = dst;
+        init_copy->instr.tac_copy.src = tac_make_const(1);
+        concat_TAC_instrs(&instrs, init_copy);
+        concat_TAC_instrs(&instrs, src_instrs);
+
+        struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
+        cmp_instr->instr.tac_cmp.src1 = src_val;
+        cmp_instr->instr.tac_cmp.src2 = tac_make_const(0);
+
+        struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+        cond_jump_instr->instr.tac_cond_jump.condition = CondE;
+        cond_jump_instr->instr.tac_cond_jump.label = end_label;
+
+        struct TACInstr* clear_copy = tac_instr_create(TACCOPY);
+        clear_copy->instr.tac_copy.dst = dst;
+        clear_copy->instr.tac_copy.src = tac_make_const(0);
+
+        struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
+        end_label_instr->instr.tac_label.label = end_label;
+
+        concat_TAC_instrs(&instrs, cmp_instr);
+        concat_TAC_instrs(&instrs, cond_jump_instr);
+        concat_TAC_instrs(&instrs, clear_copy);
+        concat_TAC_instrs(&instrs, end_label_instr);
+
+        result->type = PLAIN_OPERAND;
+        result->val = dst;
+        return instrs;
+      }
+
+      struct Val* src_val = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct TACInstr* src_instrs = expr_to_TAC_convert(func_name, unary_expr->expr, src_val);
+      struct Val* dst = make_temp(func_name, expr->value_type);
+
+      struct TACInstr* un_instr = tac_instr_create(TACUNARY);
+      un_instr->instr.tac_unary.op = unary_expr->op;
+      un_instr->instr.tac_unary.dst = dst;
+      un_instr->instr.tac_unary.src = src_val;
+
+      struct TACInstr* instrs = NULL;
+      concat_TAC_instrs(&instrs, src_instrs);
+      concat_TAC_instrs(&instrs, un_instr);
+
+      result->type = PLAIN_OPERAND;
+      result->val = dst;
+      return instrs;
+    }
+    case VAR: {
+      result->type = PLAIN_OPERAND;
+      result->val = tac_make_var(expr->expr.var_expr.name);
+      return NULL;
+    }
+    case FUNCTION_CALL: {
+      struct Val* args = NULL;
+      size_t num_args = 0;
+      struct TACInstr* arg_instrs = args_to_TAC(func_name, expr->expr.fun_call_expr.args, &args, &num_args);
+
+      struct Val* dst = make_temp(func_name, expr->value_type);
+      struct TACInstr* call_instr = tac_instr_create(TACCALL);
+      call_instr->instr.tac_call.func_name = expr->expr.fun_call_expr.func_name;
+      call_instr->instr.tac_call.dst = dst;
+      call_instr->instr.tac_call.args = args;
+      call_instr->instr.tac_call.num_args = num_args;
+
+      struct TACInstr* instrs = NULL;
+      concat_TAC_instrs(&instrs, arg_instrs);
+      concat_TAC_instrs(&instrs, call_instr);
+
+      result->type = PLAIN_OPERAND;
+      result->val = dst;
+      return instrs;
+    }
+    case CAST: {
+      struct CastExpr* cast_expr = &expr->expr.cast_expr;
+      struct Val* src_val = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct TACInstr* src_instrs = expr_to_TAC_convert(func_name, cast_expr->expr, src_val);
+
+      if (compare_types(cast_expr->target, cast_expr->expr->value_type)) {
+        result->type = PLAIN_OPERAND;
+        result->val = src_val;
+        return src_instrs;
+      }
+
+      size_t target_size = get_type_size(cast_expr->target);
+      size_t src_size = get_type_size(cast_expr->expr->value_type);
+      if (target_size != src_size) {
+        tac_error_at(expr->loc, "unsupported cast between sizes %zu and %zu", target_size, src_size);
+        return NULL;
+      }
+
+      struct Val* dst = make_temp(func_name, cast_expr->target);
+      struct TACInstr* copy_instr = tac_instr_create(TACCOPY);
+      copy_instr->instr.tac_copy.dst = dst;
+      copy_instr->instr.tac_copy.src = src_val;
+
+      struct TACInstr* instrs = NULL;
+      concat_TAC_instrs(&instrs, src_instrs);
+      concat_TAC_instrs(&instrs, copy_instr);
+
+      result->type = PLAIN_OPERAND;
+      result->val = dst;
+      return instrs;
+    }
+    case ADDR_OF: {
+      struct AddrOfExpr* addr_expr = &expr->expr.addr_of_expr;
+      struct ExprResult inner_result;
+      struct TACInstr* instrs = expr_to_TAC(func_name, addr_expr->expr, &inner_result);
+
+      if (inner_result.type == PLAIN_OPERAND) {
+        struct Val* dst = make_temp(func_name, expr->value_type);
+        struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
+        addr_instr->instr.tac_get_address.dst = dst;
+        addr_instr->instr.tac_get_address.src = inner_result.val;
+        concat_TAC_instrs(&instrs, addr_instr);
+
+        result->type = PLAIN_OPERAND;
+        result->val = dst;
+        return instrs;
+      }
+
+      if (inner_result.type == DEREFERENCED_POINTER) {
+        // &(*p) collapses to p, so reuse the pointer operand directly.
+        result->type = PLAIN_OPERAND;
+        result->val = inner_result.val;
+        return instrs;
+      }
+
+      tac_error_at(expr->loc, "invalid address-of operand");
+      return NULL;
+    }
+    case DEREFERENCE: {
+      struct DereferenceExpr* deref_expr = &expr->expr.deref_expr;
+      struct Val* ptr_val = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct TACInstr* instrs = expr_to_TAC_convert(func_name, deref_expr->expr, ptr_val);
+
+      result->type = DEREFERENCED_POINTER;
+      result->val = ptr_val;
+      return instrs;
+    }
+    default:
+      tac_error_at(expr->loc, "expression type not implemented in TAC lowering");
+      return NULL;
+  }
+}
+
+// Purpose: Append a TAC instruction list onto an existing list.
+// Inputs: old_instrs points to the head pointer; new_instrs is the list to append.
+// Outputs: Updates *old_instrs to include new_instrs at the tail.
+// Invariants/Assumptions: Both lists use the `last` pointer for O(1) concatenation.
+void concat_TAC_instrs(struct TACInstr** old_instrs, struct TACInstr* new_instrs) {
+  if (new_instrs == NULL) {
+    return;
+  }
+
+  if (new_instrs->last == NULL) {
+    new_instrs->last = tac_find_last(new_instrs);
+  }
+
+  if (*old_instrs == NULL) {
+    *old_instrs = new_instrs;
+    return;
+  }
+
+  if ((*old_instrs)->last == NULL) {
+    (*old_instrs)->last = tac_find_last(*old_instrs);
+  }
+
+  (*old_instrs)->last->next = new_instrs;
+  (*old_instrs)->last = new_instrs->last;
+}

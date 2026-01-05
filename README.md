@@ -26,11 +26,33 @@ The first command runs the preprocessor on `example.c` and outputs the result to
 - `#define` (object-like macros. no function-like macros yet)
 - `#include` (only supports `""` includes for now)
 - `#ifdef`, `#ifndef`, `#else`, `#endif`
+- `__FILE__`, `__LINE__` builtin macros
 - comments (`//` and `/* ... */`)
 
 ### C Subset
 
-None yet, only the preprocessor and lexer have been ported.
+Supported:
+
+- Types: `int`, `unsigned int`, and pointers to these types
+- Storage classes: `static`, `extern`
+- Declarations: global and local variables, function declarations/definitions
+- Expressions:
+  - literals: decimal and `0x` hex integers
+  - variables, assignments (`=`, compound assignments)
+  - unary: `-`, `~`, `!`, `&`, `*`, pre/post `++` and `--`
+  - binary: `+`, `-`, `*`, `/`, `%`, shifts, bitwise ops, comparisons, `&&`, `||`
+  - ternary `?:`
+  - function calls
+- Statements: expression statements, `return`, blocks, `if`/`else`, `while`, `do`/`while`,
+  `for`, `break`, `continue`, `switch`/`case`/`default`, labels and `goto`
+
+Known limitations:
+
+- No arrays, structs/unions, enums, `sizeof`, floating-point, `char`, or string literals
+- No `short` or `long` integers, no `void` or `void*`
+- No `typedef`, `const`, or `volatile`
+- No multiple declarators per declaration (e.g., `int a, b;`)
+- Global initializers must be integer literals (pointer globals may only use null pointer literals)
 
 ## Tests
 

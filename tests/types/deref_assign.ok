@@ -1,0 +1,34 @@
+Key: p.1
+  Type: int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Is Global: true
+
+Key: x.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Is Global: false
+
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int, x.0, LitExpr(int, 1):int);
+            VarDclr(none, int*, p.1, AddrOf(Var(x.0):int):int*);
+            ExprStmt(Assign(Dereference(Var(p.1):int*):int, LitExpr(int, 9):int):int);
+            Return(Var(x.0):int, main);
+    );
+)

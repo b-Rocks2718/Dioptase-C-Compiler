@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/include_error.h:3:10: cannot dereference non-pointer type

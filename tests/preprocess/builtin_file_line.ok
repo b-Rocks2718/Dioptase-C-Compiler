@@ -1,0 +1,6 @@
+const char* file_a = "tests/preprocess/builtin_file_line.c";
+int line_a = 2;
+int line_b = 3;
+const char* header_file = "tests/preprocess/builtin_file_line.h";
+int header_line = 2;
+int line_c = 5;

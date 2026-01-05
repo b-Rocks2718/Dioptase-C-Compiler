@@ -3,6 +3,7 @@
 #include <stdbool.h>
 
 #include "slice.h"
+#include "arena.h"
 
 bool compare_slice_to_pointer(const struct Slice* s, char const *p) {
   for (size_t i = 0; i < s->len; i++) {
@@ -31,6 +32,26 @@ bool is_identifier(const struct Slice* slice) {
     if (!isalnum(slice->start[i]))
       return false;
   return true;
+}
+
+struct Slice* slice_concat(const struct Slice* a, const char* b) {
+  size_t b_len = 0;
+  while (b[b_len] != 0) {
+    b_len++;
+  }
+
+  char* new_str = (char*)arena_alloc(a->len + b_len);
+  for (size_t i = 0; i < a->len; i++) {
+    new_str[i] = a->start[i];
+  }
+  for (size_t i = 0; i < b_len; i++) {
+    new_str[a->len + i] = b[i];
+  }
+
+  struct Slice* slice = (struct Slice*)arena_alloc(sizeof(struct Slice));
+  slice->start = new_str;
+  slice->len = a->len + b_len;
+  return slice;
 }
 
 void print_slice(struct Slice* slice) {

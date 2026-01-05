@@ -1,2 +1,2 @@
 Typechecking failed
-Type error at tests/types_invalid/assign_non_lvalue.c:4:11: cannot assign to non-lvalue
+Type error at tests/types_invalid/assign_non_lvalue.c:6:18: cannot assign to non-lvalue

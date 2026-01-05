@@ -2,9 +2,21 @@
 
 #include "arena.h"
 
+// Purpose: Generate unique identifier and label slices.
+// Inputs: Original names and suffixes are provided by the caller.
+// Outputs: New slices are allocated in the arena.
+// Invariants/Assumptions: unique_id_counter is incremented on each call.
+
+// Purpose: Monotonic counter to keep generated names unique.
+// Inputs: Incremented by make_unique and make_unique_label.
+// Outputs: Used to format numeric suffixes.
+// Invariants/Assumptions: Single-threaded use; not reset between functions.
 static int unique_id_counter = 0;
 
-// helper function to calculate length of counter when converted to string
+// Purpose: Compute the decimal digit length of a counter value.
+// Inputs: counter is the integer to measure.
+// Outputs: Returns the number of digits needed in base-10.
+// Invariants/Assumptions: counter is treated as non-negative.
 unsigned counter_len(int counter) {
   unsigned len = 0;
   do {
@@ -14,7 +26,10 @@ unsigned counter_len(int counter) {
   return len;
 }
 
-// create a unique name by appending a unique id to the original name
+// Purpose: Create a unique identifier by appending ".<id>".
+// Inputs: original_name is the base identifier.
+// Outputs: Returns a newly allocated Slice with the suffix applied.
+// Invariants/Assumptions: Storage is arena-allocated and permanent.
 struct Slice* make_unique(struct Slice* original_name) {
   unsigned id_len = counter_len(unique_id_counter);
   size_t new_len = original_name->len + 1 + id_len; // +1 for period
@@ -41,6 +56,10 @@ struct Slice* make_unique(struct Slice* original_name) {
   return unique_name;
 }
 
+// Purpose: Create a unique function-scoped label with a suffix.
+// Inputs: func_name is the function name; suffix is a label category string.
+// Outputs: Returns a newly allocated Slice "func.suffix.<id>".
+// Invariants/Assumptions: Storage is arena-allocated and permanent.
 struct Slice* make_unique_label(struct Slice* func_name, const char* suffix) {
   size_t suffix_len = 0;
   while (suffix[suffix_len] != '\0') {

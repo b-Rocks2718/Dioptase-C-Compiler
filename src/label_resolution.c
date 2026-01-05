@@ -7,16 +7,37 @@
 #include <stdarg.h>
 #include <stdio.h>
 
+// Purpose: Resolve control-flow labels (loops/switches/gotos/cases) in the AST.
+// Inputs: Traverses Program, Block, and Statement nodes produced by parsing.
+// Outputs: Annotates statements with unique labels and case lists.
+// Invariants/Assumptions: Labels are slices allocated from the arena.
+
+// Purpose: Track the innermost loop/switch labels for break/continue/case.
+// Inputs: Updated on entry/exit of loop or switch statements.
+// Outputs: Referenced when labeling break/continue/case/default nodes.
+// Invariants/Assumptions: Only one active loop and one active switch are tracked.
 struct Slice* cur_loop_label = NULL;
 struct Slice* cur_switch_label = NULL;
 enum LabelType cur_label_type = -1;
 
+// Purpose: Map user goto labels to unique labels within a function.
+// Inputs: Populated during label_stmt traversal of labeled statements.
+// Outputs: Used by resolve_gotos to rewrite goto targets.
+// Invariants/Assumptions: Recreated per function and destroyed after labeling.
 struct LabelMap* goto_labels = NULL;
+// Purpose: Collects case/default labels for the current switch statement.
+// Inputs: Appended during collect_cases traversal.
+// Outputs: Stored on the switch statement node.
+// Invariants/Assumptions: Reset when entering/leaving a switch statement.
 struct CaseList* current_case_list = NULL;
 
+// Purpose: Emit a formatted label-resolution error at a source location.
+// Inputs: prefix identifies the pass; loc points into source text; fmt is printf-style.
+// Outputs: Writes a message to stdout.
+// Invariants/Assumptions: source_location_from_ptr handles NULL/unknown locations.
 static void label_error_at(const char* prefix, const char* loc, const char* fmt, ...) {
   struct SourceLocation where = source_location_from_ptr(loc);
-  const char* filename = source_filename();
+  const char* filename = source_filename_for_ptr(loc);
   if (where.line == 0) {
     printf("%s: ", prefix);
   } else {
@@ -29,6 +50,10 @@ static void label_error_at(const char* prefix, const char* loc, const char* fmt,
   printf("\n");
 }
 
+// Purpose: Label all functions in a program and resolve gotos/cases.
+// Inputs: prog is the AST for the full translation unit.
+// Outputs: Returns true on success; false on any labeling error.
+// Invariants/Assumptions: Each function body is labeled independently.
 bool label_loops(struct Program* prog) {
   for (struct DeclarationList* decl = prog->dclrs; decl != NULL; decl = decl->next) {
     // only need to label functions, not global variables
@@ -61,6 +86,10 @@ bool label_loops(struct Program* prog) {
 
 // -------------------------------- loop/switch labeling -------------------------------- //
 
+// Purpose: Apply label assignment to a statement subtree.
+// Inputs: func_name is the enclosing function name; stmt is the node to label.
+// Outputs: Returns true on success; false on any invalid label usage.
+// Invariants/Assumptions: Uses global label state to handle nesting.
 bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
   switch (stmt->type) {
     case WHILE_STMT: {
@@ -253,8 +282,9 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
         return false;
       }
 
-      // assign current switch label to case statement
-      case_stmt->label = cur_switch_label;
+      // append ".case.num" to current switch label
+      int num = case_stmt->expr->expr.lit_expr.value.int_val;
+      case_stmt->label = make_case_label(cur_switch_label, num);
 
       if (!label_stmt(func_name, case_stmt->statement)) {
         return false;
@@ -270,7 +300,7 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       }
 
       // assign current switch label to default statement
-      default_stmt->label = cur_switch_label;
+      default_stmt->label = slice_concat(cur_switch_label, ".default");
 
       if (!label_stmt(func_name, default_stmt->statement)) {
         return false;
@@ -286,6 +316,10 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
 }
     
 
+// Purpose: Label each statement item inside a block.
+// Inputs: func_name is the enclosing function name; block is the block list.
+// Outputs: Returns true on success; false on any labeling error.
+// Invariants/Assumptions: Declaration items do not require labeling.
 bool label_block(struct Slice* func_name, struct Block* block) {
   for (struct Block* item = block; item != NULL; item = item->next) {
     switch (item->item->type) {
@@ -306,6 +340,10 @@ bool label_block(struct Slice* func_name, struct Block* block) {
   return true;
 }
 
+// Purpose: Resolve nested statements while rewriting goto targets.
+// Inputs: stmt is the statement subtree to traverse.
+// Outputs: Returns true on success; false if a goto target is missing.
+// Invariants/Assumptions: goto_labels is populated for this function.
 static bool resolve_stmt(struct Statement* stmt) {
   if (stmt->type == LABELED_STMT) {
     struct LabeledStmt* labeled_stmt = &stmt->statement.labeled_stmt;
@@ -373,6 +411,10 @@ static bool resolve_stmt(struct Statement* stmt) {
   return true;
 }
 
+// Purpose: Resolve goto statements within a block by replacing their labels.
+// Inputs: block is the block list containing statements.
+// Outputs: Returns true on success; false on unresolved labels.
+// Invariants/Assumptions: Labeling pass created the goto label map.
 bool resolve_gotos(struct Block* block) {
   for (struct Block* item = block; item != NULL; item = item->next) {
     // only need to resolve statements
@@ -387,6 +429,10 @@ bool resolve_gotos(struct Block* block) {
 
 // -------------------------------- case collection -------------------------------- //
 
+// Purpose: Traverse statements to collect case/default labels per switch.
+// Inputs: stmt is the statement subtree to inspect.
+// Outputs: Returns true on success; false on duplicate/invalid cases.
+// Invariants/Assumptions: current_case_list tracks the active switch.
 bool collect_cases_stmt(struct Statement* stmt){
   switch (stmt->type) {
     case WHILE_STMT: {
@@ -492,6 +538,10 @@ bool collect_cases_stmt(struct Statement* stmt){
   }
 }
 
+// Purpose: Collect case/default labels for every switch in a block.
+// Inputs: block is the block list containing statements.
+// Outputs: Returns true on success; false on case collection errors.
+// Invariants/Assumptions: Case expressions must be literal integers.
 bool collect_cases(struct Block* block) {
   for (struct Block* item = block; item != NULL; item = item->next) {
     // only need to process statements
@@ -502,4 +552,34 @@ bool collect_cases(struct Block* block) {
     }
   }
   return true;
+}
+
+// Purpose: Synthesize a unique label for a switch case value.
+// Inputs: switch_label is the base switch label; case_value is the integer literal.
+// Outputs: Returns a new Slice containing "switch.case.N".
+// Invariants/Assumptions: Uses arena allocation for the label buffer.
+struct Slice* make_case_label(struct Slice* switch_label, int case_value) {
+  // append ".case.num" to current switch label
+  unsigned id_len = counter_len(case_value);
+  char* case_label_str = (char*)arena_alloc(switch_label->len + 6 + id_len); // len(".case.") == 6
+  for (size_t i = 0; i < switch_label->len; i++) {
+    case_label_str[i] = switch_label->start[i];
+  }
+  case_label_str[switch_label->len] = '.';
+  case_label_str[switch_label->len + 1] = 'c';
+  case_label_str[switch_label->len + 2] = 'a';
+  case_label_str[switch_label->len + 3] = 's';
+  case_label_str[switch_label->len + 4] = 'e';
+  case_label_str[switch_label->len + 5] = '.';
+
+  for (unsigned i = 0; i < id_len; i++) {
+    case_label_str[switch_label->len + 6 + id_len - 1 - i] = '0' + (case_value % 10);
+    case_value /= 10;
+  }
+
+  struct Slice* case_label = (struct Slice*)arena_alloc(sizeof(struct Slice));
+  case_label->start = case_label_str;
+  case_label->len = switch_label->len + 6 + id_len;
+
+  return case_label;
 }

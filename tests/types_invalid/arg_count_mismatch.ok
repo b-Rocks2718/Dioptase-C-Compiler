@@ -1,2 +1,2 @@
 Typechecking failed
-Type error at tests/types_invalid/arg_count_mismatch.c:7:10: argument and parameter count mismatch
+Type error at tests/types_invalid/arg_count_mismatch.c:9:10: argument and parameter count mismatch

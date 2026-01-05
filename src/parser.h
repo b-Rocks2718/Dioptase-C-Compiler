@@ -6,30 +6,87 @@
 
 struct Arena;
 
+// Purpose: Declare parser entry points for the C subset.
+// Inputs: Functions consume parser state seeded by parse_prog.
+// Outputs: Return AST nodes or NULL on failure.
+// Invariants/Assumptions: Parsing allocates from the arena and uses token locations.
+
+// Purpose: Parse an entire token array into a Program AST.
+// Inputs: tokens is the lexer output for a translation unit.
+// Outputs: Returns a Program or NULL if parsing fails.
+// Invariants/Assumptions: tokens must remain valid for the parse duration.
 struct Program* parse_prog(struct TokenArray* tokens);
 
+// Purpose: Parse a single statement from the current token cursor.
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns a Statement node or NULL if no statement matches.
+// Invariants/Assumptions: The parser cursor is positioned at a statement start.
 struct Statement* parse_statement();
 
+// Purpose: Parse an expression with full precedence handling.
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns an Expr node or NULL on failure.
+// Invariants/Assumptions: Cursor points to the first token of an expression.
 struct Expr* parse_expr();
 
+// Purpose: Parse unary expressions including prefix operators and casts.
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns an Expr node or NULL if no unary expression matches.
+// Invariants/Assumptions: Cursor points to a unary-expression start.
 struct Expr* parse_unary();
 
+// Purpose: Parse a binary expression using precedence rules.
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns an Expr node or NULL on failure.
+// Invariants/Assumptions: parse_unary/parse_factor handle lower-level forms.
 struct Expr* parse_bin_expr();
 
+// Purpose: Parse the lowest-precedence expression forms.
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns an Expr node or NULL on failure.
+// Invariants/Assumptions: Factors include literals, variables, calls, and parenthesized forms.
 struct Expr* parse_factor();
 
+// Purpose: Parse a variable expression.
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns a VAR expression or NULL if no identifier matches.
+// Invariants/Assumptions: Cursor points at an identifier token.
 struct Expr* parse_var();
 
+// Purpose: Parse an abstract declarator for casts and type names.
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns an AbstractDeclarator or NULL if absent.
+// Invariants/Assumptions: Caller handles the surrounding type specifiers.
 struct AbstractDeclarator* parse_abstract_declarator();
 
+// Purpose: Parse a variable declaration after a declarator is known.
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns a VariableDclr node or NULL on failure.
+// Invariants/Assumptions: Caller supplies the type and identifier context.
 struct VariableDclr* parse_var_dclr();
 
+// Purpose: Parse a full declaration (variable or function).
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns a Declaration or NULL when no declaration matches.
+// Invariants/Assumptions: Cursor points at a declaration start.
 struct Declaration* parse_declaration();
 
+// Purpose: Parse a declarator (possibly with pointers and parameters).
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns a Declarator node or NULL on failure.
+// Invariants/Assumptions: Caller supplies base type specifiers separately.
 struct Declarator* parse_declarator();
 
+// Purpose: Parse the non-parameter portion of a declarator.
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns a Declarator node or NULL when not present.
+// Invariants/Assumptions: Used for parameter and typedef contexts.
 struct Declarator* parse_simple_declarator();
 
+// Purpose: Parse a direct declarator (identifier or parenthesized declarator).
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns a Declarator node or NULL on failure.
+// Invariants/Assumptions: Pointer prefixes are handled by parse_declarator.
 struct Declarator* parse_direct_declarator();
 
 #endif

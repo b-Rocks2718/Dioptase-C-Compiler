@@ -13,6 +13,8 @@ bool compare_slice_to_pointer(const struct Slice* s, char const *p);
 
 bool compare_slice_to_slice(const struct Slice* self, const struct Slice* other);
 
+struct Slice* slice_concat(const struct Slice* a, const char* b);
+
 bool is_identifier(const struct Slice* slice);
 
 void print_slice(struct Slice* slice);

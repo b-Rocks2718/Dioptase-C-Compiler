@@ -24,6 +24,8 @@ int main(int argc, const char *const *const argv) {
     int print_idents = 0;
     int print_labels = 0;
     int print_types = 0;
+    int print_tac = 0;
+    int interpret_tac = 0;
     const char *filename = NULL;
     const char **cli_defines = malloc(argc * sizeof(char*));
     int num_defines = 0;
@@ -54,6 +56,14 @@ int main(int argc, const char *const *const argv) {
             print_types = 1;
             continue;
         }
+        if (strcmp(arg, "-tac") == 0) {
+            print_tac = 1;
+            continue;
+        }
+        if (strcmp(arg, "-interp") == 0) {
+            interpret_tac = 1;
+            continue;
+        }
         if (strncmp(arg, "-D", 2) == 0) {
             const char *def = arg + 2;
             if (def[0] == '\0') {
@@ -66,7 +76,7 @@ int main(int argc, const char *const *const argv) {
         }
         if (arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-DNAME[=value]] <file name>\n", argv[0]);
+            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-interp] [-DNAME[=value]] <file name>\n", argv[0]);
             free(cli_defines);
             exit(1);
         }
@@ -75,13 +85,13 @@ int main(int argc, const char *const *const argv) {
             continue;
         }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-interp] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
 
     if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-interp] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
@@ -115,28 +125,29 @@ int main(int argc, const char *const *const argv) {
         exit(1);
     }
 
-    char* preprocessed = preprocess(text, filename, num_defines, cli_defines);
-    free(cli_defines);
-    if (preprocessed == NULL) {
+    struct PreprocessResult preprocessed = {0};
+    if (!preprocess(text, filename, num_defines, cli_defines, &preprocessed)) {
+        free(cli_defines);
         return 1;
     }
-    size_t preprocessed_len = strlen(preprocessed);
-    set_source_context(filename, preprocessed);
+    free(cli_defines);
+    size_t preprocessed_len = strlen(preprocessed.text);
+    set_source_context_with_map(filename, preprocessed.text, &preprocessed.map);
 
     if (print_preprocess) {
-        fputs(preprocessed, stdout);
+        fputs(preprocessed.text, stdout);
         if (!print_tokens && !print_ast) {
-            free(preprocessed);
+            destroy_preprocess_result(&preprocessed);
             return 0;
         }
-        if (preprocessed_len > 0 && preprocessed[preprocessed_len - 1] != '\n') {
+        if (preprocessed_len > 0 && preprocessed.text[preprocessed_len - 1] != '\n') {
             fputc('\n', stdout);
         }
     }
 
-    struct TokenArray* tokens = lex(preprocessed);
+    struct TokenArray* tokens = lex(preprocessed.text);
     if (tokens == NULL) {
-       free(preprocessed);
+       destroy_preprocess_result(&preprocessed);
        return 1;
     }
 
@@ -147,7 +158,7 @@ int main(int argc, const char *const *const argv) {
     arena_init(16384);
     struct Program* prog = parse_prog(tokens);
     if (prog == NULL) {
-       free(preprocessed);
+       destroy_preprocess_result(&preprocessed);
        destroy_token_array(tokens);
        arena_destroy();
        return 2;
@@ -160,7 +171,7 @@ int main(int argc, const char *const *const argv) {
     // perform identifier resolution
     if (!resolve_prog(prog)) {
         fprintf(stderr, "Identifier resolution failed\n");
-        free(preprocessed);
+        destroy_preprocess_result(&preprocessed);
         destroy_token_array(tokens);
         arena_destroy();
         return 3;
@@ -170,7 +181,7 @@ int main(int argc, const char *const *const argv) {
 
     if (!label_loops(prog)) {
         fprintf(stderr, "Loop labeling failed\n");
-        free(preprocessed);
+        destroy_preprocess_result(&preprocessed);
         destroy_token_array(tokens);
         arena_destroy();
         return 4;
@@ -180,7 +191,7 @@ int main(int argc, const char *const *const argv) {
 
     if (!typecheck_program(prog)) {
         fprintf(stderr, "Typechecking failed\n");
-        free(preprocessed);
+        destroy_preprocess_result(&preprocessed);
         destroy_token_array(tokens);
         arena_destroy();
         return 5;
@@ -188,10 +199,49 @@ int main(int argc, const char *const *const argv) {
         print_symbol_table(global_symbol_table);
         print_prog(prog);
     }
+
+    struct TACProg* tac_prog = NULL;
+    if (print_tac || interpret_tac) {
+        tac_prog = prog_to_TAC(prog);
+        if (tac_prog != NULL && global_symbol_table != NULL) {
+            // Include static storage entries from the symbol table for visibility.
+            for (size_t i = 0; i < global_symbol_table->size; i++) {
+                for (struct SymbolEntry* entry = global_symbol_table->arr[i];
+                     entry != NULL;
+                     entry = entry->next) {
+                    struct TopLevel* top_level = symbol_to_TAC(entry);
+                    if (top_level != NULL) {
+                        if (tac_prog->head == NULL) {
+                            tac_prog->head = top_level;
+                            tac_prog->tail = top_level;
+                        } else {
+                            tac_prog->tail->next = top_level;
+                            tac_prog->tail = top_level;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (print_tac) {
+        print_tac_prog(tac_prog);
+    }
+    if (interpret_tac) {
+        if (tac_prog == NULL) {
+            fprintf(stderr, "TAC lowering failed\n");
+            destroy_preprocess_result(&preprocessed);
+            destroy_token_array(tokens);
+            arena_destroy();
+            return 6;
+        }
+        int interp_result = tac_interpret_prog(tac_prog);
+        printf("%d\n", interp_result);
+    }
     
     arena_destroy();
     destroy_token_array(tokens);
-    free(preprocessed);
+    destroy_preprocess_result(&preprocessed);
     
     return 0;
 }

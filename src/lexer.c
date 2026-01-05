@@ -10,14 +10,23 @@
 #include "lexer.h"
 #include "source_location.h"
 
+// Purpose: Tokenize preprocessed source into a stream of tokens.
+// Inputs: Uses the global cursor to walk the NUL-terminated source buffer.
+// Outputs: Produces Token structures appended to a TokenArray.
+// Invariants/Assumptions: Whitespace is skipped; no comments remain (preprocessed).
+
 static char const * program;
 static char const * current;
 static char const * last_token_start;
 static size_t last_token_len;
 
+// Purpose: Emit a lexer error diagnostic for the current cursor.
+// Inputs: current points to the byte where tokenization failed.
+// Outputs: Writes an error message to stdout.
+// Invariants/Assumptions: source context has been initialized for locations.
 static void print_error() {
   struct SourceLocation loc = source_location_from_ptr(current);
-  const char* filename = source_filename();
+  const char* filename = source_filename_for_ptr(current);
   if (*current == '\0') {
     printf("Lexer error at %s:%zu:%zu: unexpected end of input\n",
            filename, loc.line, loc.column);
@@ -28,6 +37,10 @@ static void print_error() {
   printf("%s\n", current);
 }
 
+// Purpose: Determine whether the lexer has reached the end of input.
+// Inputs: Uses the global cursor and skips trailing whitespace.
+// Outputs: Returns true when no more non-space characters remain.
+// Invariants/Assumptions: current points into the same buffer as program.
 static bool is_at_end() {
   while (isspace((unsigned char)*current)) {
     current += 1;
@@ -36,12 +49,20 @@ static bool is_at_end() {
   else return true;
 }
 
+// Purpose: Skip over ASCII whitespace characters.
+// Inputs: Uses the global cursor pointer.
+// Outputs: Advances current past whitespace.
+// Invariants/Assumptions: Whitespace is not emitted as tokens.
 static void skip() {
   while (isspace((unsigned char)*current)) {
     current += 1;
   }
 }
 
+// Purpose: Consume a fixed string token at the current cursor.
+// Inputs: str is the literal to match.
+// Outputs: Returns true on match and updates last_token_* metadata.
+// Invariants/Assumptions: Skips leading whitespace before matching.
 static bool consume(const char* str) {
   skip();
   const char* start = current;
@@ -64,6 +85,10 @@ static bool consume(const char* str) {
   } 
 }
 
+// Purpose: Consume a keyword token, enforcing a word boundary.
+// Inputs: str is the keyword literal to match.
+// Outputs: Returns true on match and updates last_token_* metadata.
+// Invariants/Assumptions: Rejects identifiers that merely prefix the keyword.
 static bool consume_keyword(const char* str) {
   skip();
   const char* start = current;
@@ -92,6 +117,10 @@ static bool consume_keyword(const char* str) {
   } 
 }
 
+// Purpose: Consume an identifier token and allocate its slice.
+// Inputs: token is the destination Token to populate.
+// Outputs: Returns true on success and advances current past the identifier.
+// Invariants/Assumptions: Identifier slices point into the source buffer.
 static bool consume_identifier(struct Token* token) {
   skip();
   if (isalpha((unsigned char)*current) || *current == '_') {
@@ -114,15 +143,47 @@ static bool consume_identifier(struct Token* token) {
   }
 }
 
+// Purpose: Consume a decimal or hex integer literal token.
+// Inputs: token is the destination Token to populate.
+// Outputs: Returns true on success and advances current past the literal.
+// Invariants/Assumptions: Only base-10 and 0x/0X hex integers without suffixes are supported.
+// Purpose: Convert a hex digit character into its numeric value.
+// Inputs: ch is an ASCII hex digit.
+// Outputs: Returns the digit value or -1 for non-hex characters.
+// Invariants/Assumptions: Caller checks isxdigit before using this.
+static int hex_digit_value(int ch) {
+  if (ch >= '0' && ch <= '9') {
+    return ch - '0';
+  }
+  if (ch >= 'a' && ch <= 'f') {
+    return 10 + (ch - 'a');
+  }
+  if (ch >= 'A' && ch <= 'F') {
+    return 10 + (ch - 'A');
+  }
+  return -1;
+}
+
 static bool consume_literal(struct Token* token) {
   skip();
   if (isdigit((unsigned char)*current)) {
     char const * start = current;
     uint64_t v = 0;
-    do {
-      v = 10*v + ((*current) - '0');
-      current += 1;
-    } while (isdigit((unsigned char)*current));
+    if (*current == '0' &&
+        (current[1] == 'x' || current[1] == 'X') &&
+        isxdigit((unsigned char)current[2])) {
+      current += 2;
+      while (isxdigit((unsigned char)*current)) {
+        int digit = hex_digit_value((unsigned char)*current);
+        v = (v * 16) + (uint64_t)digit;
+        current += 1;
+      }
+    } else {
+      do {
+        v = 10*v + (uint64_t)((*current) - '0');
+        current += 1;
+      } while (isdigit((unsigned char)*current));
+    }
 
     token->type = INT_LIT;
     token->data.int_val = v;
@@ -134,6 +195,10 @@ static bool consume_literal(struct Token* token) {
   }
 }
 
+// Purpose: Finalize a token that was consumed via a fixed string match.
+// Inputs: token is the allocated Token; type is the token type to assign.
+// Outputs: Returns token after populating its type/start/len fields.
+// Invariants/Assumptions: last_token_* was set by consume/consume_keyword.
 static struct Token* finish_simple_token(struct Token* token, enum TokenType type) {
   token->type = type;
   token->start = last_token_start;
@@ -141,7 +206,10 @@ static struct Token* finish_simple_token(struct Token* token, enum TokenType typ
   return token;
 }
 
-// consumes any token
+// Purpose: Consume the next available token.
+// Inputs: Uses the global cursor to scan the next token.
+// Outputs: Returns a heap-allocated Token or NULL if no token matches.
+// Invariants/Assumptions: Caller frees the returned token when destroying arrays.
 static struct Token* consume_any(){
   struct Token* token = malloc(sizeof(struct Token));
 
@@ -214,6 +282,10 @@ static struct Token* consume_any(){
   return NULL;
 }
 
+// Purpose: Tokenize a preprocessed source buffer into a TokenArray.
+// Inputs: prog is the NUL-terminated source buffer to lex.
+// Outputs: Returns a TokenArray or NULL on error.
+// Invariants/Assumptions: prog remains valid for the lifetime of token slices.
 struct TokenArray* lex(char* prog){
   program = prog;
   current = prog;

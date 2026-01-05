@@ -1,0 +1,10 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            Return(LitExpr(int, 31):untyped);
+    );
+)

@@ -2,14 +2,17 @@
 #define TAC_H
 
 #include "AST.h"
+#include "typechecking.h"
 
 struct TACProg {
-  struct TopLevel* top_levels;
+  struct TopLevel* head;
+  struct TopLevel* tail;
 };
 
 enum TopLevelType {
     FUNC,
     STATIC_VAR,
+    DIRECTIVE,
     COMMENT
 };
 
@@ -23,10 +26,10 @@ struct TopLevel {
   size_t num_params;    // for Func
   
   struct Type* var_type; // for StaticVar
-  struct StaticInit* init_values; // for StaticVar
+  struct IdentInit* init_values; // for StaticVar
   size_t num_inits; // for StaticVar
   
-  struct Slice* comment; // for Comment
+  struct Slice* text; // for Comment / Directive
   
   struct TopLevel* next;
 };
@@ -38,7 +41,7 @@ enum ValType {
 
 union ValVariant {
     int const_value; // assuming constants are integers for simplicity
-    char* var_name;
+    struct Slice* var_name;
 };
 
 struct Val {
@@ -76,20 +79,20 @@ enum TACCondition {
 };
 
 struct TACReturn {
-  struct Val dst;
+  struct Val* dst;
 };
 
 struct TACUnary {
   enum UnOp op;
-  struct Val dst;
-  struct Val src;
+  struct Val* dst;
+  struct Val* src;
 };
 
 struct TACBinary {
   enum BinOp op;
-  struct Val dst;
-  struct Val src1;
-  struct Val src2;
+  struct Val* dst;
+  struct Val* src1;
+  struct Val* src2;
   struct Type* type;
 };
 
@@ -99,8 +102,8 @@ struct TACCondJump {
 };
 
 struct TACCmp {
-  struct Val src1;
-  struct Val src2;
+  struct Val* src1;
+  struct Val* src2;
 };
 
 struct TACJump {
@@ -112,35 +115,35 @@ struct TACLabel {
 };
 
 struct TACCopy {
-  struct Val dst;
-  struct Val src;
+  struct Val* dst;
+  struct Val* src;
 };
 
 struct TACCall {
   struct Slice* func_name;
-  struct Val dst;
+  struct Val* dst;
   struct Val* args;
   size_t num_args;
 };
 
 struct TACGetAddress {
-  struct Val dst;
-  struct Val src;
+  struct Val* dst;
+  struct Val* src;
 };
 
 struct TACLoad {
-  struct Val dst;
-  struct Val src_ptr;
+  struct Val* dst;
+  struct Val* src_ptr;
 };
 
 struct TACStore {
-  struct Val dst_ptr;
-  struct Val src;
+  struct Val* dst_ptr;
+  struct Val* src;
 };
 
 struct TACCopyToOffset {
-  struct Val dst;
-  struct Val src;
+  struct Val* dst;
+  struct Val* src;
   int offset;
 };
 
@@ -161,9 +164,10 @@ union TACInstrVariant {
 };
 
 struct TACInstr {
-    enum TACInstrType type;
-    union TACInstrVariant instr;
-    struct TACInstr* next;
+  enum TACInstrType type;
+  union TACInstrVariant instr;
+  struct TACInstr* next;
+  struct TACInstr* last; // for convenience in building lists
 };
 
 enum ExprResultType {
@@ -172,8 +176,109 @@ enum ExprResultType {
 };
 
 struct ExprResult {
-    enum ExprResultType type;
-    struct Val val;
+  enum ExprResultType type;
+  struct Val* val;
 };
+
+// ----- Main TAC conversion functions -----
+
+struct TACProg* prog_to_TAC(struct Program* program);
+
+struct TopLevel* file_scope_dclr_to_TAC(struct Declaration* declaration);
+
+struct TopLevel* symbol_to_TAC(struct SymbolEntry* symbol);
+
+struct TopLevel* func_to_TAC(struct FunctionDclr* declaration);
+
+struct TACInstr* block_to_TAC(struct Slice* func_name, struct Block* block);
+
+struct TACInstr* local_dclr_to_TAC(struct Slice* func_name, struct Declaration* dclr);
+
+struct TACInstr* var_dclr_to_TAC(struct Slice* func_name, struct Declaration* dclr);
+
+struct TACInstr* stmt_to_TAC(struct Slice* func_name, struct Statement* stmt);
+
+struct TACInstr* expr_to_TAC_convert(struct Slice* func_name, struct Expr* expr, struct Val* out_val);
+
+struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct ExprResult* result);
+
+struct TACInstr* if_to_TAC(struct Slice* func_name, struct Expr* condition, struct Statement* if_stmt);
+
+struct TACInstr* if_else_to_TAC(struct Slice* func_name, struct Expr* condition, struct Statement* if_stmt, struct Statement* else_stmt);
+
+struct TACInstr* cases_to_TAC(struct Slice* label, struct CaseList* cases, struct Val* rslt);
+
+#ifdef TAC_INTERNAL
+static struct TACInstr* relational_to_TAC(struct Slice* func_name,
+                                          struct Expr* expr,
+                                          enum BinOp op,
+                                          struct Expr* left,
+                                          struct Expr* right,
+                                          struct ExprResult* result);
+
+static struct TACInstr* args_to_TAC(struct Slice* func_name,
+                                    struct ArgList* args,
+                                    struct Val** out_args,
+                                    size_t* out_count);
+
+static struct TACInstr* for_init_to_TAC(struct Slice* func_name, struct ForInit* init_);
+
+static struct TACInstr* while_to_TAC(struct Slice* func_name,
+                                     struct Expr* condition,
+                                     struct Statement* body,
+                                     struct Slice* label);
+
+static struct TACInstr* do_while_to_TAC(struct Slice* func_name,
+                                        struct Statement* body,
+                                        struct Expr* condition,
+                                        struct Slice* label);
+
+static struct TACInstr* for_to_TAC(struct Slice* func_name,
+                                   struct ForInit* init_,
+                                   struct Expr* condition,
+                                   struct Expr* end,
+                                   struct Statement* body,
+                                   struct Slice* label);
+#endif
+
+// ----- Utility functions -----
+
+void concat_TAC_instrs(struct TACInstr** old_instrs, struct TACInstr* new_instrs);
+
+struct Val* make_temp(struct Slice* func_name, struct Type* type);
+
+void print_tac_prog(struct TACProg* prog);
+
+// ----- TAC interpreter -----
+
+// Purpose: Execute a TAC program and return the integer result of main().
+// Inputs: prog is the TAC program to interpret.
+// Outputs: Returns the integer result produced by the main function.
+// Invariants/Assumptions: main takes no parameters in this interpreter.
+int tac_interpret_prog(const struct TACProg* prog);
+
+#ifdef TAC_INTERNAL
+static void tac_error_at(const char* loc, const char* fmt, ...);
+
+static struct TACInstr* tac_instr_create(enum TACInstrType type);
+
+static struct TACInstr* tac_find_last(struct TACInstr* instr);
+
+static struct Val* tac_make_const(int value);
+
+static struct Val* tac_make_var(struct Slice* name);
+
+static void tac_copy_val(struct Val* dst, const struct Val* src);
+
+static struct Slice* tac_make_label(struct Slice* func_name, const char* suffix);
+
+static bool is_relational_op(enum BinOp op);
+
+static bool is_compound_op(enum BinOp op);
+
+static enum BinOp compound_to_binop(enum BinOp op);
+
+static enum TACCondition relation_to_cond(enum BinOp op, struct Type* type);
+#endif
 
 #endif // TAC_H
