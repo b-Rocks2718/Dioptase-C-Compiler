@@ -115,9 +115,9 @@ enum Reg {
     R31
 };
 
-const enum Reg BP = R30; // base pointer register
-const enum Reg SP = R31; // stack pointer register
-const enum Reg RA = R29; // return address register
+static const enum Reg BP = R30; // base pointer register
+static const enum Reg SP = R31; // stack pointer register
+static const enum Reg RA = R29; // return address register
 
 struct Operand {
     enum OperandType type;
@@ -127,10 +127,15 @@ struct Operand {
     struct Slice* pseudo;  // for Pseudo
 };
 
-struct PseudoMap {
+struct PseudoEntry {
     struct Operand* pseudo;
     struct Operand* mapped;
-    struct PseudoMap* next;
+    struct PseudoEntry* next;
+};
+
+struct PseudoMap{
+    size_t size;
+    struct PseudoEntry** arr;
 };
 
 struct AsmProg* prog_to_asm(struct TACProg* tac_prog);
@@ -153,8 +158,42 @@ struct Operand* get_dst(struct AsmInstr* asm_instr);
 
 size_t create_maps(struct AsmInstr* asm_instr);
 
+// Purpose: Detect whether a pseudo operand maps to a static storage symbol.
+// Inputs: opr is the operand to classify.
+// Outputs: Returns true if the operand names a static symbol.
+// Invariants/Assumptions: global_symbol_table is initialized before use.
+static bool is_static_symbol_operand(const struct Operand* opr);
+
+// Purpose: Reserve space for a new stack slot in the current frame.
+// Inputs: stack_bytes tracks the total allocated stack bytes.
+// Outputs: Returns the negative offset from BP for the new slot.
+// Invariants/Assumptions: stack_bytes is non-NULL.
+static int allocate_stack_slot(size_t* stack_bytes);
+
+// Purpose: Replace a pseudo operand field with its mapped location if present.
+// Inputs: field points to an operand field that may hold a pseudo.
+// Outputs: Updates *field in place when a mapping exists.
+// Invariants/Assumptions: pseudo_map is initialized before use.
+static void replace_operand_if_pseudo(struct Operand** field);
+
 void replace_pseudo(struct AsmInstr* asm_instr);
 
 size_t type_alignment(struct Type* type);
+
+struct PseudoMap* create_pseudo_map(size_t numBuckets);
+
+void pseudo_map_insert(struct PseudoMap* hmap, struct Operand* key, struct Operand* value);
+
+struct Operand* pseudo_map_get(struct PseudoMap* hmap, struct Operand* key);
+
+bool pseudo_map_contains(struct PseudoMap* hmap, struct Operand* key);
+
+void destroy_pseudo_map(struct PseudoMap* hmap);
+
+// Purpose: Print a debugging representation of an ASM program.
+// Inputs: prog is the ASM program to print (may be NULL).
+// Outputs: Writes a readable summary to stdout.
+// Invariants/Assumptions: The program list is well-formed and acyclic.
+void print_asm_prog(const struct AsmProg* prog);
 
 #endif // ASM_GEN_H

@@ -13,6 +13,7 @@
 #include "label_resolution.h"
 #include "typechecking.h"
 #include "TAC.h"
+#include "asm_gen.h"
 #include "arena.h"
 #include "source_location.h"
 
@@ -21,6 +22,10 @@
 // Invariants/Assumptions: Only used for interpreter-only execution.
 static const char* kTacInterpResultStderrEnv = "DIOPTASE_TACC_RESULT_STDERR";
 
+// Purpose: Entry point for the C compiler frontend and debug pipelines.
+// Inputs: argv contains command-line flags and the input file path.
+// Outputs: Returns a non-zero status code on compilation or pipeline errors.
+// Invariants/Assumptions: The input file is a regular file readable via mmap.
 int main(int argc, const char *const *const argv) {
 
     int print_tokens = 0;
@@ -30,6 +35,7 @@ int main(int argc, const char *const *const argv) {
     int print_labels = 0;
     int print_types = 0;
     int print_tac = 0;
+    int print_asm = 0;
     int interpret_tac = 0;
     const char *filename = NULL;
     const char **cli_defines = malloc(argc * sizeof(char*));
@@ -65,6 +71,10 @@ int main(int argc, const char *const *const argv) {
             print_tac = 1;
             continue;
         }
+        if (strcmp(arg, "-asm") == 0) {
+            print_asm = 1;
+            continue;
+        }
         if (strcmp(arg, "-interp") == 0) {
             interpret_tac = 1;
             continue;
@@ -81,7 +91,7 @@ int main(int argc, const char *const *const argv) {
         }
         if (arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-interp] [-DNAME[=value]] <file name>\n", argv[0]);
+            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-DNAME[=value]] <file name>\n", argv[0]);
             free(cli_defines);
             exit(1);
         }
@@ -90,13 +100,13 @@ int main(int argc, const char *const *const argv) {
             continue;
         }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-interp] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
 
     if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-interp] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
@@ -206,7 +216,8 @@ int main(int argc, const char *const *const argv) {
     }
 
     struct TACProg* tac_prog = NULL;
-    if (print_tac || interpret_tac) {
+    struct AsmProg* asm_prog = NULL;
+    if (print_tac || print_asm || interpret_tac) {
         tac_prog = prog_to_TAC(prog);
         if (tac_prog != NULL && global_symbol_table != NULL) {
             // Collect static storage entries from the symbol table for visibility.
@@ -234,6 +245,24 @@ int main(int argc, const char *const *const argv) {
 
     if (print_tac) {
         print_tac_prog(tac_prog);
+    }
+    if (print_asm) {
+        if (tac_prog == NULL) {
+            fprintf(stderr, "ASM generation failed: TAC lowering failed\n");
+            destroy_preprocess_result(&preprocessed);
+            destroy_token_array(tokens);
+            arena_destroy();
+            return 6;
+        }
+        asm_prog = prog_to_asm(tac_prog);
+        if (asm_prog == NULL) {
+            fprintf(stderr, "ASM generation failed: asm_gen returned NULL\n");
+            destroy_preprocess_result(&preprocessed);
+            destroy_token_array(tokens);
+            arena_destroy();
+            return 6;
+        }
+        print_asm_prog(asm_prog);
     }
     if (interpret_tac) {
         if (tac_prog == NULL) {
