@@ -2,6 +2,7 @@
 #include "arena.h"
 #include "source_location.h"
 
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -15,6 +16,59 @@
 // Outputs: Stores symbol entries for declarations and lookups.
 // Invariants/Assumptions: Only one typechecking pass runs at a time.
 struct SymbolTable* global_symbol_table = NULL;
+
+// Purpose: Identify compound assignment operators.
+// Inputs: op is the binary operator enum value.
+// Outputs: Returns true for +=, -=, etc.
+// Invariants/Assumptions: ASSIGN_OP is handled separately.
+static bool is_compound_assign_op(enum BinOp op) {
+  switch (op) {
+    case PLUS_EQ_OP:
+    case MINUS_EQ_OP:
+    case MUL_EQ_OP:
+    case DIV_EQ_OP:
+    case MOD_EQ_OP:
+    case AND_EQ_OP:
+    case OR_EQ_OP:
+    case XOR_EQ_OP:
+    case SHL_EQ_OP:
+    case SHR_EQ_OP:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Purpose: Map a compound assignment operator to its base binary operator.
+// Inputs: op must satisfy is_compound_assign_op(op).
+// Outputs: Returns the corresponding arithmetic/bitwise operator.
+// Invariants/Assumptions: Caller validates op.
+static enum BinOp compound_assign_base_op(enum BinOp op) {
+  switch (op) {
+    case PLUS_EQ_OP:
+      return ADD_OP;
+    case MINUS_EQ_OP:
+      return SUB_OP;
+    case MUL_EQ_OP:
+      return MUL_OP;
+    case DIV_EQ_OP:
+      return DIV_OP;
+    case MOD_EQ_OP:
+      return MOD_OP;
+    case AND_EQ_OP:
+      return BIT_AND;
+    case OR_EQ_OP:
+      return BIT_OR;
+    case XOR_EQ_OP:
+      return BIT_XOR;
+    case SHL_EQ_OP:
+      return BIT_SHL;
+    case SHR_EQ_OP:
+      return BIT_SHR;
+    default:
+      return op;
+  }
+}
 
 // Purpose: Emit a formatted type error at a source location.
 // Inputs: loc points into source text; fmt is printf-style.
@@ -33,6 +87,61 @@ static void type_error_at(const char* loc, const char* fmt, ...) {
   vprintf(fmt, args);
   va_end(args);
   printf("\n");
+}
+
+// Purpose: Normalize a static initializer value to the target type width/sign.
+// Inputs: value holds raw bits; target is the destination type.
+// Outputs: Returns the normalized value for storage in InitValue.
+// Invariants/Assumptions: Uses two's-complement sign extension for signed types.
+static uint64_t normalize_static_init(uint64_t value, struct Type* target) {
+  size_t size = get_type_size(target);
+  if (size == 0) {
+    return value;
+  }
+  size_t bits = size * 8;
+  uint64_t mask = (bits >= 64) ? UINT64_MAX : ((UINT64_C(1) << bits) - 1);
+  uint64_t truncated = value & mask;
+  if (is_signed_type(target) && bits < 64) {
+    uint64_t sign_bit = UINT64_C(1) << (bits - 1);
+    if (truncated & sign_bit) {
+      truncated |= ~mask;
+    }
+  }
+  return truncated;
+}
+
+// Purpose: Extract a literal value from an initializer expression.
+// Inputs: expr is the initializer expression (literal or cast of a literal).
+// Outputs: Returns true and writes out_value on success.
+// Invariants/Assumptions: Only literal initializers are supported here.
+static bool init_literal_value(struct Expr* expr, uint64_t* out_value) {
+  if (expr == NULL || out_value == NULL) {
+    return false;
+  }
+  struct Expr* cur = expr;
+  if (cur->type == CAST) {
+    cur = cur->expr.cast_expr.expr;
+  }
+  if (cur->type != LIT) {
+    return false;
+  }
+  struct LitExpr* lit = &cur->expr.lit_expr;
+  switch (lit->type) {
+    case INT_CONST:
+      *out_value = (uint64_t)(int64_t)lit->value.int_val;
+      return true;
+    case UINT_CONST:
+      *out_value = (uint64_t)lit->value.uint_val;
+      return true;
+    case LONG_CONST:
+      *out_value = (uint64_t)(int64_t)lit->value.long_val;
+      return true;
+    case ULONG_CONST:
+      *out_value = (uint64_t)lit->value.ulong_val;
+      return true;
+    default:
+      return false;
+  }
 }
 
 // ------------------------- Typechecking Functions ------------------------- //
@@ -114,8 +223,6 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
 
   struct SymbolEntry* entry = symbol_table_get(global_symbol_table, var_dclr->name);
 
-  bool global = (var_dclr->storage != STATIC);
-
   // check if this variable has been declared before
   if (entry != NULL) {
 
@@ -143,8 +250,11 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
       return false;
     }
 
-    // check for conflicting linkage
-    if (entry->attrs->is_global != global) {
+    // check for conflicting linkage (internal vs external)
+    bool entry_internal = (entry->attrs->storage == STATIC);
+    bool dclr_internal = (var_dclr->storage == EXTERN) ? entry_internal
+                                                       : (var_dclr->storage == STATIC);
+    if (entry_internal != dclr_internal) {
       type_error_at(var_dclr->name->start,
                     "conflicting variable linkage for variable %.*s",
                     (int)var_dclr->name->len, var_dclr->name->start);
@@ -159,8 +269,16 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
       entry->attrs->init.init_type = init_type;
       if (init_type == INITIAL) {
         entry->attrs->init.init_list = arena_alloc(sizeof(struct InitList));
-        entry->attrs->init.init_list->value.int_type = get_var_init(var_dclr); // assuming int type for simplicity
-        entry->attrs->init.init_list->value.value = var_dclr->init->expr.lit_expr.value.int_val;
+        entry->attrs->init.init_list->value.int_type = get_var_init(var_dclr);
+        uint64_t init_value = 0;
+        if (!init_literal_value(var_dclr->init, &init_value)) {
+          type_error_at(var_dclr->init->loc,
+                        "non-constant initializer for global variable %.*s",
+                        (int)var_dclr->name->len, var_dclr->name->start);
+          return false;
+        }
+        entry->attrs->init.init_list->value.value =
+            normalize_static_init(init_value, var_dclr->type);
         entry->attrs->is_defined = true;
         entry->attrs->init.init_list->next = NULL;
       }
@@ -170,12 +288,19 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
     struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
     attrs->attr_type = STATIC_ATTR;
     attrs->is_defined = (init_type == INITIAL);
-    attrs->is_global = global;
+    attrs->storage = var_dclr->storage;
     attrs->init.init_type = init_type;
     if (init_type == INITIAL) {
       attrs->init.init_list = arena_alloc(sizeof(struct InitList));
-      attrs->init.init_list->value.int_type = get_var_init(var_dclr); // assuming int type for simplicity
-      attrs->init.init_list->value.value = var_dclr->init->expr.lit_expr.value.int_val;
+      attrs->init.init_list->value.int_type = get_var_init(var_dclr);
+      uint64_t init_value = 0;
+      if (!init_literal_value(var_dclr->init, &init_value)) {
+        type_error_at(var_dclr->init->loc,
+                      "non-constant initializer for global variable %.*s",
+                      (int)var_dclr->name->len, var_dclr->name->start);
+        return false;
+      }
+      attrs->init.init_list->value.value = normalize_static_init(init_value, var_dclr->type);
       attrs->init.init_list->next = NULL;
     } else {
       attrs->init.init_list = NULL;
@@ -199,7 +324,7 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
     struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
     attrs->attr_type = FUN_ATTR;
     attrs->is_defined = (func_dclr->body != NULL);
-    attrs->is_global = (func_dclr->storage != STATIC);
+    attrs->storage = func_dclr->storage;
     symbol_table_insert(global_symbol_table, func_dclr->name, func_dclr->type, attrs);
   } else {
     // ensure the existing entry is a function
@@ -227,8 +352,10 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
     }
 
     // check for conflicting linkage
-    bool global = (func_dclr->storage != STATIC);
-    if (entry->attrs->is_global != global) {
+    // extern matches previous linkage, cannot cause conflict
+    if (entry->attrs->storage != func_dclr->storage && 
+       (func_dclr->storage != EXTERN) &&
+       (entry->attrs->storage != EXTERN)) {
       type_error_at(func_dclr->name->start,
                     "conflicting function linkage for function %.*s",
                     (int)func_dclr->name->len, func_dclr->name->start);
@@ -275,7 +402,7 @@ bool typecheck_params(struct ParamList* params) {
     struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
     attrs->attr_type = LOCAL_ATTR;
     attrs->is_defined = true;
-    attrs->is_global = false;
+    attrs->storage = NONE; // parameters have no storage class
     symbol_table_insert(global_symbol_table, cur->param.name, cur->param.type, attrs);
 
     cur = cur->next;
@@ -351,9 +478,10 @@ bool typecheck_stmt(struct Statement* stmt) {
         return false;
       }
 
-      if (!is_arithmetic_type(stmt->statement.if_stmt.condition->value_type)) {
+      if (!is_arithmetic_type(stmt->statement.if_stmt.condition->value_type) &&
+          !is_pointer_type(stmt->statement.if_stmt.condition->value_type)) {
         type_error_at(stmt->statement.if_stmt.condition->loc,
-                      "if condition must have arithmetic type");
+                      "if condition must have scalar type");
         return false;
       }
 
@@ -382,9 +510,10 @@ bool typecheck_stmt(struct Statement* stmt) {
         return false;
       }
 
-      if (!is_arithmetic_type(stmt->statement.while_stmt.condition->value_type)) {
+      if (!is_arithmetic_type(stmt->statement.while_stmt.condition->value_type) &&
+          !is_pointer_type(stmt->statement.while_stmt.condition->value_type)) {
         type_error_at(stmt->statement.while_stmt.condition->loc,
-                      "while condition must have arithmetic type");
+                      "while condition must have scalar type");
         return false;
       }
 
@@ -401,9 +530,10 @@ bool typecheck_stmt(struct Statement* stmt) {
         return false;
       }
 
-      if (!is_arithmetic_type(stmt->statement.do_while_stmt.condition->value_type)) {
+      if (!is_arithmetic_type(stmt->statement.do_while_stmt.condition->value_type) &&
+          !is_pointer_type(stmt->statement.do_while_stmt.condition->value_type)) {
         type_error_at(stmt->statement.do_while_stmt.condition->loc,
-                      "do-while condition must have arithmetic type");
+                      "do-while condition must have scalar type");
         return false;
       }
 
@@ -495,6 +625,13 @@ bool typecheck_stmt(struct Statement* stmt) {
 bool typecheck_for_init(struct ForInit* init_) {
   switch (init_->type) {
     case DCLR_INIT:
+      if (init_->init.dclr_init->storage != NONE) {
+        type_error_at(init_->init.dclr_init->name->start,
+                      "storage class not allowed in for-loop initializer for variable %.*s",
+                      (int)init_->init.dclr_init->name->len,
+                      init_->init.dclr_init->name->start);
+        return false;
+      }
       return typecheck_local_var(init_->init.dclr_init);
     case EXPR_INIT:
       if (init_->init.expr_init != NULL) {
@@ -544,7 +681,9 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
       struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
       attrs->attr_type = STATIC_ATTR;
       attrs->is_defined = false;
-      attrs->is_global = true;
+      attrs->storage = EXTERN;
+      attrs->init.init_type = NO_INIT;
+      attrs->init.init_list = NULL;
       symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
     } else {
       // ensure the existing entry is not a function
@@ -568,6 +707,21 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
   } else if (var_dclr->storage == STATIC) {
     // Local static behaves like a file-scope object with local visibility.
     if (var_dclr->init != NULL) {
+      if (var_dclr->init->type != LIT) {
+        type_error_at(var_dclr->init->loc,
+                      "non-constant initializer for static local variable %.*s",
+                      (int)var_dclr->name->len, var_dclr->name->start);
+        return false;
+      }
+      if (var_dclr->type->type == POINTER_TYPE) {
+        struct LitExpr* lit_expr = &var_dclr->init->expr.lit_expr;
+        if (lit_expr->value.int_val != 0) {
+          type_error_at(var_dclr->init->loc,
+                        "invalid pointer initializer for static local variable %.*s",
+                        (int)var_dclr->name->len, var_dclr->name->start);
+          return false;
+        }
+      }
       if (!typecheck_init(&var_dclr->init, var_dclr->type)) {
         return false;
       }
@@ -578,15 +732,23 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
       struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
       attrs->attr_type = STATIC_ATTR;
       attrs->is_defined = (var_dclr->init != NULL);
-      attrs->is_global = false;
+      attrs->storage = STATIC;
       attrs->init.init_type = INITIAL;
       attrs->init.init_list = arena_alloc(sizeof(struct InitList));
-      attrs->init.init_list->value.int_type = get_var_init(var_dclr); // assuming int type for simplicity
+      attrs->init.init_list->value.int_type = get_var_init(var_dclr);
+      uint64_t init_value = 0;
       if (var_dclr->init != NULL) {
-        attrs->init.init_list->value.value = var_dclr->init->expr.lit_expr.value.int_val;
+        if (!init_literal_value(var_dclr->init, &init_value)) {
+          type_error_at(var_dclr->init->loc,
+                        "non-constant initializer for static local variable %.*s",
+                        (int)var_dclr->name->len, var_dclr->name->start);
+          return false;
+        }
       } else {
-        attrs->init.init_list->value.value = 0; // default initialization
+        init_value = 0;
       }
+      attrs->init.init_list->value.value = normalize_static_init(init_value, var_dclr->type);
+      attrs->init.init_list->next = NULL;
       symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
     } else {
       // ensure the existing entry is not a function
@@ -622,12 +784,6 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
     return true;
   } else {
     // Regular local variable must be unique within the current function scope.
-    if (var_dclr->init != NULL) {
-      if (!typecheck_init(&var_dclr->init, var_dclr->type)) {
-        return false;
-      }
-    }
-
     struct SymbolEntry* entry = symbol_table_get(global_symbol_table, var_dclr->name);
     if (entry != NULL) {
       type_error_at(var_dclr->name->start,
@@ -640,8 +796,15 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
     struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
     attrs->attr_type = LOCAL_ATTR;
     attrs->is_defined = true;
-    attrs->is_global = false;
+    attrs->storage = NONE; // local variables have no storage class
     symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
+
+    if (var_dclr->init != NULL) {
+      // Allow self-references in initializers (e.g., int a = a = 5).
+      if (!typecheck_init(&var_dclr->init, var_dclr->type)) {
+        return false;
+      }
+    }
   }
 
   return true;
@@ -693,6 +856,41 @@ bool typecheck_expr(struct Expr* expr) {
 
       struct Type* left_type = bin_expr->left->value_type;
       struct Type* right_type = bin_expr->right->value_type;
+
+      if (is_compound_assign_op(bin_expr->op)) {
+        if (!is_lvalue(bin_expr->left)) {
+          type_error_at(expr->loc, "cannot assign to non-lvalue");
+          return false;
+        }
+
+        enum BinOp base_op = compound_assign_base_op(bin_expr->op);
+        if ((base_op == ADD_OP || base_op == SUB_OP) &&
+            is_pointer_type(left_type) &&
+            is_arithmetic_type(right_type)) {
+          expr->value_type = left_type;
+          return true;
+        }
+
+        if (!is_arithmetic_type(left_type) || !is_arithmetic_type(right_type)) {
+          type_error_at(expr->loc, "invalid types in compound assignment");
+          return false;
+        }
+
+        if (base_op == BIT_SHL || base_op == BIT_SHR) {
+          convert_expr_type(&bin_expr->right, left_type);
+          expr->value_type = left_type;
+          return true;
+        }
+
+        struct Type* op_type = get_common_type(left_type, right_type);
+        if (op_type == NULL) {
+          type_error_at(expr->loc, "incompatible types in compound assignment");
+          return false;
+        }
+        convert_expr_type(&bin_expr->right, op_type);
+        expr->value_type = left_type;
+        return true;
+      }
 
       // Equality allows pointer comparisons; otherwise use arithmetic common type.
       if (bin_expr->op == BOOL_EQ || bin_expr->op == BOOL_NEQ) {
@@ -756,7 +954,15 @@ bool typecheck_expr(struct Expr* expr) {
         expr->value_type->type = INT_TYPE; // result type of logical operations is int
         return true;
       }
-      else {
+      else if (bin_expr->op == BIT_SHL || bin_expr->op == BIT_SHR) {
+        if (!is_arithmetic_type(left_type) || !is_arithmetic_type(right_type)) {
+          type_error_at(expr->loc, "invalid types in shift expression");
+          return false;
+        }
+        convert_expr_type(&bin_expr->right, left_type);
+        expr->value_type = left_type;
+        return true;
+      } else {
         if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
           type_error_at(expr->loc, "invalid pointer arithmetic in binary operation");
           return false;
@@ -1165,8 +1371,7 @@ bool convert_by_assignment(struct Expr** expr, struct Type* target) {
     return true;
   }
 
-  if (is_pointer_type((*expr)->value_type) && is_pointer_type(target)
-     && is_null_pointer_constant(*expr)) {
+  if (is_pointer_type(target) && is_null_pointer_constant(*expr)) {
     // perform conversion (TODO: should really only allow this for null pointer constants)
     convert_expr_type(expr, target);
     return true;
@@ -1318,7 +1523,21 @@ void print_ident_attr(struct IdentAttr* attrs){
       break;
   }
   printf("    Is Defined: %s\n", attrs->is_defined ? "true" : "false");
-  printf("    Is Global: %s\n", attrs->is_global ? "true" : "false");
+  printf("    Storage Class: ");
+  switch (attrs->storage) {
+    case NONE:
+      printf("None\n");
+      break;
+    case STATIC:
+      printf("Static\n");
+      break;
+    case EXTERN:
+      printf("Extern\n");
+      break;
+    default:
+      printf("Unknown\n");
+      break;
+  }
 }
 
 // Purpose: Print initializer metadata for debugging.
@@ -1341,7 +1560,11 @@ void print_ident_init(struct IdentInit* init){
     case INITIAL:
       printf("Initial ");
       struct InitList* cur = init->init_list;
-      printf("%d", cur->value.value);
+      if (cur->value.int_type == INT_INIT || cur->value.int_type == LONG_INIT) {
+        printf("%" PRId64, (int64_t)cur->value.value);
+      } else {
+        printf("%" PRIu64, (uint64_t)cur->value.value);
+      }
       printf("\n");
       break;
     default:

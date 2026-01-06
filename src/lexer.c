@@ -17,6 +17,14 @@
 
 static char const * program;
 static char const * current;
+// Purpose: Define numeric literal bounds for target integer sizes.
+// Inputs/Outputs: Used to classify integer literal token types.
+// Invariants/Assumptions: int is 32-bit and long is 64-bit in the target model.
+static const uint64_t kIntBits = 32;
+static const uint64_t kLongBits = 64;
+static const uint64_t kIntMax = (UINT64_C(1) << (kIntBits - 1)) - 1;
+static const uint64_t kUIntMax = (UINT64_C(1) << kIntBits) - 1;
+static const uint64_t kLongMax = (UINT64_C(1) << (kLongBits - 1)) - 1;
 static char const * last_token_start;
 static size_t last_token_len;
 
@@ -146,7 +154,7 @@ static bool consume_identifier(struct Token* token) {
 // Purpose: Consume a decimal or hex integer literal token.
 // Inputs: token is the destination Token to populate.
 // Outputs: Returns true on success and advances current past the literal.
-// Invariants/Assumptions: Only base-10 and 0x/0X hex integers without suffixes are supported.
+// Invariants/Assumptions: Supports optional u/U and l/L suffixes.
 // Purpose: Convert a hex digit character into its numeric value.
 // Inputs: ch is an ASCII hex digit.
 // Outputs: Returns the digit value or -1 for non-hex characters.
@@ -169,10 +177,12 @@ static bool consume_literal(struct Token* token) {
   if (isdigit((unsigned char)*current)) {
     char const * start = current;
     uint64_t v = 0;
+    bool is_hex = false;
     if (*current == '0' &&
         (current[1] == 'x' || current[1] == 'X') &&
         isxdigit((unsigned char)current[2])) {
       current += 2;
+      is_hex = true;
       while (isxdigit((unsigned char)*current)) {
         int digit = hex_digit_value((unsigned char)*current);
         v = (v * 16) + (uint64_t)digit;
@@ -185,8 +195,62 @@ static bool consume_literal(struct Token* token) {
       } while (isdigit((unsigned char)*current));
     }
 
-    token->type = INT_LIT;
-    token->data.int_val = v;
+    bool saw_u = false;
+    bool saw_l = false;
+    for (int i = 0; i < 2; i++) {
+      if ((*current == 'u' || *current == 'U') && !saw_u) {
+        saw_u = true;
+        current += 1;
+        continue;
+      }
+      if ((*current == 'l' || *current == 'L') && !saw_l) {
+        saw_l = true;
+        current += 1;
+        continue;
+      }
+      break;
+    }
+
+    if (saw_u && saw_l) {
+      token->type = U_LONG_LIT;
+      token->data.ulong_val = (unsigned long)v;
+    } else if (saw_l) {
+      token->type = LONG_LIT;
+      token->data.long_val = (long)v;
+    } else if (saw_u) {
+      if (v <= kUIntMax) {
+        token->type = U_INT_LIT;
+        token->data.uint_val = (unsigned)v;
+      } else {
+        token->type = U_LONG_LIT;
+        token->data.ulong_val = (unsigned long)v;
+      }
+    } else if (is_hex) {
+      if (v <= kIntMax) {
+        token->type = INT_LIT;
+        token->data.int_val = (int)v;
+      } else if (v <= kUIntMax) {
+        token->type = U_INT_LIT;
+        token->data.uint_val = (unsigned)v;
+      } else if (v <= kLongMax) {
+        token->type = LONG_LIT;
+        token->data.long_val = (long)v;
+      } else {
+        token->type = U_LONG_LIT;
+        token->data.ulong_val = (unsigned long)v;
+      }
+    } else {
+      if (v <= kIntMax) {
+        token->type = INT_LIT;
+        token->data.int_val = (int)v;
+      } else if (v <= kLongMax) {
+        token->type = LONG_LIT;
+        token->data.long_val = (long)v;
+      } else {
+        token->type = U_LONG_LIT;
+        token->data.ulong_val = (unsigned long)v;
+      }
+    }
     token->start = start;
     token->len = (size_t)(current - start);
     return true;

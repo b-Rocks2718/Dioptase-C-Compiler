@@ -1,3 +1,4 @@
+#include <inttypes.h>
 #include <stdio.h>
 
 #include "TAC.h"
@@ -16,7 +17,7 @@ static void print_tabs(unsigned tabs) {
 // Purpose: Print a TAC value (constant or variable).
 // Inputs: val may be NULL; otherwise points to a TAC value.
 // Outputs: Writes a compact value representation to stdout.
-// Invariants/Assumptions: Constant values fit in an int.
+// Invariants/Assumptions: Constants are stored as 64-bit raw values.
 static void print_tac_val(const struct Val* val) {
   if (val == NULL) {
     printf("<null>");
@@ -25,7 +26,11 @@ static void print_tac_val(const struct Val* val) {
 
   switch (val->val_type) {
     case CONSTANT:
-      printf("Const(%d)", val->val.const_value);
+      if (val->type != NULL && is_signed_type(val->type)) {
+        printf("Const(%" PRId64 ")", (int64_t)val->val.const_value);
+      } else {
+        printf("Const(%" PRIu64 ")", (uint64_t)val->val.const_value);
+      }
       break;
     case VARIABLE:
       printf("Var(");
@@ -84,100 +89,43 @@ static void print_tac_condition(enum TACCondition cond) {
 // Inputs: op is the AST binary operator enum.
 // Outputs: Writes the operator mnemonic to stdout.
 // Invariants/Assumptions: op is a valid BinOp.
-static void print_tac_bin_op(enum BinOp op) {
+static void print_tac_bin_op(enum ALUOp op) {
   switch (op) {
-    case ADD_OP:
+    case ALU_ADD:
       printf("AddOp");
       break;
-    case SUB_OP:
+    case ALU_SUB:
       printf("SubOp");
       break;
-    case MUL_OP:
-      printf("MulOp");
+    case ALU_SMUL:
+      printf("SmulOp");
       break;
-    case DIV_OP:
-      printf("DivOp");
+    case ALU_UDIV:
+      printf("UDivOp");
       break;
-    case MOD_OP:
-      printf("ModOp");
+    case ALU_UMOD:
+      printf("UModOp");
       break;
-    case BIT_AND:
-      printf("BitAnd");
+    case ALU_AND:
+      printf("AndOp");
       break;
-    case BIT_OR:
-      printf("BitOr");
+    case ALU_OR:
+      printf("OrOp");
       break;
-    case BIT_XOR:
-      printf("BitXor");
+    case ALU_XOR:
+      printf("XorOp");
       break;
-    case BIT_SHR:
-      printf("BitShr");
+    case ALU_ASR:
+      printf("AsrOp");
       break;
-    case BIT_SHL:
-      printf("BitShl");
+    case ALU_SHL:
+      printf("ShlOp");
       break;
-    case BOOL_AND:
-      printf("BoolAnd");
-      break;
-    case BOOL_OR:
-      printf("BoolOr");
-      break;
-    case BOOL_EQ:
-      printf("BoolEq");
-      break;
-    case BOOL_NEQ:
-      printf("BoolNeq");
-      break;
-    case BOOL_LE:
-      printf("BoolLe");
-      break;
-    case BOOL_LEQ:
-      printf("BoolLeq");
-      break;
-    case BOOL_GE:
-      printf("BoolGe");
-      break;
-    case BOOL_GEQ:
-      printf("BoolGeq");
-      break;
-    case ASSIGN_OP:
-      printf("AssignOp");
-      break;
-    case PLUS_EQ_OP:
-      printf("PlusEqOp");
-      break;
-    case MINUS_EQ_OP:
-      printf("MinusEqOp");
-      break;
-    case MUL_EQ_OP:
-      printf("MulEqOp");
-      break;
-    case DIV_EQ_OP:
-      printf("DivEqOp");
-      break;
-    case MOD_EQ_OP:
-      printf("ModEqOp");
-      break;
-    case AND_EQ_OP:
-      printf("AndEqOp");
-      break;
-    case OR_EQ_OP:
-      printf("OrEqOp");
-      break;
-    case XOR_EQ_OP:
-      printf("XorEqOp");
-      break;
-    case SHL_EQ_OP:
-      printf("ShlEqOp");
-      break;
-    case SHR_EQ_OP:
-      printf("ShrEqOp");
-      break;
-    case TERNARY_OP:
-      printf("TernaryOp");
+    case ALU_SHR:
+      printf("ShrOp");
       break;
     default:
-      printf("BinOp?");
+      printf("ALUOp?");
       break;
   }
 }
@@ -228,7 +176,11 @@ static void print_tac_init(const struct IdentInit* init) {
         if (!first) {
           printf(", ");
         }
-        printf("%d", cur->value.value);
+        if (cur->value.int_type == INT_INIT || cur->value.int_type == LONG_INIT) {
+          printf("%" PRId64, (int64_t)cur->value.value);
+        } else {
+          printf("%" PRIu64, (uint64_t)cur->value.value);
+        }
         first = false;
         cur = cur->next;
       }
@@ -268,7 +220,7 @@ static void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
       break;
     case TACBINARY:
       printf("Binary ");
-      print_tac_bin_op(instr->instr.tac_binary.op);
+      print_tac_bin_op(instr->instr.tac_binary.alu_op);
       printf(" ");
       print_tac_val(instr->instr.tac_binary.dst);
       printf(", ");
@@ -371,7 +323,7 @@ static void print_tac_instrs(const struct TACInstr* instrs, unsigned tabs) {
   }
 }
 
-// Purpose: Print a top-level TAC node (function, static variable, directive, comment).
+// Purpose: Print a top-level TAC node (function or static variable).
 // Inputs: top points to the TopLevel node; tabs is the indentation level.
 // Outputs: Writes the top-level representation to stdout.
 // Invariants/Assumptions: top points to a valid TopLevel node.
@@ -420,24 +372,6 @@ static void print_tac_top_level(const struct TopLevel* top, unsigned tabs) {
       print_tac_init(top->init_values);
       printf("\n");
       break;
-    case DIRECTIVE:
-      printf("Directive ");
-      if (top->text != NULL) {
-        print_slice(top->text);
-      } else {
-        printf("<null>");
-      }
-      printf("\n");
-      break;
-    case COMMENT:
-      printf("Comment ");
-      if (top->text != NULL) {
-        print_slice(top->text);
-      } else {
-        printf("<null>");
-      }
-      printf("\n");
-      break;
     default:
       printf("TopLevel?\n");
       break;
@@ -456,6 +390,9 @@ void print_tac_prog(struct TACProg* prog) {
 
   printf("TACProg\n");
   for (struct TopLevel* cur = prog->head; cur != NULL; cur = cur->next) {
+    print_tac_top_level(cur, 1);
+  }
+  for (struct TopLevel* cur = prog->statics; cur != NULL; cur = cur->next) {
     print_tac_top_level(cur, 1);
   }
 }

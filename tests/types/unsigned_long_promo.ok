@@ -3,28 +3,28 @@ Key: sum.2
   Attributes:
     Attr Type: Local Variable
     Is Defined: true
-    Is Global: false
+    Storage Class: None
 
 Key: ul.1
   Type: ulong
   Attributes:
     Attr Type: Local Variable
     Is Defined: true
-    Is Global: false
+    Storage Class: None
 
 Key: u.0
   Type: uint
   Attributes:
     Attr Type: Local Variable
     Is Defined: true
-    Is Global: false
+    Storage Class: None
 
 Key: main
   Type: func(ret_type=int, param_types=[])
   Attributes:
     Attr Type: Function
     Is Defined: true
-    Is Global: true
+    Storage Class: None
 
 Program(
     FunDclr(

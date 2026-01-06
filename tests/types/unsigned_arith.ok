@@ -3,49 +3,49 @@ Key: add
   Attributes:
     Attr Type: Function
     Is Defined: true
-    Is Global: true
+    Storage Class: None
 
 Key: a.0
   Type: uint
   Attributes:
     Attr Type: Local Variable
     Is Defined: true
-    Is Global: false
+    Storage Class: None
 
 Key: b.1
   Type: int
   Attributes:
     Attr Type: Local Variable
     Is Defined: true
-    Is Global: false
+    Storage Class: None
 
 Key: r.4
   Type: uint
   Attributes:
     Attr Type: Local Variable
     Is Defined: true
-    Is Global: false
+    Storage Class: None
 
 Key: s.3
   Type: int
   Attributes:
     Attr Type: Local Variable
     Is Defined: true
-    Is Global: false
+    Storage Class: None
 
 Key: u.2
   Type: uint
   Attributes:
     Attr Type: Local Variable
     Is Defined: true
-    Is Global: false
+    Storage Class: None
 
 Key: main
   Type: func(ret_type=int, param_types=[])
   Attributes:
     Attr Type: Function
     Is Defined: true
-    Is Global: true
+    Storage Class: None
 
 Program(
     FunDclr(

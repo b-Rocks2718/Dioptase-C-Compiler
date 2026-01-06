@@ -36,6 +36,21 @@ static void ident_error_at(const char* loc, const char* fmt, ...) {
   printf("\n");
 }
 
+// Purpose: Locate the nearest identifier with linkage, ignoring local-only bindings.
+// Inputs: stack is the identifier scope stack; name is the identifier to search.
+// Outputs: Returns the first linkage-bearing entry found, or NULL if none exist.
+// Invariants/Assumptions: Searches from innermost scope outward.
+static struct IdentMapEntry* find_linkage_entry(struct IdentStack* stack,
+                                                struct Slice* name) {
+  for (int i = (int)stack->size - 1; i >= 0; --i) {
+    struct IdentMapEntry* entry = ident_map_get(stack->maps[i], name);
+    if (entry != NULL && entry->has_linkage) {
+      return entry;
+    }
+  }
+  return NULL;
+}
+
 // Purpose: Resolve identifiers for all file-scope declarations.
 // Inputs: prog is the Program AST.
 // Outputs: Returns true on success; false on any resolution error.
@@ -115,7 +130,8 @@ bool resolve_expr(struct Expr* expr) {
       bool from_current_scope = false;
       struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, expr->expr.fun_call_expr.func_name, &from_current_scope);
       if (entry != NULL) {
-        // Functions are resolved by name only; arguments still need identifier resolution.
+        // Resolve through the current scope so locals can shadow functions.
+        expr->expr.fun_call_expr.func_name = entry->entry_name;
         return resolve_args(expr->expr.fun_call_expr.args);
       } else {
         ident_error_at(expr->loc, "function has not been declared");
@@ -141,39 +157,30 @@ bool resolve_expr(struct Expr* expr) {
 bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, var_dclr->name, &from_current_scope);
-  if (entry != NULL) {
-    if (from_current_scope) {
-      if (entry->has_linkage && var_dclr->storage == EXTERN) {
-        // redeclaration with extern linkage
+  if (var_dclr->storage == EXTERN) {
+    if (entry != NULL && from_current_scope) {
+      if (entry->has_linkage) {
+        // redeclaration with extern linkage in the same block
         return true;
       }
+      ident_error_at(var_dclr->name->start, "multiple declarations for variable");
+      return false;
+    }
+
+    // Bind this block-scope extern to the nearest linkage-bearing declaration.
+    struct IdentMapEntry* linkage_entry = find_linkage_entry(global_ident_stack, var_dclr->name);
+    struct Slice* target_name = (linkage_entry != NULL) ? linkage_entry->entry_name : var_dclr->name;
+    ident_stack_insert(global_ident_stack, var_dclr->name, target_name, true);
+    return true;
+  }
+
+  if (entry != NULL) {
+    if (from_current_scope) {
       // already declared in this scope
       ident_error_at(var_dclr->name->start, "multiple declarations for variable");
       return false;
     } else {
-      // Declared in an outer scope; either allow extern or create a new unique local.
-      if (var_dclr->storage == EXTERN) {
-        // ok to redeclare as extern
-        return true;
-      } else {
-        // need to create a new unique name
-        struct Slice* unique_name = make_unique(var_dclr->name);
-        ident_stack_insert(global_ident_stack, var_dclr->name,
-            unique_name, false);
-        var_dclr->name = unique_name;
-        if (var_dclr->init != NULL) {
-          return resolve_expr(var_dclr->init);
-        }
-        return true;
-      }
-    }
-  } else {
-    // First declaration in this scope: insert and optionally resolve initializer.
-    if (var_dclr->storage == EXTERN) {
-      ident_stack_insert(global_ident_stack, var_dclr->name,
-          var_dclr->name, true);
-      return true;
-    } else {
+      // Declared in an outer scope; create a new unique local.
       struct Slice* unique_name = make_unique(var_dclr->name);
       ident_stack_insert(global_ident_stack, var_dclr->name,
           unique_name, false);
@@ -184,6 +191,16 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
       return true;
     }
   }
+
+  // First declaration in this scope: insert and optionally resolve initializer.
+  struct Slice* unique_name = make_unique(var_dclr->name);
+  ident_stack_insert(global_ident_stack, var_dclr->name,
+      unique_name, false);
+  var_dclr->name = unique_name;
+  if (var_dclr->init != NULL) {
+    return resolve_expr(var_dclr->init);
+  }
+  return true;
 }
 
 // Purpose: Resolve identifiers in a local declaration (var or func).
@@ -330,8 +347,14 @@ bool resolve_local_func(struct FunctionDclr* func_dclr) {
 
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, func_dclr->name, &from_current_scope);
-  if (entry == NULL) {
-    // Only insert if this is the first local declaration we've seen.
+  if (entry != NULL && from_current_scope && !entry->has_linkage) {
+    ident_error_at(func_dclr->name->start,
+                   "function declaration conflicts with existing local identifier");
+    return false;
+  }
+
+  if (entry == NULL || !from_current_scope) {
+    // Insert into the current scope so inner blocks can shadow outer identifiers.
     ident_stack_insert(global_ident_stack, func_dclr->name,
         func_dclr->name, true);
   }
@@ -431,8 +454,12 @@ bool resolve_file_scope_func(struct FunctionDclr* func_dclr) {
       return true;
     }
 
-    // already defined
-    return resolve_block(func_dclr->body);
+    // definition after a prior declaration; resolve params/body in a new scope
+    enter_scope(global_ident_stack);
+    bool params_resolved = resolve_params(func_dclr->params);
+    bool block_resolved = resolve_block(func_dclr->body);
+    exit_scope(global_ident_stack);
+    return params_resolved && block_resolved;
   } else {
     // add to ident map
     ident_stack_insert(global_ident_stack, func_dclr->name,

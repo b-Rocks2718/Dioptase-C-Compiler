@@ -3,28 +3,28 @@ Key: add
   Attributes:
     Attr Type: Function
     Is Defined: true
-    Is Global: true
+    Storage Class: None
 
 Key: a.0
   Type: int
   Attributes:
     Attr Type: Local Variable
     Is Defined: true
-    Is Global: false
+    Storage Class: None
 
 Key: b.1
   Type: int
   Attributes:
     Attr Type: Local Variable
     Is Defined: true
-    Is Global: false
+    Storage Class: None
 
 Key: main
   Type: func(ret_type=int, param_types=[])
   Attributes:
     Attr Type: Function
     Is Defined: true
-    Is Global: true
+    Storage Class: None
 
 Program(
     FunDclr(

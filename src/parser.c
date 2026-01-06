@@ -15,6 +15,13 @@
 // Outputs: Allocates AST nodes in the arena and returns parse results.
 // Invariants/Assumptions: Tokens are well-formed and include locations.
 
+void parse_type_and_storage_class(struct Type** type, enum StorageClass* class);
+bool process_declarator(struct Declarator* decl,
+                        struct Type* base_type,
+                        struct Slice** name_out,
+                        struct Type** type_out,
+                        struct ParamList** params_out);
+
 static struct Token * program;
 static size_t prog_size;
 static struct Token * current;
@@ -149,6 +156,8 @@ static enum BinOp consume_binary_op(){
   if (consume(AMPERSAND)) return BIT_AND;
   if (consume(PIPE)) return BIT_OR;
   if (consume(CARAT)) return BIT_XOR;
+  if (consume(SHIFT_L_TOK)) return BIT_SHL;
+  if (consume(SHIFT_R_TOK)) return BIT_SHR;
   if (consume(DOUBLE_AMPERSAND)) return BOOL_AND;
   if (consume(DOUBLE_PIPE)) return BOOL_OR;
   if (consume(DOUBLE_EQUALS)) return BOOL_EQ;
@@ -624,7 +633,7 @@ struct Expr* parse_factor(){
   } else if ((data = consume_with_data(U_LONG_LIT))){
     const char* lit_loc = (current - 1)->start;
     union ConstVariant const_data = {.ulong_val = data->ulong_val};
-    struct LitExpr lit_expr = {U_LONG_LIT, const_data};
+    struct LitExpr lit_expr = {ULONG_CONST, const_data};
 
     struct Expr* expr = alloc_expr(LIT, lit_loc);
     expr->expr.lit_expr = lit_expr;
@@ -1097,31 +1106,52 @@ struct Statement* parse_do_while_stmt(){
 // Invariants/Assumptions: Only simple variable declarators are accepted here.
 struct VariableDclr* parse_for_dclr(){
   struct Token* old_current = current;
-  struct Type* type = parse_param_type();
-  if (type == NULL) return NULL;
-  union TokenVariant* data = consume_with_data(IDENT);
-  if (data == NULL) {
-    current = old_current;
+  if ((size_t)(current - program) >= prog_size) {
     return NULL;
   }
-  struct Slice* name = data->ident_name;
-  struct Expr* expr = NULL;
-  if (consume(EQUALS)){
-    expr = parse_expr();
-    if (expr == NULL){
-      current = old_current;
+  switch (current->type) {
+    case INT_TOK:
+    case SIGNED_TOK:
+    case UNSIGNED_TOK:
+    case LONG_TOK:
+    case STATIC_TOK:
+    case EXTERN_TOK:
+      break;
+    default:
       return NULL;
-    }
   }
-  if (!consume(SEMI)) {
+
+  struct Type* base_type = NULL;
+  enum StorageClass storage = NONE;
+  parse_type_and_storage_class(&base_type, &storage);
+  if (base_type == NULL) {
     current = old_current;
     return NULL;
   }
-  struct VariableDclr* var_dclr = arena_alloc(sizeof(struct VariableDclr));
-  var_dclr->name = name;
-  var_dclr->init = expr;
-  var_dclr->type = type;
-  var_dclr->storage = NONE;
+
+  struct Declarator* declarator = parse_declarator();
+  if (declarator == NULL) {
+    current = old_current;
+    return NULL;
+  }
+
+  struct Slice* name = NULL;
+  struct Type* decl_type = NULL;
+  struct ParamList* params = NULL;
+  if (!process_declarator(declarator, base_type, &name, &decl_type, &params)) {
+    current = old_current;
+    return NULL;
+  }
+  if (decl_type->type == FUN_TYPE) {
+    current = old_current;
+    return NULL;
+  }
+
+  struct VariableDclr* var_dclr = parse_var_dclr(decl_type, storage, name);
+  if (var_dclr == NULL || !consume(SEMI)) {
+    current = old_current;
+    return NULL;
+  }
   return var_dclr;
 }
 
@@ -1719,6 +1749,25 @@ bool process_declarator(struct Declarator* decl, struct Type* base_type,
   return false;
 }
 
+// Purpose: Build a placeholder block for an empty function body.
+// Inputs: loc is the location to associate with the empty statement.
+// Outputs: Returns a Block containing a NULL_STMT item.
+// Invariants/Assumptions: Used only when parsing a function body with "{}".
+static struct Block* make_empty_block(const char* loc) {
+  struct Statement* null_stmt = arena_alloc(sizeof(struct Statement));
+  null_stmt->loc = loc;
+  null_stmt->type = NULL_STMT;
+
+  struct BlockItem* item = arena_alloc(sizeof(struct BlockItem));
+  item->type = STMT_ITEM;
+  item->item.stmt = null_stmt;
+
+  struct Block* block = arena_alloc(sizeof(struct Block));
+  block->item = item;
+  block->next = NULL;
+  return block;
+}
+
 // Purpose: Parse the trailing ';' or function body after a declarator.
 // Inputs: success is set false on parse failure.
 // Outputs: Returns a Block pointer for a function body or NULL for a prototype.
@@ -1728,6 +1777,9 @@ struct Block* parse_end_of_func(bool* success){
   struct Block* body = parse_block(&success2);
   if (success2){
     *success = true;
+    if (body == NULL) {
+      return make_empty_block(NULL);
+    }
     return body;
   }
   if (consume(SEMI)){

@@ -45,6 +45,16 @@ TAC_EXEC_TEST_OBJ_DEBUG := $(DEBUG_OBJ_DIR)/tac_exec_tests.o
 TAC_EXEC_TEST_OBJ_RELEASE := $(RELEASE_OBJ_DIR)/tac_exec_tests.o
 TAC_EXEC_TEST_EXEC_DEBUG := $(DEBUG_DIR)/tac_exec_tests
 TAC_EXEC_TEST_EXEC_RELEASE := $(RELEASE_DIR)/tac_exec_tests
+WACC_TEST_DIR := tests/writing-a-c-compiler-tests
+WACC_TEST_RUNNER := $(WACC_TEST_DIR)/test_compiler
+WACC_TAC_WRAPPER := tests/wacc_tac_compiler.py
+WACC_CORE_CHAPTER ?= 10
+WACC_EXTRA_CHAPTERS ?= 12 14
+WACC_ARGS ?=
+WACC_EXTRA_CREDIT ?= --bitwise --compound --increment --goto --switch --nan --union
+# Skip tests that exercise types or libraries the compiler does not support.
+WACC_SKIP_TYPES ?= long double float
+WACC_SKIP_ARGS ?= --skip-libraries --skip-types $(WACC_SKIP_TYPES)
 
 EXECUTABLE 			:= bcc
 DEBUG_EXEC := $(DEBUG_DIR)/$(EXECUTABLE)
@@ -354,6 +364,14 @@ test-release: TAC_EXEC_TEST_EXEC := $(TAC_EXEC_TEST_EXEC_RELEASE)
 test-release: $(RELEASE_EXEC) $(TAC_INTERP_TEST_EXEC_RELEASE) $(TAC_EXEC_TEST_EXEC_RELEASE)
 	$(RUN_TESTS)
 
+test-wacc: $(DEBUG_EXEC)
+	@chmod +x $(WACC_TAC_WRAPPER)
+	@set -e; \
+	DIOPTASE_BCC=$(DEBUG_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_SKIP_ARGS) $(WACC_ARGS); \
+	for ch in $(WACC_EXTRA_CHAPTERS); do \
+		DIOPTASE_BCC=$(DEBUG_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_SKIP_ARGS) $(WACC_ARGS); \
+	done
+
 # TAC interpreter test build rules
 $(TAC_INTERP_TEST_OBJ_DEBUG): $(TAC_INTERP_TEST_SRC) | dirs-debug
 	$(CC) $(CFLAGS_DEBUG) -I$(SRC_DIR) -c $< -o $@
@@ -381,4 +399,4 @@ $(TAC_EXEC_TEST_EXEC_RELEASE): $(TAC_EXEC_TEST_OBJ_RELEASE) $(RELEASE_OBJFILES_N
 	$(CC) $(CFLAGS_RELEASE) $(LDFLAGS_RELEASE) -o $@ $(TAC_EXEC_TEST_OBJ_RELEASE) $(RELEASE_OBJFILES_NO_MAIN)
 
 # Phony targets
-.PHONY: all debug release clean purge test test-release
+.PHONY: all debug release clean purge test test-release test-wacc

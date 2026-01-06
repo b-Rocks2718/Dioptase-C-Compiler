@@ -1,2 +1,0 @@
-Typechecking failed
-Type error at tests/types_invalid/linkage_extern_then_static_func.c:2:12: conflicting function linkage for function helper

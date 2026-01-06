@@ -4,16 +4,17 @@
 #include "AST.h"
 #include "typechecking.h"
 
+#include <stdint.h>
+
 struct TACProg {
-  struct TopLevel* head;
-  struct TopLevel* tail;
+  struct TopLevel* head;    // Function top-levels in source order.
+  struct TopLevel* tail;    // Tail of the function list for append operations.
+  struct TopLevel* statics; // Static variable entries collected from symbols.
 };
 
 enum TopLevelType {
     FUNC,
-    STATIC_VAR,
-    DIRECTIVE,
-    COMMENT
+    STATIC_VAR
 };
 
 struct TopLevel {
@@ -29,8 +30,6 @@ struct TopLevel {
   struct IdentInit* init_values; // for StaticVar
   size_t num_inits; // for StaticVar
   
-  struct Slice* text; // for Comment / Directive
-  
   struct TopLevel* next;
 };
 
@@ -40,13 +39,14 @@ enum ValType {
 };
 
 union ValVariant {
-    int const_value; // assuming constants are integers for simplicity
+    uint64_t const_value; // stores raw constant bits for 32/64-bit integers
     struct Slice* var_name;
 };
 
 struct Val {
     enum ValType val_type;
     union ValVariant val;
+    struct Type* type; // value type for width/sign normalization
 };
 
 enum TACInstrType {
@@ -88,8 +88,25 @@ struct TACUnary {
   struct Val* src;
 };
 
+enum ALUOp {
+    ALU_ADD,
+    ALU_SUB,
+    ALU_SMUL,
+    ALU_SDIV,
+    ALU_SMOD,
+    ALU_UMUL,
+    ALU_UDIV,
+    ALU_UMOD,
+    ALU_AND,
+    ALU_OR,
+    ALU_XOR,
+    ALU_SHL,
+    ALU_SHR,
+    ALU_ASR,
+};
+
 struct TACBinary {
-  enum BinOp op;
+  enum ALUOp alu_op;
   struct Val* dst;
   struct Val* src1;
   struct Val* src2;
@@ -264,9 +281,9 @@ static struct TACInstr* tac_instr_create(enum TACInstrType type);
 
 static struct TACInstr* tac_find_last(struct TACInstr* instr);
 
-static struct Val* tac_make_const(int value);
+static struct Val* tac_make_const(uint64_t value, struct Type* type);
 
-static struct Val* tac_make_var(struct Slice* name);
+static struct Val* tac_make_var(struct Slice* name, struct Type* type);
 
 static void tac_copy_val(struct Val* dst, const struct Val* src);
 

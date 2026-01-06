@@ -4,21 +4,21 @@ Key: shared_value
     Attr Type: Static Variable
     Init Type: Tentative
     Is Defined: false
-    Is Global: true
+    Storage Class: None
 
 Key: main
   Type: func(ret_type=int, param_types=[])
   Attributes:
     Attr Type: Function
     Is Defined: true
-    Is Global: true
+    Storage Class: None
 
 Key: helper
   Type: func(ret_type=int, param_types=[])
   Attributes:
     Attr Type: Function
     Is Defined: true
-    Is Global: false
+    Storage Class: Static
 
 Program(
     VarDclr(none, int, shared_value);

@@ -1,6 +1,6 @@
 # Dioptase C Compiler
 
-I'm in the process of converting a [partial C compiler](https://github.com/b-Rocks2718/c-compiler) I wrote in Haskell into C (I want it to eventually compile itself). 
+My implementation of of the compiler described in [Writing a C Compiler](https://nostarch.com/writing-c-compiler) by Nora Sandler.
 
 ## Usage
 
@@ -10,14 +10,29 @@ Build with:
 make all
 ```
 
+This produces `build/debug/bcc`. You can also build an optimized binary with `make release` (writes `build/release/bcc`).
+
 Run the compiler with:
 
 ```sh
-./build/bcc -preprocess tests/lexer/example.c
-./build/bcc -tokens tests/preprocess/example.c
+./build/debug/bcc -flags path_to_file.c
 ```
 
-The first command runs the preprocessor on `example.c` and outputs the result to stdout. The second command lexes the preprocessed output and prints the tokens. I'm in the process of implementing the parser.
+Accepted flags:
+
+```text
+-preprocess           print preprocessed output
+-tokens               print the token stream
+-ast                  print the parsed AST
+-idents               print the AST after identifier resolution
+-labels               print the AST after loop/switch/goto labeling
+-types                print the symbol table and AST after typechecking
+-tac                  print the generated TAC
+-interp               run the TAC interpreter and print the result
+-DNAME[=value]        define a preprocessor macro (repeatable)
+```
+
+Flags can be combined to dump multiple stages. `-preprocess` exits early unless `-tokens` or `-ast` is also specified.
 
 ## Supported Features
 
@@ -56,14 +71,30 @@ Known limitations:
 
 ## Tests
 
-Tests live in `tests/preprocess`, `tests/lexer`, and `tests/lexer_invalid`. Each case is a `.c` file with a matching `.ok` file for expected output. Running `make test` writes `test.out` files next to each case and diffs them against the `.ok` files.
+Stage-specific tests live in these folders:
 
-- Preprocessor cases: `.ok` contains the exact output of `-preprocess`.
-- Lexer cases: `.ok` matches the exact output of `print_token_array()` as printed by `-tokens`.
-- Invalid lexer cases: `-tokens` should fail (non-zero exit). If a `.ok` file exists, it is compared against the error output.
+- `tests/preprocess` and `tests/preprocess_invalid` (`-preprocess`, optional `.flags` file for extra args)
+- `tests/lexer` and `tests/lexer_invalid` (`-tokens`)
+- `tests/parser` and `tests/parser_invalid` (`-ast`)
+- `tests/idents` and `tests/idents_invalid` (`-idents`)
+- `tests/labels` and `tests/labels_invalid` (`-labels`)
+- `tests/types` and `tests/types_invalid` (`-types`)
 
-Run all tests with:
+Each test case is a `.c` file with a matching `.ok` file for expected output. `make test` (debug build) and `make test-release` (release build) write per-test `.out` files next to each case and diff them against the `.ok` files. Invalid tests must fail with a non-zero exit; if a `.ok` file exists, its contents are compared against the captured output.
+
+Run the local test suites with:
 
 ```sh
 make test
+make test-release
 ```
+
+`make test` and `make test-release` also build and run the TAC interpreter and TAC execution tests from `tests/tac_interpreter_tests.c` and `tests/tac_exec_tests.c` (which uses sources in `tests/tac_exec/`).
+
+I also use [test cases from Writing a C Compiler](https://github.com/nlsandler/writing-a-c-compiler-tests#) via the wrapper in `tests/wacc_tac_compiler.py`. Run them with:
+
+```sh
+make test-wacc
+```
+
+The WACC runner defaults can be overridden with `WACC_CORE_CHAPTER`, `WACC_EXTRA_CHAPTERS`, `WACC_EXTRA_CREDIT`, `WACC_SKIP_TYPES`, and `WACC_ARGS`.

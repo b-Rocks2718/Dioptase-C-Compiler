@@ -74,12 +74,12 @@ enum StaticInitType {
 };
 
 // Purpose: Hold the value for a static initializer entry.
-// Inputs: int_type selects the kind; value is the numeric data.
+// Inputs: int_type selects the kind; value holds the normalized bits.
 // Outputs: Used by InitList to describe static data.
-// Invariants/Assumptions: value is interpreted according to int_type.
-union InitValue {
+// Invariants/Assumptions: value is normalized to the initializer type width.
+struct InitValue {
   enum StaticInitType int_type;
-  int value;
+  uint64_t value;
 };
 
 // Purpose: Singly linked list of static initializer values.
@@ -87,7 +87,7 @@ union InitValue {
 // Outputs: Stored in IdentInit for static variable initialization.
 // Invariants/Assumptions: List order matches declaration order.
 struct InitList {
-  union InitValue value;
+  struct InitValue value;
   struct InitList* next;
 };
 
@@ -98,7 +98,7 @@ struct InitList {
 struct IdentAttr {
   enum IdentAttrType attr_type;
   bool is_defined;
-  bool is_global;
+  enum StorageClass storage;
   struct IdentInit init;
 };
 

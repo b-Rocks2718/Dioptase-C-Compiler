@@ -4,14 +4,14 @@ Key: value
     Attr Type: Static Variable
     Init Type: Initial 3
     Is Defined: true
-    Is Global: true
+    Storage Class: None
 
 Key: main
   Type: func(ret_type=int, param_types=[])
   Attributes:
     Attr Type: Function
     Is Defined: true
-    Is Global: true
+    Storage Class: None
 
 Program(
     VarDclr(none, int, value);

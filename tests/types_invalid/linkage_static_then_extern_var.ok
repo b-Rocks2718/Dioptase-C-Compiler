@@ -1,2 +1,0 @@
-Typechecking failed
-Type error at tests/types_invalid/linkage_static_then_extern_var.c:2:12: conflicting variable linkage for variable value

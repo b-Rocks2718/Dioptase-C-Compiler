@@ -187,30 +187,33 @@ static bool tac_exec_run_binary(const char* path, int* exit_code) {
   return tac_exec_run_process(argv, false, exit_code);
 }
 
-// Purpose: Append static variable TAC entries to a program.
+// Purpose: Collect static variable TAC entries for a program.
 // Inputs: prog is the TAC program built from the AST.
-// Outputs: Extends the TAC program with static variables from the symbol table.
+// Outputs: Stores static variables from the symbol table in prog->statics.
 // Invariants/Assumptions: global_symbol_table is valid until arena_destroy().
-static void tac_exec_append_statics(struct TACProg* prog) {
+static void tac_exec_collect_statics(struct TACProg* prog) {
   if (prog == NULL || global_symbol_table == NULL) {
     return;
   }
+  struct TopLevel* statics_head = NULL;
+  struct TopLevel* statics_tail = NULL;
   for (size_t i = 0; i < global_symbol_table->size; i++) {
     for (struct SymbolEntry* entry = global_symbol_table->arr[i];
          entry != NULL;
          entry = entry->next) {
       struct TopLevel* top_level = symbol_to_TAC(entry);
       if (top_level != NULL) {
-        if (prog->head == NULL) {
-          prog->head = top_level;
-          prog->tail = top_level;
+        if (statics_head == NULL) {
+          statics_head = top_level;
+          statics_tail = top_level;
         } else {
-          prog->tail->next = top_level;
-          prog->tail = top_level;
+          statics_tail->next = top_level;
+          statics_tail = top_level;
         }
       }
     }
   }
+  prog->statics = statics_head;
 }
 
 // Purpose: Build TAC from a source file and interpret it.
@@ -264,7 +267,7 @@ static bool tac_exec_run_tac(const struct TacExecTest* test, int* out_result) {
     tac_exec_error(test->name, "tac", "TAC lowering failed");
     goto cleanup;
   }
-  tac_exec_append_statics(tac_prog);
+  tac_exec_collect_statics(tac_prog);
 
   *out_result = tac_interpret_prog(tac_prog);
   ok = true;

@@ -5,6 +5,12 @@
 #include <stdio.h>
 #include <string.h>
 
+static struct Type kTestIntType = { .type = INT_TYPE };
+static struct Type kTestPtrType = {
+  .type = POINTER_TYPE,
+  .type_data.pointer_type = { .referenced_type = &kTestIntType },
+};
+
 // Purpose: Build a Slice from a string literal for test data.
 // Inputs: text is a null-terminated C string.
 // Outputs: Returns a Slice referencing the literal.
@@ -17,24 +23,26 @@ static struct Slice tac_slice_literal(const char* text) {
 }
 
 // Purpose: Build a constant TAC value for test data.
-// Inputs: value is the integer literal to store.
+// Inputs: value is the integer literal to store; type describes its width/sign.
 // Outputs: Returns a Val tagged as CONSTANT.
-// Invariants/Assumptions: Uses int for all constants.
-static struct Val tac_val_const(int value) {
+// Invariants/Assumptions: value is already in the host int range.
+static struct Val tac_val_const(int value, struct Type* type) {
   struct Val val;
   val.val_type = CONSTANT;
-  val.val.const_value = value;
+  val.val.const_value = (uint64_t)(int64_t)value;
+  val.type = type;
   return val;
 }
 
 // Purpose: Build a variable TAC value for test data.
-// Inputs: name is the variable identifier slice.
+// Inputs: name is the variable identifier slice; type describes its width/sign.
 // Outputs: Returns a Val tagged as VARIABLE.
 // Invariants/Assumptions: name must outlive the test execution.
-static struct Val tac_val_var(struct Slice* name) {
+static struct Val tac_val_var(struct Slice* name, struct Type* type) {
   struct Val val;
   val.val_type = VARIABLE;
   val.val.var_name = name;
+  val.type = type;
   return val;
 }
 
@@ -83,7 +91,7 @@ Readable TAC:
 static bool tac_test_return_const(void) {
   const int kReturnValue = 7;
   struct Slice main_name = tac_slice_literal("main");
-  struct Val ret_val = tac_val_const(kReturnValue);
+  struct Val ret_val = tac_val_const(kReturnValue, &kTestIntType);
 
   struct TACInstr ret_instr;
   tac_init_instr(&ret_instr, TACRETURN);
@@ -131,13 +139,13 @@ static bool tac_test_arithmetic(void) {
   struct Slice t0_name = tac_slice_literal("t0");
   struct Slice t1_name = tac_slice_literal("t1");
 
-  struct Val a_val = tac_val_var(&a_name);
-  struct Val b_val = tac_val_var(&b_name);
-  struct Val t0_val = tac_val_var(&t0_name);
-  struct Val t1_val = tac_val_var(&t1_name);
-  struct Val const_3 = tac_val_const(kFirst);
-  struct Val const_4 = tac_val_const(kSecond);
-  struct Val const_2 = tac_val_const(kMultiplier);
+  struct Val a_val = tac_val_var(&a_name, &kTestIntType);
+  struct Val b_val = tac_val_var(&b_name, &kTestIntType);
+  struct Val t0_val = tac_val_var(&t0_name, &kTestIntType);
+  struct Val t1_val = tac_val_var(&t1_name, &kTestIntType);
+  struct Val const_3 = tac_val_const(kFirst, &kTestIntType);
+  struct Val const_4 = tac_val_const(kSecond, &kTestIntType);
+  struct Val const_2 = tac_val_const(kMultiplier, &kTestIntType);
 
   struct TACInstr copy_a;
   struct TACInstr copy_b;
@@ -155,17 +163,17 @@ static bool tac_test_arithmetic(void) {
   copy_b.instr.tac_copy.dst = &b_val;
   copy_b.instr.tac_copy.src = &const_4;
 
-  add_instr.instr.tac_binary.op = ADD_OP;
+  add_instr.instr.tac_binary.alu_op = ALU_ADD;
   add_instr.instr.tac_binary.dst = &t0_val;
   add_instr.instr.tac_binary.src1 = &a_val;
   add_instr.instr.tac_binary.src2 = &b_val;
-  add_instr.instr.tac_binary.type = NULL;
+  add_instr.instr.tac_binary.type = &kTestIntType;
 
-  mul_instr.instr.tac_binary.op = MUL_OP;
+  mul_instr.instr.tac_binary.alu_op = ALU_SMUL;
   mul_instr.instr.tac_binary.dst = &t1_val;
   mul_instr.instr.tac_binary.src1 = &t0_val;
   mul_instr.instr.tac_binary.src2 = &const_2;
-  mul_instr.instr.tac_binary.type = NULL;
+  mul_instr.instr.tac_binary.type = &kTestIntType;
 
   ret_instr.instr.tac_return.dst = &t1_val;
 
@@ -213,10 +221,10 @@ static bool tac_test_cond_jump(void) {
   const int kExpected = 1;
   struct Slice main_name = tac_slice_literal("main");
   struct Slice then_label = tac_slice_literal("L_then");
-  struct Val const_5 = tac_val_const(kLeft);
-  struct Val const_10 = tac_val_const(kRight);
-  struct Val const_1 = tac_val_const(kTrueValue);
-  struct Val const_2 = tac_val_const(kFalseValue);
+  struct Val const_5 = tac_val_const(kLeft, &kTestIntType);
+  struct Val const_10 = tac_val_const(kRight, &kTestIntType);
+  struct Val const_1 = tac_val_const(kTrueValue, &kTestIntType);
+  struct Val const_2 = tac_val_const(kFalseValue, &kTestIntType);
 
   struct TACInstr cmp_instr;
   struct TACInstr cond_jump;
@@ -285,20 +293,20 @@ static bool tac_test_call(void) {
   struct Slice main_name = tac_slice_literal("main");
   struct Slice t1_name = tac_slice_literal("t1");
 
-  struct Val p_val = tac_val_var(&p_name);
-  struct Val q_val = tac_val_var(&q_name);
-  struct Val t0_val = tac_val_var(&t0_name);
-  struct Val t1_val = tac_val_var(&t1_name);
+  struct Val p_val = tac_val_var(&p_name, &kTestIntType);
+  struct Val q_val = tac_val_var(&q_name, &kTestIntType);
+  struct Val t0_val = tac_val_var(&t0_name, &kTestIntType);
+  struct Val t1_val = tac_val_var(&t1_name, &kTestIntType);
 
   struct TACInstr add_bin;
   struct TACInstr add_ret;
   tac_init_instr(&add_bin, TACBINARY);
   tac_init_instr(&add_ret, TACRETURN);
-  add_bin.instr.tac_binary.op = ADD_OP;
+  add_bin.instr.tac_binary.alu_op = ALU_ADD;
   add_bin.instr.tac_binary.dst = &t0_val;
   add_bin.instr.tac_binary.src1 = &p_val;
   add_bin.instr.tac_binary.src2 = &q_val;
-  add_bin.instr.tac_binary.type = NULL;
+  add_bin.instr.tac_binary.type = &kTestIntType;
   add_ret.instr.tac_return.dst = &t0_val;
   tac_link_instr(&add_bin, &add_ret);
 
@@ -313,8 +321,8 @@ static bool tac_test_call(void) {
   add_func.next = NULL;
 
   struct Val call_args[kArgCount];
-  call_args[0] = tac_val_const(kArg0);
-  call_args[1] = tac_val_const(kArg1);
+  call_args[0] = tac_val_const(kArg0, &kTestIntType);
+  call_args[1] = tac_val_const(kArg1, &kTestIntType);
 
   struct TACInstr call_instr;
   struct TACInstr main_ret;
@@ -369,11 +377,11 @@ static bool tac_test_memory_ops(void) {
   struct Slice p_name = tac_slice_literal("p");
   struct Slice t0_name = tac_slice_literal("t0");
 
-  struct Val x_val = tac_val_var(&x_name);
-  struct Val p_val = tac_val_var(&p_name);
-  struct Val t0_val = tac_val_var(&t0_name);
-  struct Val const_10 = tac_val_const(kInitialValue);
-  struct Val const_42 = tac_val_const(kStoredValue);
+  struct Val x_val = tac_val_var(&x_name, &kTestIntType);
+  struct Val p_val = tac_val_var(&p_name, &kTestPtrType);
+  struct Val t0_val = tac_val_var(&t0_name, &kTestIntType);
+  struct Val const_10 = tac_val_const(kInitialValue, &kTestIntType);
+  struct Val const_42 = tac_val_const(kStoredValue, &kTestIntType);
 
   struct TACInstr copy_x;
   struct TACInstr addr_of;
@@ -445,13 +453,13 @@ static bool tac_test_unary_ops(void) {
   struct Slice t0_name = tac_slice_literal("t0");
   struct Slice t1_name = tac_slice_literal("t1");
 
-  struct Val a_val = tac_val_var(&a_name);
-  struct Val neg_val = tac_val_var(&neg_name);
-  struct Val comp_val = tac_val_var(&comp_name);
-  struct Val bnot_val = tac_val_var(&bnot_name);
-  struct Val t0_val = tac_val_var(&t0_name);
-  struct Val t1_val = tac_val_var(&t1_name);
-  struct Val const_input = tac_val_const(kInput);
+  struct Val a_val = tac_val_var(&a_name, &kTestIntType);
+  struct Val neg_val = tac_val_var(&neg_name, &kTestIntType);
+  struct Val comp_val = tac_val_var(&comp_name, &kTestIntType);
+  struct Val bnot_val = tac_val_var(&bnot_name, &kTestIntType);
+  struct Val t0_val = tac_val_var(&t0_name, &kTestIntType);
+  struct Val t1_val = tac_val_var(&t1_name, &kTestIntType);
+  struct Val const_input = tac_val_const(kInput, &kTestIntType);
 
   struct TACInstr copy_a;
   struct TACInstr unary_neg;
@@ -483,17 +491,17 @@ static bool tac_test_unary_ops(void) {
   unary_not.instr.tac_unary.dst = &bnot_val;
   unary_not.instr.tac_unary.src = &a_val;
 
-  add_0.instr.tac_binary.op = ADD_OP;
+  add_0.instr.tac_binary.alu_op = ALU_ADD;
   add_0.instr.tac_binary.dst = &t0_val;
   add_0.instr.tac_binary.src1 = &neg_val;
   add_0.instr.tac_binary.src2 = &comp_val;
-  add_0.instr.tac_binary.type = NULL;
+  add_0.instr.tac_binary.type = &kTestIntType;
 
-  add_1.instr.tac_binary.op = ADD_OP;
+  add_1.instr.tac_binary.alu_op = ALU_ADD;
   add_1.instr.tac_binary.dst = &t1_val;
   add_1.instr.tac_binary.src1 = &t0_val;
   add_1.instr.tac_binary.src2 = &bnot_val;
-  add_1.instr.tac_binary.type = NULL;
+  add_1.instr.tac_binary.type = &kTestIntType;
 
   ret_instr.instr.tac_return.dst = &t1_val;
 
@@ -541,8 +549,8 @@ static bool tac_test_jump(void) {
   struct Slice main_name = tac_slice_literal("main");
   struct Slice label_name = tac_slice_literal("L1");
 
-  struct Val const_0 = tac_val_const(kSkipped);
-  struct Val const_9 = tac_val_const(kReturned);
+  struct Val const_0 = tac_val_const(kSkipped, &kTestIntType);
+  struct Val const_9 = tac_val_const(kReturned, &kTestIntType);
 
   struct TACInstr jump_instr;
   struct TACInstr ret_false;
@@ -605,13 +613,13 @@ static bool tac_test_copy_to_offset(void) {
   struct Slice addr2_name = tac_slice_literal("addr2");
   struct Slice t0_name = tac_slice_literal("t0");
 
-  struct Val arr0_val = tac_val_var(&arr0_name);
-  struct Val p_val = tac_val_var(&p_name);
-  struct Val addr2_val = tac_val_var(&addr2_name);
-  struct Val t0_val = tac_val_var(&t0_name);
-  struct Val const_init = tac_val_const(kInitialValue);
-  struct Val const_store = tac_val_const(kStoredValue);
-  struct Val const_offset = tac_val_const(kOffsetBytes);
+  struct Val arr0_val = tac_val_var(&arr0_name, &kTestIntType);
+  struct Val p_val = tac_val_var(&p_name, &kTestPtrType);
+  struct Val addr2_val = tac_val_var(&addr2_name, &kTestPtrType);
+  struct Val t0_val = tac_val_var(&t0_name, &kTestIntType);
+  struct Val const_init = tac_val_const(kInitialValue, &kTestIntType);
+  struct Val const_store = tac_val_const(kStoredValue, &kTestIntType);
+  struct Val const_offset = tac_val_const(kOffsetBytes, &kTestIntType);
 
   struct TACInstr copy_arr0;
   struct TACInstr addr_of;
@@ -633,11 +641,11 @@ static bool tac_test_copy_to_offset(void) {
   copy_offset.instr.tac_copy_to_offset.dst = &p_val;
   copy_offset.instr.tac_copy_to_offset.src = &const_store;
   copy_offset.instr.tac_copy_to_offset.offset = kOffsetBytes;
-  add_addr.instr.tac_binary.op = ADD_OP;
+  add_addr.instr.tac_binary.alu_op = ALU_ADD;
   add_addr.instr.tac_binary.dst = &addr2_val;
   add_addr.instr.tac_binary.src1 = &p_val;
   add_addr.instr.tac_binary.src2 = &const_offset;
-  add_addr.instr.tac_binary.type = NULL;
+  add_addr.instr.tac_binary.type = &kTestPtrType;
   load.instr.tac_load.dst = &t0_val;
   load.instr.tac_load.src_ptr = &addr2_val;
   ret_instr.instr.tac_return.dst = &t0_val;

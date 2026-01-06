@@ -16,6 +16,11 @@
 #include "arena.h"
 #include "source_location.h"
 
+// Purpose: Control where TAC interpreter result is emitted.
+// Inputs/Outputs: When set, results are printed to stderr instead of stdout.
+// Invariants/Assumptions: Only used for interpreter-only execution.
+static const char* kTacInterpResultStderrEnv = "DIOPTASE_TACC_RESULT_STDERR";
+
 int main(int argc, const char *const *const argv) {
 
     int print_tokens = 0;
@@ -204,23 +209,26 @@ int main(int argc, const char *const *const argv) {
     if (print_tac || interpret_tac) {
         tac_prog = prog_to_TAC(prog);
         if (tac_prog != NULL && global_symbol_table != NULL) {
-            // Include static storage entries from the symbol table for visibility.
+            // Collect static storage entries from the symbol table for visibility.
+            struct TopLevel* statics_head = NULL;
+            struct TopLevel* statics_tail = NULL;
             for (size_t i = 0; i < global_symbol_table->size; i++) {
                 for (struct SymbolEntry* entry = global_symbol_table->arr[i];
                      entry != NULL;
                      entry = entry->next) {
                     struct TopLevel* top_level = symbol_to_TAC(entry);
                     if (top_level != NULL) {
-                        if (tac_prog->head == NULL) {
-                            tac_prog->head = top_level;
-                            tac_prog->tail = top_level;
+                        if (statics_head == NULL) {
+                            statics_head = top_level;
+                            statics_tail = top_level;
                         } else {
-                            tac_prog->tail->next = top_level;
-                            tac_prog->tail = top_level;
+                            statics_tail->next = top_level;
+                            statics_tail = top_level;
                         }
                     }
                 }
             }
+            tac_prog->statics = statics_head;
         }
     }
 
@@ -236,7 +244,12 @@ int main(int argc, const char *const *const argv) {
             return 6;
         }
         int interp_result = tac_interpret_prog(tac_prog);
-        printf("%d\n", interp_result);
+        const char* result_to_stderr = getenv(kTacInterpResultStderrEnv);
+        if (result_to_stderr != NULL && result_to_stderr[0] != '\0') {
+            fprintf(stderr, "%d\n", interp_result);
+        } else {
+            printf("%d\n", interp_result);
+        }
     }
     
     arena_destroy();
