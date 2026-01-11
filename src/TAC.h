@@ -100,8 +100,9 @@ enum ALUOp {
     ALU_AND,
     ALU_OR,
     ALU_XOR,
-    ALU_SHL,
-    ALU_SHR,
+    ALU_LSL,
+    ALU_LSR,
+    ALU_ASL,
     ALU_ASR,
 };
 

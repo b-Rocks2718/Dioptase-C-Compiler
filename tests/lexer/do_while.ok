@@ -1,4 +1,3 @@
 [
     do, {, break, ;, }, while, (, 0, ), ;
 ]
-Parse error at tests/lexer/do_while.c:1:1: unexpected token

@@ -1,4 +1,3 @@
 [
     ~, a, ;, !, b, ;
 ]
-Parse error at tests/lexer/unary_ops.c:1:1: unexpected token

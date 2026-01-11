@@ -29,6 +29,8 @@ Accepted flags:
 -types                print the symbol table and AST after typechecking
 -tac                  print the generated TAC
 -interp               run the TAC interpreter and print the result
+-s                    emit assembly instead of assembling to hex
+-o <file>             set the output file path (defaults to a.hex, or a.s with -s)
 -DNAME[=value]        define a preprocessor macro (repeatable)
 ```
 
@@ -61,7 +63,7 @@ Supported:
 - Statements: expression statements, `return`, blocks, `if`/`else`, `while`, `do`/`while`,
   `for`, `break`, `continue`, `switch`/`case`/`default`, labels and `goto`
 
-Known limitations:
+Limitations:
 
 - No arrays, structs/unions, enums, `sizeof`, floating-point, `char`, or string literals
 - No `short` or `long` integers, no `void` or `void*`

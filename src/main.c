@@ -1,9 +1,12 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "preprocessor.h"
 #include "token_array.h"
@@ -14,6 +17,8 @@
 #include "typechecking.h"
 #include "TAC.h"
 #include "asm_gen.h"
+#include "codegen.h"
+#include "machine_print.h"
 #include "arena.h"
 #include "source_location.h"
 
@@ -21,6 +26,142 @@
 // Inputs/Outputs: When set, results are printed to stderr instead of stdout.
 // Invariants/Assumptions: Only used for interpreter-only execution.
 static const char* kTacInterpResultStderrEnv = "DIOPTASE_TACC_RESULT_STDERR";
+
+// Purpose: Default output path for compiler-only assembly emission.
+// Inputs/Outputs: Used when -s is set and no -o is provided.
+// Invariants/Assumptions: Relative to the current working directory.
+static const char* kDefaultAsmOutputPath = "a.s";
+
+// Purpose: Default output path for assembled hex emission.
+// Inputs/Outputs: Used when -s is not set and no -o is provided.
+// Invariants/Assumptions: Relative to the current working directory.
+static const char* kDefaultHexOutputPath = "a.hex";
+
+// Purpose: Environment variable that overrides the assembler path.
+// Inputs/Outputs: Read via getenv when invoking the assembler.
+// Invariants/Assumptions: If set, must point to an executable binary.
+static const char* kAssemblerEnvVar = "DIOPTASE_ASSEMBLER";
+
+// Purpose: Known default assembler locations within the repo.
+// Inputs/Outputs: Probed in order when DIOPTASE_ASSEMBLER is unset.
+// Invariants/Assumptions: Relative to the current working directory.
+enum { kDefaultAssemblerPathCount = 2 };
+static const char* const kDefaultAssemblerPaths[kDefaultAssemblerPathCount] = {
+    "/home/brooks/Dioptase/Dioptase-Assembler/build/debug/basm",
+    "/home/brooks/Dioptase/Dioptase-Assembler/build/release/basm",
+};
+
+// Purpose: Suffix for temporary assembly files used during full compilation.
+// Inputs/Outputs: Appended to the output path to form a temp asm name.
+// Invariants/Assumptions: Resulting temp path should not collide with user files.
+static const char* kAsmTempSuffix = ".s.tmp";
+
+// Purpose: Check whether a path is a runnable file.
+// Inputs: path is the filesystem path to probe.
+// Outputs: Returns true if path is executable, false otherwise.
+// Invariants/Assumptions: Uses access(2) and requires a POSIX-like host.
+static bool is_executable_path(const char* path) {
+    if (path == NULL || path[0] == '\0') return false;
+    return access(path, X_OK) == 0;
+}
+
+// Purpose: Choose the assembler binary path for full compilation.
+// Inputs: None.
+// Outputs: Returns a usable assembler path or NULL if none are available.
+// Invariants/Assumptions: Honors DIOPTASE_ASSEMBLER when provided.
+static const char* select_assembler_path(void) {
+    const char* env = getenv(kAssemblerEnvVar);
+    if (env != NULL && env[0] != '\0') {
+        return env;
+    }
+
+    for (int i = 0; i < kDefaultAssemblerPathCount; ++i) {
+        if (is_executable_path(kDefaultAssemblerPaths[i])) {
+            return kDefaultAssemblerPaths[i];
+        }
+    }
+
+    return NULL;
+}
+
+// Purpose: Build a temporary assembly output path from the final output path.
+// Inputs: output_path is the final assembler output path (e.g., a.hex).
+// Outputs: Returns a heap-allocated path string or NULL on allocation failure.
+// Invariants/Assumptions: Caller must free the returned string.
+static char* make_temp_asm_path(const char* output_path) {
+    size_t output_len = strlen(output_path);
+    size_t suffix_len = strlen(kAsmTempSuffix);
+    size_t total_len = output_len + suffix_len + 1;
+    char* temp_path = malloc(total_len);
+    if (temp_path == NULL) {
+        fprintf(stderr, "Compiler Error: failed to allocate temp asm path\n");
+        return NULL;
+    }
+    snprintf(temp_path, total_len, "%s%s", output_path, kAsmTempSuffix);
+    return temp_path;
+}
+
+// Purpose: Invoke the assembler with -crt to emit the final hex file.
+// Inputs: assembler_path is the executable path, asm_path is the input assembly,
+//         output_path is the desired output file.
+// Outputs: Returns true on success and false on failure.
+// Invariants/Assumptions: Uses fork/exec to avoid shell interpretation.
+static bool run_assembler_with_crt(const char* assembler_path,
+                                   const char* asm_path,
+                                   const char* output_path) {
+    if (assembler_path == NULL || asm_path == NULL || output_path == NULL) {
+        fprintf(stderr, "Compiler Error: assembler invocation missing required paths\n");
+        return false;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "Compiler Error: failed to launch assembler: %s\n", strerror(errno));
+        return false;
+    }
+
+    if (pid == 0) {
+        const char* const args[] = {
+            assembler_path,
+            "-crt",
+            "-o",
+            output_path,
+            asm_path,
+            NULL
+        };
+        execvp(assembler_path, (char* const*)args);
+        fprintf(stderr, "Compiler Error: exec failed for assembler %s: %s\n",
+                assembler_path, strerror(errno));
+        _exit(127);
+    }
+
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) {
+        fprintf(stderr, "Compiler Error: failed to wait for assembler: %s\n", strerror(errno));
+        return false;
+    }
+
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        fprintf(stderr, "Compiler Error: assembler failed with status %d\n",
+                WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        return false;
+    }
+
+    return true;
+}
+
+// Purpose: Remove a temporary assembly file once assembling completes.
+// Inputs: path is the temporary assembly file path.
+// Outputs: Returns true if the file was removed or did not exist.
+// Invariants/Assumptions: Uses unlink(2) and requires a POSIX-like host.
+static bool remove_temp_asm(const char* path) {
+    if (path == NULL || path[0] == '\0') return true;
+    if (unlink(path) == 0) return true;
+    if (errno == ENOENT) return true;
+    fprintf(stderr, "Compiler Error: failed to remove temp asm %s: %s\n",
+            path, strerror(errno));
+    return false;
+}
 
 // Purpose: Entry point for the C compiler frontend and debug pipelines.
 // Inputs: argv contains command-line flags and the input file path.
@@ -38,6 +179,9 @@ int main(int argc, const char *const *const argv) {
     int print_asm = 0;
     int interpret_tac = 0;
     const char *filename = NULL;
+    const char *output_path = NULL;
+    int output_path_set = 0;
+    int emit_asm_file = 0;
     const char **cli_defines = malloc(argc * sizeof(char*));
     int num_defines = 0;
 
@@ -79,6 +223,20 @@ int main(int argc, const char *const *const argv) {
             interpret_tac = 1;
             continue;
         }
+        if (strcmp(arg, "-s") == 0) {
+            emit_asm_file = 1;
+            continue;
+        }
+        if (strcmp(arg, "-o") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "option -o requires an output file path\n");
+                free(cli_defines);
+                exit(1);
+            }
+            output_path = argv[++i];
+            output_path_set = 1;
+            continue;
+        }
         if (strncmp(arg, "-D", 2) == 0) {
             const char *def = arg + 2;
             if (def[0] == '\0') {
@@ -91,7 +249,7 @@ int main(int argc, const char *const *const argv) {
         }
         if (arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-DNAME[=value]] <file name>\n", argv[0]);
+            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
             free(cli_defines);
             exit(1);
         }
@@ -100,15 +258,19 @@ int main(int argc, const char *const *const argv) {
             continue;
         }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
 
     if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
+    }
+
+    if (!output_path_set) {
+        output_path = emit_asm_file ? kDefaultAsmOutputPath : kDefaultHexOutputPath;
     }
 
     // open the file
@@ -151,13 +313,22 @@ int main(int argc, const char *const *const argv) {
 
     if (print_preprocess) {
         fputs(preprocessed.text, stdout);
-        if (!print_tokens && !print_ast) {
-            destroy_preprocess_result(&preprocessed);
-            return 0;
-        }
         if (preprocessed_len > 0 && preprocessed.text[preprocessed_len - 1] != '\n') {
             fputc('\n', stdout);
         }
+    }
+    const bool any_stage_flag =
+        print_preprocess || print_tokens || print_ast || print_idents ||
+        print_labels || print_types || print_tac || print_asm || interpret_tac;
+    const bool run_full = !any_stage_flag;
+    const bool stop_after_preprocess =
+        any_stage_flag && print_preprocess &&
+        !(print_tokens || print_ast || print_idents || print_labels ||
+          print_types || print_tac || print_asm || interpret_tac);
+
+    if (stop_after_preprocess) {
+        destroy_preprocess_result(&preprocessed);
+        return 0;
     }
 
     struct TokenArray* tokens = lex(preprocessed.text);
@@ -168,6 +339,15 @@ int main(int argc, const char *const *const argv) {
 
     if (print_tokens) {
         print_token_array(tokens);
+    }
+    const bool stop_after_tokens =
+        any_stage_flag && print_tokens &&
+        !(print_ast || print_idents || print_labels ||
+          print_types || print_tac || print_asm || interpret_tac);
+    if (stop_after_tokens) {
+        destroy_preprocess_result(&preprocessed);
+        destroy_token_array(tokens);
+        return 0;
     }
 
     arena_init(16384);
@@ -182,6 +362,16 @@ int main(int argc, const char *const *const argv) {
     if (print_ast)  {
         print_prog(prog);
     }
+    const bool stop_after_ast =
+        any_stage_flag && print_ast &&
+        !(print_idents || print_labels ||
+          print_types || print_tac || print_asm || interpret_tac);
+    if (stop_after_ast) {
+        destroy_preprocess_result(&preprocessed);
+        destroy_token_array(tokens);
+        arena_destroy();
+        return 0;
+    }
 
     // perform identifier resolution
     if (!resolve_prog(prog)) {
@@ -193,6 +383,15 @@ int main(int argc, const char *const *const argv) {
     } else  if (print_idents) {
         print_prog(prog);
     }
+    const bool stop_after_idents =
+        any_stage_flag && print_idents &&
+        !(print_labels || print_types || print_tac || print_asm || interpret_tac);
+    if (stop_after_idents) {
+        destroy_preprocess_result(&preprocessed);
+        destroy_token_array(tokens);
+        arena_destroy();
+        return 0;
+    }
 
     if (!label_loops(prog)) {
         fprintf(stderr, "Loop labeling failed\n");
@@ -202,6 +401,15 @@ int main(int argc, const char *const *const argv) {
         return 4;
     } else if (print_labels) {
         print_prog(prog);
+    }
+    const bool stop_after_labels =
+        any_stage_flag && print_labels &&
+        !(print_types || print_tac || print_asm || interpret_tac);
+    if (stop_after_labels) {
+        destroy_preprocess_result(&preprocessed);
+        destroy_token_array(tokens);
+        arena_destroy();
+        return 0;
     }
 
     if (!typecheck_program(prog)) {
@@ -214,46 +422,44 @@ int main(int argc, const char *const *const argv) {
         print_symbol_table(global_symbol_table);
         print_prog(prog);
     }
+    const bool stop_after_types =
+        any_stage_flag && print_types &&
+        !(print_tac || print_asm || interpret_tac);
+    if (stop_after_types) {
+        destroy_preprocess_result(&preprocessed);
+        destroy_token_array(tokens);
+        arena_destroy();
+        return 0;
+    }
 
     struct TACProg* tac_prog = NULL;
     struct AsmProg* asm_prog = NULL;
-    if (print_tac || print_asm || interpret_tac) {
-        tac_prog = prog_to_TAC(prog);
-        if (tac_prog != NULL && global_symbol_table != NULL) {
-            // Collect static storage entries from the symbol table for visibility.
-            struct TopLevel* statics_head = NULL;
-            struct TopLevel* statics_tail = NULL;
-            for (size_t i = 0; i < global_symbol_table->size; i++) {
-                for (struct SymbolEntry* entry = global_symbol_table->arr[i];
-                     entry != NULL;
-                     entry = entry->next) {
-                    struct TopLevel* top_level = symbol_to_TAC(entry);
-                    if (top_level != NULL) {
-                        if (statics_head == NULL) {
-                            statics_head = top_level;
-                            statics_tail = top_level;
-                        } else {
-                            statics_tail->next = top_level;
-                            statics_tail = top_level;
-                        }
-                    }
-                }
-            }
-            tac_prog->statics = statics_head;
-        }
-    }
 
-    if (print_tac) {
-        print_tac_prog(tac_prog);
-    }
-    if (print_asm) {
+    if (run_full || print_tac || print_asm || interpret_tac) {
+        tac_prog = prog_to_TAC(prog);
         if (tac_prog == NULL) {
-            fprintf(stderr, "ASM generation failed: TAC lowering failed\n");
+            fprintf(stderr, "TAC lowering failed\n");
             destroy_preprocess_result(&preprocessed);
             destroy_token_array(tokens);
             arena_destroy();
             return 6;
         }
+
+        if (print_tac) {
+            print_tac_prog(tac_prog);
+        }
+        const bool stop_after_tac =
+            any_stage_flag && print_tac &&
+            !(print_asm || interpret_tac);
+        if (stop_after_tac) {
+            destroy_preprocess_result(&preprocessed);
+            destroy_token_array(tokens);
+            arena_destroy();
+            return 0;
+        }
+    }
+
+    if (run_full || print_asm) {
         asm_prog = prog_to_asm(tac_prog);
         if (asm_prog == NULL) {
             fprintf(stderr, "ASM generation failed: asm_gen returned NULL\n");
@@ -262,16 +468,77 @@ int main(int argc, const char *const *const argv) {
             arena_destroy();
             return 6;
         }
-        print_asm_prog(asm_prog);
+
+        if (print_asm) {
+            print_asm_prog(asm_prog);
+        }
+        const bool stop_after_asm =
+            any_stage_flag && print_asm && !interpret_tac;
+        if (stop_after_asm) {
+            destroy_preprocess_result(&preprocessed);
+            destroy_token_array(tokens);
+            arena_destroy();
+            return 0;
+        }
     }
-    if (interpret_tac) {
-        if (tac_prog == NULL) {
-            fprintf(stderr, "TAC lowering failed\n");
+
+    if (run_full) {
+        struct MachineProg* machine_prog = prog_to_machine(asm_prog);
+        if (machine_prog == NULL) {
+            fprintf(stderr, "ASM generation failed: codegen returned NULL\n");
             destroy_preprocess_result(&preprocessed);
             destroy_token_array(tokens);
             arena_destroy();
             return 6;
         }
+
+        const char* asm_output_path = output_path;
+        char* asm_output_path_alloc = NULL;
+        if (!emit_asm_file) {
+            asm_output_path_alloc = make_temp_asm_path(output_path);
+            if (asm_output_path_alloc == NULL) {
+                destroy_preprocess_result(&preprocessed);
+                destroy_token_array(tokens);
+                arena_destroy();
+                return 6;
+            }
+            asm_output_path = asm_output_path_alloc;
+        }
+
+        if (!write_machine_prog_to_file(machine_prog, asm_output_path)) {
+            fprintf(stderr, "ASM generation failed: unable to write %s\n", asm_output_path);
+            free(asm_output_path_alloc);
+            destroy_preprocess_result(&preprocessed);
+            destroy_token_array(tokens);
+            arena_destroy();
+            return 6;
+        }
+
+        if (!emit_asm_file) {
+            const char* assembler_path = select_assembler_path();
+            if (assembler_path == NULL) {
+                fprintf(stderr, "Compiler Error: unable to find assembler. Set %s or build Dioptase-Assembler.\n",
+                        kAssemblerEnvVar);
+                remove_temp_asm(asm_output_path);
+                free(asm_output_path_alloc);
+                destroy_preprocess_result(&preprocessed);
+                destroy_token_array(tokens);
+                arena_destroy();
+                return 6;
+            }
+            if (!run_assembler_with_crt(assembler_path, asm_output_path, output_path)) {
+                remove_temp_asm(asm_output_path);
+                free(asm_output_path_alloc);
+                destroy_preprocess_result(&preprocessed);
+                destroy_token_array(tokens);
+                arena_destroy();
+                return 6;
+            }
+            remove_temp_asm(asm_output_path);
+        }
+        free(asm_output_path_alloc);
+    }
+    if (interpret_tac) {
         int interp_result = tac_interpret_prog(tac_prog);
         const char* result_to_stderr = getenv(kTacInterpResultStderrEnv);
         if (result_to_stderr != NULL && result_to_stderr[0] != '\0') {

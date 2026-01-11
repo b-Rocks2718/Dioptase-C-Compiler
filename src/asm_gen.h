@@ -24,6 +24,7 @@ struct AsmProg {
 enum AsmTopLevelType {
     ASM_FUNC,
     ASM_STATIC_VAR,
+    ASM_SECTION,
 };
 
 struct AsmTopLevel {
@@ -52,7 +53,7 @@ enum AsmInstrType {
     ASM_COND_JUMP,
     ASM_LABEL,
     ASM_RET,
-    ASM_GET_ADDRESS
+    ASM_GET_ADDRESS,
 };
 
 struct AsmInstr {
@@ -142,7 +143,7 @@ struct AsmProg* prog_to_asm(struct TACProg* tac_prog);
 
 struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top);
 
-struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr);
+struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_instr);
 
 struct AsmInstr* params_to_asm(struct Slice** params, size_t num_params);
 
@@ -158,27 +159,9 @@ struct Operand* get_dst(struct AsmInstr* asm_instr);
 
 size_t create_maps(struct AsmInstr* asm_instr);
 
-// Purpose: Detect whether a pseudo operand maps to a static storage symbol.
-// Inputs: opr is the operand to classify.
-// Outputs: Returns true if the operand names a static symbol.
-// Invariants/Assumptions: global_symbol_table is initialized before use.
-static bool is_static_symbol_operand(const struct Operand* opr);
-
-// Purpose: Reserve space for a new stack slot in the current frame.
-// Inputs: stack_bytes tracks the total allocated stack bytes.
-// Outputs: Returns the negative offset from BP for the new slot.
-// Invariants/Assumptions: stack_bytes is non-NULL.
-static int allocate_stack_slot(size_t* stack_bytes);
-
-// Purpose: Replace a pseudo operand field with its mapped location if present.
-// Inputs: field points to an operand field that may hold a pseudo.
-// Outputs: Updates *field in place when a mapping exists.
-// Invariants/Assumptions: pseudo_map is initialized before use.
-static void replace_operand_if_pseudo(struct Operand** field);
-
 void replace_pseudo(struct AsmInstr* asm_instr);
 
-size_t type_alignment(struct Type* type);
+size_t type_alignment(struct Type* type, const struct Slice* symbol_name);
 
 struct PseudoMap* create_pseudo_map(size_t numBuckets);
 

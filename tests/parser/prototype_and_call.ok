@@ -17,5 +17,3 @@ Program(
             Return(FunCallExpr(add, [LitExpr(int, 1):untyped, LitExpr(int, 2):untyped, ]):untyped);
     );
 )
-Type error at tests/parser/prototype_and_call.c:5:9: cannot convert type for assignment
-Type error at tests/parser/prototype_and_call.c:5:7: incompatible types in assignment

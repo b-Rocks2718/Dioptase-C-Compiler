@@ -1,4 +1,3 @@
 [
     return, x, ;
 ]
-Parse error at tests/lexer/keyword_then_ident.c:1:1: unexpected token

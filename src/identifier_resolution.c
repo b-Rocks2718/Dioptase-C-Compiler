@@ -443,11 +443,7 @@ bool resolve_file_scope_func(struct FunctionDclr* func_dclr) {
       return false;
     }
 
-    if (!entry->has_linkage) {
-      // multiple declarations
-      ident_error_at(func_dclr->name->start, "multiple declarations for function");
-      return false;
-    }
+    // Internal linkage functions can be declared multiple times; reuse the entry.
 
     if (func_dclr->body == NULL) {
       // just a declaration

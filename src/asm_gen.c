@@ -4,23 +4,133 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
-#include <assert.h>
+#include <stdarg.h>
 
 struct PseudoMap* pseudo_map = NULL;
 
+static struct Slice text_directive_slice = {"text", 4};
+static struct Slice data_directive_slice = {"data", 4};
+
 static const size_t STACK_SLOT_SIZE = 4; // 4 bytes per stack slot
+
+// Purpose: Print a slice to stderr for error reporting.
+// Inputs: slice may be NULL; otherwise points to a valid slice.
+// Outputs: Writes a best-effort identifier representation to stderr.
+// Invariants/Assumptions: slice->start may be non-null-terminated.
+static void asm_gen_fprint_slice(const struct Slice* slice) {
+    if (slice == NULL || slice->start == NULL) {
+        fputs("<null>", stderr);
+        return;
+    }
+    fprintf(stderr, "%.*s", (int)slice->len, slice->start);
+}
+
+// Purpose: Emit a formatted asm_gen error with optional context and exit.
+// Inputs: operation labels the failing step; func_name may be NULL.
+// Outputs: Writes an actionable error message to stderr and exits.
+// Invariants/Assumptions: fmt is a printf-style format string.
+static void asm_gen_error(const char* operation,
+                          const struct Slice* func_name,
+                          const char* fmt,
+                          ...) {
+    fprintf(stderr, "ASM generation error");
+    if (operation != NULL) {
+        fprintf(stderr, " (%s)", operation);
+    }
+    if (func_name != NULL) {
+        fprintf(stderr, " in ");
+        asm_gen_fprint_slice(func_name);
+    }
+    fprintf(stderr, ": ");
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(stderr, fmt, args);
+    va_end(args);
+    fputc('\n', stderr);
+    exit(1);
+}
+
+// Purpose: Name a TAC instruction type for diagnostics.
+// Inputs: type is the TAC instruction enum value.
+// Outputs: Returns a string literal describing the TAC opcode.
+// Invariants/Assumptions: Unknown values map to "TAC<unknown>".
+static const char* tac_instr_name(enum TACInstrType type) {
+    switch (type) {
+        case TACRETURN:
+            return "TACRETURN";
+        case TACUNARY:
+            return "TACUNARY";
+        case TACBINARY:
+            return "TACBINARY";
+        case TACCOND_JUMP:
+            return "TACCOND_JUMP";
+        case TACCMP:
+            return "TACCMP";
+        case TACJUMP:
+            return "TACJUMP";
+        case TACLABEL:
+            return "TACLABEL";
+        case TACCOPY:
+            return "TACCOPY";
+        case TACCALL:
+            return "TACCALL";
+        case TACGET_ADDRESS:
+            return "TACGET_ADDRESS";
+        case TACLOAD:
+            return "TACLOAD";
+        case TACSTORE:
+            return "TACSTORE";
+        case TACCOPY_TO_OFFSET:
+            return "TACCOPY_TO_OFFSET";
+        default:
+            return "TAC<unknown>";
+    }
+}
+
+// Purpose: Detect whether a pseudo operand maps to a static storage symbol.
+// Inputs: opr is the operand to classify.
+// Outputs: Returns true if the operand names a static symbol.
+// Invariants/Assumptions: global_symbol_table is initialized before use.
+static bool is_static_symbol_operand(const struct Operand* opr);
+
+// Purpose: Reserve space for a new stack slot in the current frame.
+// Inputs: stack_bytes tracks the total allocated stack bytes.
+// Outputs: Returns the negative offset from BP for the new slot.
+// Invariants/Assumptions: stack_bytes is non-NULL.
+static int allocate_stack_slot(size_t* stack_bytes);
+
+// Purpose: Replace a pseudo operand field with its mapped location if present.
+// Inputs: field points to an operand field that may hold a pseudo.
+// Outputs: Updates *field in place when a mapping exists.
+// Invariants/Assumptions: pseudo_map is initialized before use.
+static void replace_operand_if_pseudo(struct Operand** field);
 
 // Purpose: Lower a TAC program into the ASM IR representation.
 // Inputs: tac_prog is the TAC program to lower (must be non-NULL).
 // Outputs: Returns a newly allocated ASM program rooted in arena storage.
 // Invariants/Assumptions: TAC top-level lists are well-formed and acyclic.
 struct AsmProg* prog_to_asm(struct TACProg* tac_prog) {
-    struct AsmProg* asm_prog = arena_alloc(sizeof(struct AsmProg));
-    asm_prog->head = NULL;
-    asm_prog->tail = NULL;
+    if (tac_prog == NULL) {
+        asm_gen_error("program", NULL, "input TAC program is NULL");
+    }
 
-    for (struct TopLevel* tac_top = tac_prog->head; tac_top != NULL; tac_top = tac_top->next) {
+    struct AsmProg* asm_prog = arena_alloc(sizeof(struct AsmProg));
+
+    // emit .data
+    struct AsmTopLevel* data_directive = arena_alloc(sizeof(struct AsmTopLevel));
+    data_directive->type = ASM_SECTION;
+    data_directive->name = &data_directive_slice;
+
+    data_directive->next = NULL;
+
+    asm_prog->head = data_directive;
+    asm_prog->tail = data_directive;
+
+    for (struct TopLevel* tac_top = tac_prog->statics; tac_top != NULL; tac_top = tac_top->next) {
         struct AsmTopLevel* asm_top = top_level_to_asm(tac_top);
+        if (asm_top == NULL) {
+            asm_gen_error("top-level", NULL, "failed to lower TAC static");
+        }
         if (asm_prog->head == NULL) {
             asm_prog->head = asm_top;
             asm_prog->tail = asm_top;
@@ -30,8 +140,22 @@ struct AsmProg* prog_to_asm(struct TACProg* tac_prog) {
         }
     }
 
-    for (struct TopLevel* tac_top = tac_prog->statics; tac_top != NULL; tac_top = tac_top->next) {
+    // emit .text
+    struct AsmTopLevel* text_directive = arena_alloc(sizeof(struct AsmTopLevel));
+    text_directive->type = ASM_SECTION;
+    text_directive->name = &text_directive_slice;
+
+    text_directive->next = NULL;
+
+    asm_prog->tail->next = text_directive;
+    asm_prog->tail = text_directive;
+
+    for (struct TopLevel* tac_top = tac_prog->head; tac_top != NULL; tac_top = tac_top->next) {
+        
         struct AsmTopLevel* asm_top = top_level_to_asm(tac_top);
+        if (asm_top == NULL) {
+            asm_gen_error("top-level", NULL, "failed to lower TAC top-level");
+        }
         if (asm_prog->head == NULL) {
             asm_prog->head = asm_top;
             asm_prog->tail = asm_top;
@@ -50,6 +174,10 @@ struct AsmProg* prog_to_asm(struct TACProg* tac_prog) {
 }
 
 struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
+    if (tac_top == NULL) {
+        asm_gen_error("top-level", NULL, "NULL TAC top-level encountered");
+    }
+
     struct AsmTopLevel* asm_top = arena_alloc(sizeof(struct AsmTopLevel));
     asm_top->next = NULL;
     
@@ -62,6 +190,8 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
         struct AsmInstr* asm_body = params_to_asm(tac_top->params, tac_top->num_params);
 
         // prepend stack allocation instruction
+        // ASM:
+        // Binary Sub SP, SP, <stack_bytes>
         struct AsmInstr* alloc_instr = arena_alloc(sizeof(struct AsmInstr));
         alloc_instr->type = ASM_BINARY;
         alloc_instr->alu_op = ALU_SUB;
@@ -80,7 +210,7 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
 
         // convert body instructions
         for (struct TACInstr* tac_instr = tac_top->body; tac_instr != NULL; tac_instr = tac_instr->next) {
-            struct AsmInstr* asm_instr = instr_to_asm(tac_instr);
+            struct AsmInstr* asm_instr = instr_to_asm(tac_top->name, tac_instr);
             if (asm_body == NULL) {
                 asm_body = asm_instr;
             } else {
@@ -112,14 +242,14 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
         asm_top->name = tac_top->name;
         asm_top->global = tac_top->global;
 
-        asm_top->alignment = type_alignment(tac_top->var_type);
+        asm_top->alignment = type_alignment(tac_top->var_type, tac_top->name);
         asm_top->init_values = tac_top->init_values;
         asm_top->num_inits = tac_top->num_inits;  
 
         return asm_top;
     } else {
-        // unknown top-level type
-        printf("ASM Generation Error: unknown top-level type %d\n", (int)tac_top->type);
+        asm_gen_error("top-level", tac_top->name,
+                      "unsupported top-level type %d", (int)tac_top->type);
         return NULL;
     }
 }
@@ -128,6 +258,11 @@ struct AsmInstr* params_to_asm(struct Slice** params, size_t num_params) {
     struct AsmInstr* head = NULL;
     struct AsmInstr* tail = NULL;
 
+    // TAC:
+    // Params p0..pN
+    // ASM:
+    // Mov Pseudo(p0), Reg(R1) ... Mov Pseudo(p7), Reg(R8)
+    // Mov Pseudo(p8+), Mem(BP, offset)
     for (size_t i = 0; i < num_params; i++) {
         struct AsmInstr* copy_instr = arena_alloc(sizeof(struct AsmInstr));
         copy_instr->next = NULL;
@@ -151,6 +286,8 @@ struct AsmInstr* params_to_asm(struct Slice** params, size_t num_params) {
           copy_instr->src1 = arena_alloc(sizeof(struct Operand));
           copy_instr->src1->type = OPERAND_MEMORY;
           copy_instr->src1->reg = BP;
+          // the - 6 is we do -8 for the 8 stack operands, but + 2
+          // because bp and ra are on the stack before any params
           copy_instr->src1->lit_value = (int)(4 * (i - 6)); // offset from BP
           copy_instr->src2 = NULL;
         }
@@ -167,11 +304,21 @@ struct AsmInstr* params_to_asm(struct Slice** params, size_t num_params) {
     return head;
 }
 
-struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
+struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_instr) {
+    if (tac_instr == NULL) {
+        asm_gen_error("instruction", func_name, "NULL TAC instruction encountered");
+    }
+
     struct AsmInstr* asm_instr = arena_alloc(sizeof(struct AsmInstr));
 
     switch (tac_instr->type) {
         case TACRETURN:{
+            // TAC:
+            // Return val
+            //
+            // ASM:
+            // Mov R1, val
+            // Ret
             struct TACReturn* ret_instr = &tac_instr->instr.tac_return;
             asm_instr->type = ASM_MOV;
             asm_instr->dst = arena_alloc(sizeof(struct Operand));
@@ -189,6 +336,11 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             return asm_instr;
         }
         case TACCOPY:{
+            // TAC:
+            // Copy dst, src
+            //
+            // ASM:
+            // Mov dst, src
             struct TACCopy* copy_instr = &tac_instr->instr.tac_copy;
             asm_instr->type = ASM_MOV;
             asm_instr->dst = tac_val_to_asm(copy_instr->dst);
@@ -198,6 +350,11 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             return asm_instr;
         }
         case TACUNARY:{
+            // TAC:
+            // Unary op dst, src
+            //
+            // ASM:
+            // Unary op dst, src
             struct TACUnary* unary_instr = &tac_instr->instr.tac_unary;
             asm_instr->type = ASM_UNARY;
             asm_instr->unary_op = unary_instr->op;
@@ -208,6 +365,11 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             return asm_instr;
         }
         case TACBINARY:{
+            // TAC:
+            // Binary op dst, src1, src2
+            //
+            // ASM:
+            // Binary op dst, src1, src2
             struct TACBinary* binary_instr = &tac_instr->instr.tac_binary;
             asm_instr->type = ASM_BINARY;
             asm_instr->alu_op = binary_instr->alu_op;
@@ -218,6 +380,11 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             return asm_instr;
         }
         case TACCOND_JUMP:{
+            // TAC:
+            // CondJump cond, label
+            //
+            // ASM:
+            // CondJump cond, label
             struct TACCondJump* cond_jump_instr = &tac_instr->instr.tac_cond_jump;
             asm_instr->type = ASM_COND_JUMP;
             asm_instr->cond = cond_jump_instr->condition;
@@ -229,6 +396,11 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             return asm_instr;
         }
         case TACCMP:{
+            // TAC:
+            // Cmp src1, src2
+            //
+            // ASM:
+            // Cmp src1, src2
             struct TACCmp* cmp_instr = &tac_instr->instr.tac_cmp;
             asm_instr->type = ASM_CMP;
             asm_instr->dst = NULL;
@@ -238,6 +410,11 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             return asm_instr;
         }
         case TACJUMP:{
+            // TAC:
+            // Jump label
+            //
+            // ASM:
+            // Jump label
             struct TACJump* jump_instr = &tac_instr->instr.tac_jump;
             asm_instr->type = ASM_JUMP;
             asm_instr->label = jump_instr->label;
@@ -248,6 +425,11 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             return asm_instr;
         }
         case TACLABEL:{
+            // TAC:
+            // Label label
+            //
+            // ASM:
+            // Label label
             struct TACLabel* label_instr = &tac_instr->instr.tac_label;
             asm_instr->type = ASM_LABEL;
             asm_instr->label = label_instr->label;
@@ -258,6 +440,15 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             return asm_instr;
         }
         case TACCALL:{
+            // TAC:
+            // Call func -> dst (args...)
+            //
+            // ASM:
+            // Push stack args (reverse order)
+            // Mov reg args into R1..R8
+            // Call func
+            // Binary Add SP, SP, stack_bytes
+            // Mov dst, R1
             struct TACCall* call_instr = &tac_instr->instr.tac_call;
             struct AsmInstr* call_head = NULL;
             struct AsmInstr** call_tail = &call_head;
@@ -339,6 +530,11 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             return call_head;
         }
         case TACGET_ADDRESS:{
+            // TAC:
+            // GetAddress dst, &src
+            //
+            // ASM:
+            // GetAddress dst, &src
             struct TACGetAddress* get_addr_instr = &tac_instr->instr.tac_get_address;
             asm_instr->type = ASM_GET_ADDRESS;
             asm_instr->dst = tac_val_to_asm(get_addr_instr->dst);
@@ -348,11 +544,18 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             return asm_instr;
         }
         case TACLOAD:{
+            // TAC:
+            // Load dst, [ptr]
+            //
+            // ASM:
+            // Mov R3, ptr
+            // Mov R4, [R3 + 0]
+            // Mov dst, R4
             struct TACLoad* load_instr = &tac_instr->instr.tac_load;
             asm_instr->type = ASM_MOV;
             asm_instr->dst = arena_alloc(sizeof(struct Operand));
             asm_instr->dst->type = OPERAND_REG;
-            asm_instr->dst->reg = R3;
+            asm_instr->dst->reg = R1;
             asm_instr->src1 = tac_val_to_asm(load_instr->src_ptr);
             asm_instr->src2 = NULL;
 
@@ -360,10 +563,10 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             mov_mem_instr->type = ASM_MOV;
             mov_mem_instr->dst = arena_alloc(sizeof(struct Operand));
             mov_mem_instr->dst->type = OPERAND_REG;
-            mov_mem_instr->dst->reg = R4;
+            mov_mem_instr->dst->reg = R2;
             mov_mem_instr->src1 = arena_alloc(sizeof(struct Operand));
             mov_mem_instr->src1->type = OPERAND_MEMORY;
-            mov_mem_instr->src1->reg = R3;
+            mov_mem_instr->src1->reg = R1;
             mov_mem_instr->src1->lit_value = 0;
             mov_mem_instr->src2 = NULL;
             mov_mem_instr->next = NULL;
@@ -374,7 +577,7 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             final_mov_instr->dst = tac_val_to_asm(load_instr->dst);
             final_mov_instr->src1 = arena_alloc(sizeof(struct Operand));
             final_mov_instr->src1->type = OPERAND_REG;
-            final_mov_instr->src1->reg = R4;
+            final_mov_instr->src1->reg = R2;
             final_mov_instr->src2 = NULL;
             final_mov_instr->next = NULL;
             mov_mem_instr->next = final_mov_instr;
@@ -382,11 +585,18 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             return asm_instr;
         }
         case TACSTORE:{
+            // TAC:
+            // Store [ptr], src
+            //
+            // ASM:
+            // Mov R3, ptr
+            // Mov R4, src
+            // Mov [R3 + 0], R4
             struct TACStore* store_instr = &tac_instr->instr.tac_store;
             asm_instr->type = ASM_MOV;
             asm_instr->dst = arena_alloc(sizeof(struct Operand));
             asm_instr->dst->type = OPERAND_REG;
-            asm_instr->dst->reg = R3;
+            asm_instr->dst->reg = R1;
             asm_instr->src1 = tac_val_to_asm(store_instr->dst_ptr);
             asm_instr->src2 = NULL;
             
@@ -394,7 +604,7 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             mov_src_instr->type = ASM_MOV;
             mov_src_instr->dst = arena_alloc(sizeof(struct Operand));
             mov_src_instr->dst->type = OPERAND_REG;
-            mov_src_instr->dst->reg = R4;
+            mov_src_instr->dst->reg = R2;
             mov_src_instr->src1 = tac_val_to_asm(store_instr->src);
             mov_src_instr->src2 = NULL;
 
@@ -402,11 +612,11 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             store_mem_instr->type = ASM_MOV;
             store_mem_instr->dst = arena_alloc(sizeof(struct Operand));
             store_mem_instr->dst->type = OPERAND_MEMORY;
-            store_mem_instr->dst->reg = R3;
+            store_mem_instr->dst->reg = R1;
             store_mem_instr->dst->lit_value = 0;
             store_mem_instr->src1 = arena_alloc(sizeof(struct Operand));
             store_mem_instr->src1->type = OPERAND_REG;
-            store_mem_instr->src1->reg = R4;
+            store_mem_instr->src1->reg = R2;
             store_mem_instr->src2 = NULL;
 
             store_mem_instr->next = NULL;
@@ -416,11 +626,16 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
             return asm_instr;
         }
         case TACCOPY_TO_OFFSET:{
-          // not supported yet, will be used by arrays
+          asm_gen_error("instruction", func_name,
+                        "TAC instruction %s is unsupported in asm_gen",
+                        tac_instr_name(tac_instr->type));
           return NULL;
         }
         default:
-          // unknown instruction type
+          asm_gen_error("instruction", func_name,
+                        "unknown TAC instruction type %d (%s)",
+                        (int)tac_instr->type,
+                        tac_instr_name(tac_instr->type));
           return NULL;
     }
 
@@ -428,6 +643,10 @@ struct AsmInstr* instr_to_asm(struct TACInstr* tac_instr) {
 }
 
 size_t create_maps(struct AsmInstr* asm_instr) {
+    if (pseudo_map != NULL) {
+        asm_gen_error("stack-map", NULL, "pseudo map already initialized");
+    }
+
     pseudo_map = create_pseudo_map(128);
     size_t stack_bytes = 0;
 
@@ -578,6 +797,10 @@ static void replace_operand_if_pseudo(struct Operand** field) {
         return;
     }
 
+    if (pseudo_map == NULL) {
+        asm_gen_error("stack-map", NULL, "pseudo map not initialized before replacement");
+    }
+
     struct Operand* mapped = pseudo_map_get(pseudo_map, *field);
     if (mapped != NULL) {
         *field = mapped;
@@ -591,12 +814,15 @@ static void replace_operand_if_pseudo(struct Operand** field) {
             name = (*field)->pseudo->start;
             len = (*field)->pseudo->len;
         }
-        printf("ASM Generation Error: missing stack map for pseudo %.*s\n", (int)len, name);
-        exit(1);
+        asm_gen_error("stack-map", NULL, "missing mapping for pseudo %.*s", (int)len, name);
     }
 }
 
 struct Operand* tac_val_to_asm(struct Val* val) {
+    if (val == NULL) {
+        asm_gen_error("operand", NULL, "NULL TAC value encountered");
+    }
+
     struct Operand* opr = arena_alloc(sizeof(struct Operand));
 
     switch (val->val_type) {
@@ -611,13 +837,16 @@ struct Operand* tac_val_to_asm(struct Val* val) {
             return opr;
         }
         default:
-            // unknown val type
-            printf("TAC to ASM Error: unknown Val type %d\n", (int)val->val_type);
+            asm_gen_error("operand", NULL, "unknown TAC value type %d", (int)val->val_type);
             return NULL;
     }
 }
 
 struct Operand* make_pseudo_mem(struct Val* val, int offset) {
+    if (val == NULL) {
+        asm_gen_error("operand", NULL, "NULL TAC value for pseudo-mem operand");
+    }
+
     if (val->val_type == VARIABLE) {
         struct Operand* opr = arena_alloc(sizeof(struct Operand));
         opr->type = OPERAND_PSEUDO_MEM;
@@ -625,15 +854,19 @@ struct Operand* make_pseudo_mem(struct Val* val, int offset) {
         opr->lit_value = offset;
         return opr;
     } else {
-        // error: attempted to make PseudoMem for non-var
-        printf("Make PseudoMem Error: attempted to make PseudoMem for non-var\n");
+        asm_gen_error("operand", NULL,
+                      "pseudo-mem operand requires variable TAC value (got %d)",
+                      (int)val->val_type);
         return NULL;
     }
 }
 
-size_t type_alignment(struct Type* type) {
+size_t type_alignment(struct Type* type, const struct Slice* symbol_name) {
     // will eventually have different alignments for different types
     // short => 2, char => 1
+    if (type == NULL) {
+        asm_gen_error("type-alignment", symbol_name, "NULL type for static symbol");
+    }
     switch (type->type) {
         case INT_TYPE:
         case UINT_TYPE:
@@ -642,7 +875,8 @@ size_t type_alignment(struct Type* type) {
         case POINTER_TYPE:
             return 4;
         default:
-            printf("Type Alignment Error: unknown type kind %d\n", (int)type->type);
+            asm_gen_error("type-alignment", symbol_name,
+                          "unknown type kind %d", (int)type->type);
             return 0;
     }
 }
@@ -651,6 +885,12 @@ size_t type_alignment(struct Type* type) {
 struct PseudoMap* create_pseudo_map(size_t num_buckets){
   struct PseudoEntry** arr = malloc(num_buckets * sizeof(struct PseudoEntry*));
   struct PseudoMap* hmap = malloc(sizeof(struct PseudoMap));
+
+  if (arr == NULL || hmap == NULL) {
+    free(arr);
+    free(hmap);
+    asm_gen_error("stack-map", NULL, "allocation failed for pseudo map");
+  }
 
   for (int i = 0; i < num_buckets; ++i){
     arr[i] = NULL;
@@ -685,6 +925,9 @@ void pseudo_entry_insert(struct PseudoEntry* entry, struct Operand* key, struct 
 
 
 void pseudo_map_insert(struct PseudoMap* hmap, struct Operand* key, struct Operand* value){
+  if (hmap == NULL || key == NULL || key->pseudo == NULL) {
+    asm_gen_error("stack-map", NULL, "invalid pseudo map insert request");
+  }
   size_t label = hash_slice(key->pseudo) % hmap->size;
   
   if ((hmap->arr[label]) == NULL){
@@ -705,9 +948,15 @@ struct Operand* pseudo_entry_get(struct PseudoEntry* entry, struct Operand* key)
 }
 
 struct Operand* pseudo_map_get(struct PseudoMap* hmap, struct Operand* key){
+  if (hmap == NULL || key == NULL) {
+    asm_gen_error("stack-map", NULL, "invalid pseudo map lookup request");
+  }
   if (key->type != OPERAND_PSEUDO && key->type != OPERAND_PSEUDO_MEM) {
     // not a pseudo operand, do not replace
     return NULL;
+  }
+  if (key->pseudo == NULL) {
+    asm_gen_error("stack-map", NULL, "pseudo operand missing identifier");
   }
   
   size_t label = hash_slice(key->pseudo) % hmap->size;
@@ -731,6 +980,9 @@ bool pseudo_entry_contains(struct PseudoEntry* entry, struct Operand* key){
 }
 
 bool pseudo_map_contains(struct PseudoMap* hmap, struct Operand* key){
+  if (hmap == NULL || key == NULL || key->pseudo == NULL) {
+    asm_gen_error("stack-map", NULL, "invalid pseudo map contains request");
+  }
   size_t label = hash_slice(key->pseudo) % hmap->size;
 
   if (hmap->arr[label] == NULL){

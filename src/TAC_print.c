@@ -115,14 +115,17 @@ static void print_tac_bin_op(enum ALUOp op) {
     case ALU_XOR:
       printf("XorOp");
       break;
+    case ALU_LSL:
+      printf("LslOp");
+      break;
+    case ALU_LSR:
+      printf("LsrOp");
+      break;
+    case ALU_ASL:
+      printf("AslOp");
+      break;
     case ALU_ASR:
       printf("AsrOp");
-      break;
-    case ALU_SHL:
-      printf("ShlOp");
-      break;
-    case ALU_SHR:
-      printf("ShrOp");
       break;
     default:
       printf("ALUOp?");
@@ -389,10 +392,10 @@ void print_tac_prog(struct TACProg* prog) {
   }
 
   printf("TACProg\n");
-  for (struct TopLevel* cur = prog->head; cur != NULL; cur = cur->next) {
+  for (struct TopLevel* cur = prog->statics; cur != NULL; cur = cur->next) {
     print_tac_top_level(cur, 1);
   }
-  for (struct TopLevel* cur = prog->statics; cur != NULL; cur = cur->next) {
+  for (struct TopLevel* cur = prog->head; cur != NULL; cur = cur->next) {
     print_tac_top_level(cur, 1);
   }
 }

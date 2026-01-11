@@ -1,4 +1,3 @@
 [
     if, (, a, ||, b, ), return, ;
 ]
-Parse error at tests/lexer/logical_or.c:1:1: unexpected token

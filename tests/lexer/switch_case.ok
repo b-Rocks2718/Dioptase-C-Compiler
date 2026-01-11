@@ -2,4 +2,3 @@
     switch, (, x, ), {, case, 1, :, break, ;, 
     default, :, break, ;, }
 ]
-Parse error at tests/lexer/switch_case.c:1:1: unexpected token

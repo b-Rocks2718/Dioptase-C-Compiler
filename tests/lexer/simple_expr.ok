@@ -1,4 +1,3 @@
 [
     int, x, =, 3, +, 4, ;
 ]
-Type error at tests/lexer/simple_expr.c:1:11: non-constant initializer for global variable x

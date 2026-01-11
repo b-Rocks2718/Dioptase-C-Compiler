@@ -2,4 +2,3 @@
     if, (, a, >=, b, &&, a, !=, 0, ), 
     return, ;
 ]
-Parse error at tests/lexer/comparisons.c:1:1: unexpected token

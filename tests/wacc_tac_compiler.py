@@ -272,8 +272,12 @@ def main(argv: List[str]) -> int:
         remove_path(preprocessed)
         return preprocess_result.returncode
 
-    result = subprocess.run([str(compiler), *pass_through, str(preprocessed)])
+    # Stop after TAC lowering to avoid invoking the assembler during wrapper compilation.
+    compile_args = [str(compiler), *pass_through, "-tac", str(preprocessed)]
+    result = subprocess.run(compile_args, capture_output=True, text=True)
     if result.returncode != 0:
+        sys.stdout.write(result.stdout)
+        sys.stderr.write(result.stderr)
         remove_path(output)
         remove_path(output.with_suffix(".s"))
         remove_path(preprocessed)

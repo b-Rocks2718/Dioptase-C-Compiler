@@ -261,8 +261,13 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
       return false;
     }
 
-    // By this point, types and linkage match; update only if init state improves.
-    // Ordering is NO_INIT < TENTATIVE < INITIAL.
+    // By this point, types and linkage match; update storage for real definitions
+    // (extern declarations shouldn't keep the EXTERN storage tag once a definition appears).
+    if (var_dclr->storage != EXTERN) {
+      entry->attrs->storage = var_dclr->storage;
+    }
+
+    // Update init state if it improves. Ordering is NO_INIT < TENTATIVE < INITIAL.
 
     if (init_type > entry->attrs->init.init_type) {
       // upgrade init type
@@ -365,6 +370,11 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
     // update definition status
     if (func_dclr->body != NULL) {
       entry->attrs->is_defined = true;
+    }
+
+    // Definitions replace prior extern storage; keep existing linkage otherwise.
+    if (func_dclr->body != NULL && func_dclr->storage != EXTERN) {
+      entry->attrs->storage = func_dclr->storage;
     }
   }
 

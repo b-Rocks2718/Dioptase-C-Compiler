@@ -10,6 +10,7 @@
 #include "typechecking.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -42,18 +43,18 @@ struct TacExecTest {
 };
 
 static const struct TacExecTest kTacExecTests[] = {
-    {"arithmetic", "tests/tac_exec/arithmetic.c"},
-    {"logical", "tests/tac_exec/logical.c"},
-    {"loops", "tests/tac_exec/loops.c"},
-    {"switch", "tests/tac_exec/switch.c"},
-    {"goto", "tests/tac_exec/goto.c"},
-    {"functions", "tests/tac_exec/functions.c"},
-    {"pointers", "tests/tac_exec/pointers.c"},
-    {"pointer_store", "tests/tac_exec/pointer_store.c"},
-    {"global_pointer_basic", "tests/tac_exec/global_pointer_basic.c"},
-    {"global_pointer_cross", "tests/tac_exec/global_pointer_cross.c"},
-    {"globals", "tests/tac_exec/globals.c"},
-    {"conditional", "tests/tac_exec/conditional.c"},
+    {"arithmetic", "tests/exec/arithmetic.c"},
+    {"logical", "tests/exec/logical.c"},
+    {"loops", "tests/exec/loops.c"},
+    {"switch", "tests/exec/switch.c"},
+    {"goto", "tests/exec/goto.c"},
+    {"functions", "tests/exec/functions.c"},
+    {"pointers", "tests/exec/pointers.c"},
+    {"pointer_store", "tests/exec/pointer_store.c"},
+    {"global_pointer_basic", "tests/exec/global_pointer_basic.c"},
+    {"global_pointer_cross", "tests/exec/global_pointer_cross.c"},
+    {"globals", "tests/exec/globals.c"},
+    {"conditional", "tests/exec/conditional.c"},
 };
 
 // Purpose: Print a formatted failure message for a test stage.
@@ -332,13 +333,14 @@ int main(void) {
 
   size_t total = sizeof(kTacExecTests) / sizeof(kTacExecTests[0]);
   size_t passed = 0;
-
+  printf("TAC execution results:\n");
   for (size_t i = 0; i < total; i++) {
     printf("- tac_exec_%s\n", kTacExecTests[i].name);
     if (tac_exec_run_test(&kTacExecTests[i])) {
       passed++;
     }
   }
+  printf("TAC execution results: %zu / %zu passed.\n", passed, total);
 
   if (passed == total) {
     printf("TAC execution tests passed.\n");

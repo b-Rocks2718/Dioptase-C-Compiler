@@ -557,7 +557,7 @@ static uint64_t tac_apply_binary(enum ALUOp op,
     case ALU_XOR:
       result = left_norm ^ right_norm;
       break;
-    case ALU_SHR: {
+    case ALU_LSR: {
       uint64_t shift = right_norm;
       if (shift >= bits) {
         result = 0;
@@ -566,7 +566,8 @@ static uint64_t tac_apply_binary(enum ALUOp op,
       }
       break;
     }
-    case ALU_SHL: {
+    case ALU_LSL:
+    case ALU_ASL: {
       uint64_t shift = right_norm;
       if (shift >= bits) {
         result = 0;

@@ -1,72 +1,142 @@
 #ifndef CODEGEN_H
 #define CODEGEN_H
 
-/*
-import AsmGen(getSrcs, getDst)
-import TypedAST (StaticInit(getStaticInit, ZeroInit))
+#include "asm_gen.h"
 
-data MachineInstr = Add  Reg Reg Reg
-                  | Addc Reg Reg Reg -- add w/ carry
-                  | Sub  Reg Reg Reg
-                  | Subc Reg Reg Reg -- subtract with carry
-                  | And  Reg Reg Reg
-                  | Or   Reg Reg Reg
-                  | Xor  Reg Reg Reg
-                  | Nand Reg Reg Reg
-                  | Addi Reg Reg Int
-                  | Sw   Reg Reg Int -- store word
-                  | Lw   Reg Reg Int -- load word
-                  | Not  Reg Reg
-                  | Shl  Reg Reg -- shift left
-                  | Shr  Reg Reg -- shift right
-                  | Rotl Reg Reg -- rotate left
-                  | Rotr Reg Reg -- rotate right
-                  | Sshr Reg Reg -- signed shift right
-                  | Shrc Reg Reg -- shift right w/ carry
-                  | Shlc Reg Reg -- shift left w/ carry
-                  | Cmp  Reg Reg -- compare
-                  | Mov  Reg Reg
-                  | Lui  Reg Int -- load upper immediate
-                  | Movi Reg Imm
-                  | Jalr Reg Reg -- jump and link register
-                  | Push Reg
-                  | Pop  Reg
-                  | Call String
-                  | Bz   Imm -- branch if zero
-                  | Bp   Imm -- branch if positive
-                  | Bn   Imm -- branch if negative
-                  | Bc   Imm -- branch if carry
-                  | Bo   Imm -- branch if overflow
-                  | Bnz  Imm -- branch if nonzero
-                  | Jmp  Imm -- unconditional jump
-                  | Bnc  Imm -- branch if not carry
-                  | Bg   Imm -- branch if greater (signed)
-                  | Bge  Imm -- branch if greater or equal (signed)
-                  | Bl   Imm -- branch if less (signed)
-                  | Ble  Imm -- branch if less or equal (signed)
-                  | Ba   Imm -- branch if above (unsigned)
-                  | Bae  Imm -- branch if above or equal (unsigned)
-                  | Bb   Imm -- branch if below (unsigned)
-                  | Bbe  Imm -- branch if below or equal (unsigned)
-                  | Clf -- clear flags
-                  | Nop
-                  | Sys Exception -- calls the OS
-                  | Label String
-                  | Fill Int -- inserts data
-                  | Space Int -- inserts 0s
-                  | NlComment String
-                  | Comment String
-                  deriving (Show)
+enum MachineInstrType {
+  // real instructions
+  MACHINE_AND,
+  MACHINE_NAND,
+  MACHINE_OR,
+  MACHINE_NOR,
+  MACHINE_XOR,
+  MACHINE_XNOR,
+  MACHINE_NOT,
+  MACHINE_LSL,
+  MACHINE_LSR,
+  MACHINE_ASR,
+  MACHINE_ROTL,
+  MACHINE_ROTR,
+  MACHINE_LSLC,
+  MACHINE_LSRC,
+  MACHINE_ADD,
+  MACHINE_ADDC,
+  MACHINE_SUB,
+  MACHINE_SUBB,
+  MACHINE_EXTEND_B,
+  MACHINE_EXTEND_D,
+  MACHINE_TRUNCATE_B,
+  MACHINE_TRUNCATE_D,
+  MACHINE_LUI,
+  MACHINE_SWA,
+  MACHINE_LWA,
+  MACHINE_LW,
+  MACHINE_SW,
+  MACHINE_SDA,
+  MACHINE_LDA,
+  MACHINE_LD,
+  MACHINE_SD,
+  MACHINE_SBA,
+  MACHINE_LBA,
+  MACHINE_LB,
+  MACHINE_SB,
+  MACHINE_BR,
+  MACHINE_BZ,
+  MACHINE_BNZ,
+  MACHINE_BS,
+  MACHINE_BNS,
+  MACHINE_BC, 
+  MACHINE_BNC,
+  MACHINE_BO,
+  MACHINE_BNO,
+  MACHINE_BPS,
+  MACHINE_BNPS,
+  MACHINE_BG,
+  MACHINE_BGE,
+  MACHINE_BL,
+  MACHINE_BLE,
+  MACHINE_BA,
+  MACHINE_BAE,
+  MACHINE_BB,
+  MACHINE_BBE,
+  MACHINE_BRA,
+  MACHINE_BZA,
+  MACHINE_BNZA,
+  MACHINE_BSA,
+  MACHINE_BNSA,
+  MACHINE_BCA, 
+  MACHINE_BNCA,
+  MACHINE_BOA,
+  MACHINE_BNOA,
+  MACHINE_BPSA,
+  MACHINE_BNPSA,
+  MACHINE_BGA,
+  MACHINE_BGEA,
+  MACHINE_BLA,
+  MACHINE_BLEA,
+  MACHINE_BAA,
+  MACHINE_BAEA,
+  MACHINE_BBA,
+  MACHINE_BBEA,
+  MACHINE_SYS,
 
-data Imm = ImmLit Int | ImmLabel String
+  // macros
+  MACHINE_NOP,
+  MACHINE_PUSH,
+  MACHINE_POP,
+  MACHINE_PUSHD,
+  MACHINE_POPD,
+  MACHINE_PUSHB,
+  MACHINE_POPB,
+  MACHINE_MOV,
+  MACHINE_MOVI,
+  MACHINE_CALL,
+  MACHINE_RET,
+  MACHINE_JMP,
+  MACHINE_CMP,
 
-instance Show Imm where
-  show (ImmLit n) = show n
-  show (ImmLabel s) = s
+  // directives
+  MACHINE_FILL,
+  MACHINE_SPACE,
+  MACHINE_GLOBAL,
+  MACHINE_SECTION,
 
--- will add more exceptions as OS is developed
-data Exception = Exit
-  deriving (Show)
-*/
+  // other
+  MACHINE_COMMENT,
+  MACHINE_NLCOMMENT,
+  MACHINE_NEWLINE,
+  MACHINE_LABEL,
+};
+
+enum Exception {
+  EXC_EXIT,
+};
+
+struct MachineProg {
+  struct MachineInstr* head;
+  struct MachineInstr* tail;
+};
+
+struct MachineInstr {
+  enum MachineInstrType type;
+
+  enum Reg ra;
+  enum Reg rb;
+  enum Reg rc;
+
+  int  imm;
+
+  struct Slice* label;
+
+  enum Exception exc;
+
+  struct MachineInstr* next;
+};
+
+struct MachineProg* prog_to_machine(struct AsmProg* asm_prog);
+
+struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top);
+
+struct MachineProg* instr_to_machine(struct Slice* name, struct AsmInstr* instr);
 
 #endif // CODEGEN_H

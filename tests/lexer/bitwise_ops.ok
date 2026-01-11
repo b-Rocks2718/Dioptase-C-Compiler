@@ -1,4 +1,3 @@
 [
     a, &, b, |, c, ^, d, ;
 ]
-Parse error at tests/lexer/bitwise_ops.c:1:1: unexpected token

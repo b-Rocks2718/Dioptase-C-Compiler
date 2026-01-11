@@ -2,4 +2,3 @@
     a, &=, b, ;, c, |=, d, ;, e, ^=, 
     f, ;, g, <<=, 1, ;, h, >>=, 2, ;
 ]
-Parse error at tests/lexer/bitwise_assign.c:1:1: unexpected token

@@ -1,4 +1,3 @@
 [
     a, >>=, 1
 ]
-Parse error at tests/lexer/shift_assign.c:1:1: unexpected token
