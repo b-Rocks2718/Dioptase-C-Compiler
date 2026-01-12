@@ -42,19 +42,57 @@ static const char* kDefaultHexOutputPath = "a.hex";
 // Invariants/Assumptions: If set, must point to an executable binary.
 static const char* kAssemblerEnvVar = "DIOPTASE_ASSEMBLER";
 
-// Purpose: Known default assembler locations within the repo.
-// Inputs/Outputs: Probed in order when DIOPTASE_ASSEMBLER is unset.
-// Invariants/Assumptions: Relative to the current working directory.
-enum { kDefaultAssemblerPathCount = 2 };
-static const char* const kDefaultAssemblerPaths[kDefaultAssemblerPathCount] = {
-    "/home/brooks/Dioptase/Dioptase-Assembler/build/debug/basm",
-    "/home/brooks/Dioptase/Dioptase-Assembler/build/release/basm",
+// Purpose: Environment variable that points to the repo root for assembler lookup.
+// Inputs/Outputs: Read via getenv when DIOPTASE_ASSEMBLER is unset.
+// Invariants/Assumptions: Repo root contains Dioptase-Assembler/build.
+static const char* kRepoRootEnvVar = "DIOPTASE_ROOT";
+
+// Purpose: Default assembler locations under the repo root.
+// Inputs/Outputs: Joined with DIOPTASE_ROOT when DIOPTASE_ASSEMBLER is unset.
+// Invariants/Assumptions: Uses '/' as the host path separator.
+enum { kDefaultAssemblerRelPathCount = 2 };
+static const char* const kDefaultAssemblerRelPaths[kDefaultAssemblerRelPathCount] = {
+    "Dioptase-Assembler/build/debug/basm",
+    "Dioptase-Assembler/build/release/basm",
 };
 
 // Purpose: Suffix for temporary assembly files used during full compilation.
 // Inputs/Outputs: Appended to the output path to form a temp asm name.
 // Invariants/Assumptions: Resulting temp path should not collide with user files.
 static const char* kAsmTempSuffix = ".s.tmp";
+
+// Purpose: Copy a string into heap storage.
+// Inputs: src is a NUL-terminated string.
+// Outputs: Returns a heap-allocated copy or NULL on allocation failure.
+// Invariants/Assumptions: Caller must free the returned string.
+static char* duplicate_string(const char* src) {
+    if (src == NULL) return NULL;
+    size_t len = strlen(src);
+    char* copy = malloc(len + 1);
+    if (copy == NULL) return NULL;
+    memcpy(copy, src, len + 1);
+    return copy;
+}
+
+// Purpose: Join two path components with a '/' separator when needed.
+// Inputs: left and right are path components.
+// Outputs: Returns a heap-allocated joined path or NULL on allocation failure.
+// Invariants/Assumptions: Uses '/' as the host path separator.
+static char* join_paths(const char* left, const char* right) {
+    if (left == NULL || right == NULL) return NULL;
+    size_t left_len = strlen(left);
+    size_t right_len = strlen(right);
+    int needs_sep = (left_len > 0 && left[left_len - 1] != '/');
+    size_t total_len = left_len + (needs_sep ? 1 : 0) + right_len + 1;
+    char* path = malloc(total_len);
+    if (path == NULL) return NULL;
+    if (needs_sep) {
+        snprintf(path, total_len, "%s/%s", left, right);
+    } else {
+        snprintf(path, total_len, "%s%s", left, right);
+    }
+    return path;
+}
 
 // Purpose: Check whether a path is a runnable file.
 // Inputs: path is the filesystem path to probe.
@@ -67,18 +105,28 @@ static bool is_executable_path(const char* path) {
 
 // Purpose: Choose the assembler binary path for full compilation.
 // Inputs: None.
-// Outputs: Returns a usable assembler path or NULL if none are available.
-// Invariants/Assumptions: Honors DIOPTASE_ASSEMBLER when provided.
-static const char* select_assembler_path(void) {
+// Outputs: Returns a heap-allocated assembler path or NULL if none are available.
+// Invariants/Assumptions: Honors DIOPTASE_ASSEMBLER, falls back to DIOPTASE_ROOT.
+static char* select_assembler_path(void) {
     const char* env = getenv(kAssemblerEnvVar);
     if (env != NULL && env[0] != '\0') {
-        return env;
+        return duplicate_string(env);
     }
 
-    for (int i = 0; i < kDefaultAssemblerPathCount; ++i) {
-        if (is_executable_path(kDefaultAssemblerPaths[i])) {
-            return kDefaultAssemblerPaths[i];
+    const char* repo_root = getenv(kRepoRootEnvVar);
+    if (repo_root == NULL || repo_root[0] == '\0') {
+        return NULL;
+    }
+
+    for (int i = 0; i < kDefaultAssemblerRelPathCount; ++i) {
+        char* candidate = join_paths(repo_root, kDefaultAssemblerRelPaths[i]);
+        if (candidate == NULL) {
+            return NULL;
         }
+        if (is_executable_path(candidate)) {
+            return candidate;
+        }
+        free(candidate);
     }
 
     return NULL;
@@ -528,10 +576,12 @@ int main(int argc, const char *const *const argv) {
         }
 
         if (!emit_asm_file) {
-            const char* assembler_path = select_assembler_path();
+            char* assembler_path = select_assembler_path();
             if (assembler_path == NULL) {
-                fprintf(stderr, "Compiler Error: unable to find assembler. Set %s or build Dioptase-Assembler.\n",
-                        kAssemblerEnvVar);
+                fprintf(stderr,
+                        "Compiler Error: unable to find assembler. Set %s or %s so basm can be located.\n",
+                        kAssemblerEnvVar,
+                        kRepoRootEnvVar);
                 remove_temp_asm(asm_output_path);
                 free(asm_output_path_alloc);
                 destroy_preprocess_result(&preprocessed);
@@ -539,7 +589,9 @@ int main(int argc, const char *const *const argv) {
                 arena_destroy();
                 return 6;
             }
-            if (!run_assembler(assembler_path, asm_output_path, output_path, kernel_mode)) {
+            bool assembled = run_assembler(assembler_path, asm_output_path, output_path, kernel_mode);
+            free(assembler_path);
+            if (!assembled) {
                 remove_temp_asm(asm_output_path);
                 free(asm_output_path_alloc);
                 destroy_preprocess_result(&preprocessed);
