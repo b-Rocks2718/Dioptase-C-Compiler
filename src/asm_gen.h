@@ -139,7 +139,11 @@ struct PseudoMap{
     struct PseudoEntry** arr;
 };
 
-struct AsmProg* prog_to_asm(struct TACProg* tac_prog);
+// Purpose: Lower TAC into ASM, optionally emitting section directives.
+// Inputs: tac_prog is the TAC program; emit_sections controls .data/.text emission.
+// Outputs: Returns the ASM program or exits on internal error.
+// Invariants/Assumptions: TAC top-level lists are well-formed and acyclic.
+struct AsmProg* prog_to_asm(struct TACProg* tac_prog, bool emit_sections);
 
 struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top);
 

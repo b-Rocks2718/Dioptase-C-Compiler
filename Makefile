@@ -400,7 +400,7 @@ test: EMU_EXEC_TEST_EXEC := $(EMU_EXEC_TEST_EXEC_DEBUG)
 test: TAC_EXEC_EMULATOR := $(EMULATOR_SIMPLE_DEBUG)
 test: EMU_EXEC_EMULATOR := $(EMULATOR_SIMPLE_DEBUG)
 test: EMU_EXEC_BCC := $(DEBUG_EXEC)
-test: $(DEBUG_EXEC) $(TAC_INTERP_TEST_EXEC_DEBUG) $(TAC_EXEC_TEST_EXEC_DEBUG) $(EMU_EXEC_TEST_EXEC_DEBUG) emulator-debug
+test: $(DEBUG_EXEC) $(TAC_INTERP_TEST_EXEC_DEBUG) $(TAC_EXEC_TEST_EXEC_DEBUG) $(EMU_EXEC_TEST_EXEC_DEBUG) emulator-debug assembler-debug
 	$(RUN_TESTS)
 
 test-release: TEST_EXEC := $(RELEASE_EXEC)
@@ -410,7 +410,7 @@ test-release: EMU_EXEC_TEST_EXEC := $(EMU_EXEC_TEST_EXEC_RELEASE)
 test-release: TAC_EXEC_EMULATOR := $(EMULATOR_SIMPLE_RELEASE)
 test-release: EMU_EXEC_EMULATOR := $(EMULATOR_SIMPLE_RELEASE)
 test-release: EMU_EXEC_BCC := $(RELEASE_EXEC)
-test-release: $(RELEASE_EXEC) $(TAC_INTERP_TEST_EXEC_RELEASE) $(TAC_EXEC_TEST_EXEC_RELEASE) $(EMU_EXEC_TEST_EXEC_RELEASE) emulator-release
+test-release: $(RELEASE_EXEC) $(TAC_INTERP_TEST_EXEC_RELEASE) $(TAC_EXEC_TEST_EXEC_RELEASE) $(EMU_EXEC_TEST_EXEC_RELEASE) emulator-release assembler-release
 	$(RUN_TESTS)
 
 test-wacc: $(DEBUG_EXEC) emulator-debug assembler-debug
@@ -420,12 +420,29 @@ test-wacc: $(DEBUG_EXEC) emulator-debug assembler-debug
 		if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(DEBUG_EXEC) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
 	done
 
+test-wacc-release: WACC_EMU_ASSEMBLER := $(ASSEMBLER_RELEASE)
+test-wacc-release: WACC_EMU_EMULATOR := $(EMULATOR_SIMPLE_RELEASE)
+test-wacc-release: $(RELEASE_EXEC) emulator-release assembler-release
+	@echo "\nRunning WACC emulator tests (release):"; \
+	if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(RELEASE_EXEC) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+	for ch in $(WACC_EXTRA_CHAPTERS); do \
+		if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(RELEASE_EXEC) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+	done
+
 test-tac-wacc: $(DEBUG_EXEC)
 	@chmod +x $(WACC_TAC_WRAPPER)
 	@echo "\nRunning WACC TAC interpreter tests:"; \
 	if ! DIOPTASE_BCC=$(DEBUG_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_TAC_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
 	for ch in $(WACC_EXTRA_CHAPTERS); do \
 		if ! DIOPTASE_BCC=$(DEBUG_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_TAC_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+	done
+
+test-tac-wacc-release: $(RELEASE_EXEC)
+	@chmod +x $(WACC_TAC_WRAPPER)
+	@echo "\nRunning WACC TAC interpreter tests (release):"; \
+	if ! DIOPTASE_BCC=$(RELEASE_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_TAC_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+	for ch in $(WACC_EXTRA_CHAPTERS); do \
+		if ! DIOPTASE_BCC=$(RELEASE_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_TAC_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
 	done
 
 # TAC interpreter test build rules
@@ -468,5 +485,6 @@ $(EMU_EXEC_TEST_EXEC_RELEASE): $(EMU_EXEC_TEST_OBJ_RELEASE) $(RELEASE_OBJFILES_N
 	$(CC) $(CFLAGS_RELEASE) $(LDFLAGS_RELEASE) -o $@ $(EMU_EXEC_TEST_OBJ_RELEASE) $(RELEASE_OBJFILES_NO_MAIN)
 
 # Phony targets
-.PHONY: all debug release clean purge test test-release test-wacc test-tac-wacc \
-	emulator-debug emulator-release assembler-debug assembler-release
+.PHONY: all debug release clean purge test test-release test-wacc test-wacc-release \
+	test-tac-wacc test-tac-wacc-release emulator-debug emulator-release \
+	assembler-debug assembler-release

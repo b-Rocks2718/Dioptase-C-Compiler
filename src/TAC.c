@@ -295,6 +295,106 @@ static enum TACCondition binop_to_aluop(enum BinOp op, struct Type* type) {
   }
 }
 
+// Purpose: Emit TAC for signed division/modulo when the LHS is a narrower unsigned type.
+// Inputs: func_name scopes fresh labels; dst is the result lvalue; lhs/rhs are operands.
+// Outputs: Returns a TAC instruction list that computes dst from lhs and rhs.
+// Invariants/Assumptions: Handles only 32-bit operands, using unsigned ops plus sign fixes.
+static struct TACInstr* emit_unsigned_lhs_signed_divmod(struct Slice* func_name,
+                                                        struct Val* dst,
+                                                        struct Val* lhs,
+                                                        struct Val* rhs,
+                                                        struct Type* rhs_type,
+                                                        bool is_mod) {
+  struct TACInstr* instrs = NULL;
+  struct Val* rhs_abs = rhs;
+  struct Val* rhs_neg = NULL;
+
+  if (is_signed_type(rhs_type)) {
+    rhs_abs = make_temp(func_name, rhs_type);
+    rhs_neg = make_temp(func_name, tac_builtin_type(INT_TYPE));
+
+    struct Slice* rhs_nonneg = tac_make_label(func_name, "rhs_nonneg");
+    struct Slice* rhs_done = tac_make_label(func_name, "rhs_done");
+
+    struct TACInstr* cmp_rhs = tac_instr_create(TACCMP);
+    cmp_rhs->instr.tac_cmp.src1 = rhs;
+    cmp_rhs->instr.tac_cmp.src2 = tac_make_const(0, rhs_type);
+    concat_TAC_instrs(&instrs, cmp_rhs);
+
+    struct TACInstr* jump_rhs_nonneg = tac_instr_create(TACCOND_JUMP);
+    jump_rhs_nonneg->instr.tac_cond_jump.condition = CondGE;
+    jump_rhs_nonneg->instr.tac_cond_jump.label = rhs_nonneg;
+    concat_TAC_instrs(&instrs, jump_rhs_nonneg);
+
+    struct TACInstr* negate_rhs = tac_instr_create(TACUNARY);
+    negate_rhs->instr.tac_unary.op = NEGATE;
+    negate_rhs->instr.tac_unary.dst = rhs_abs;
+    negate_rhs->instr.tac_unary.src = rhs;
+    concat_TAC_instrs(&instrs, negate_rhs);
+
+    struct TACInstr* rhs_neg_true = tac_instr_create(TACCOPY);
+    rhs_neg_true->instr.tac_copy.dst = rhs_neg;
+    rhs_neg_true->instr.tac_copy.src = tac_make_const(1, rhs_neg->type);
+    concat_TAC_instrs(&instrs, rhs_neg_true);
+
+    struct TACInstr* jump_rhs_done = tac_instr_create(TACJUMP);
+    jump_rhs_done->instr.tac_jump.label = rhs_done;
+    concat_TAC_instrs(&instrs, jump_rhs_done);
+
+    struct TACInstr* rhs_nonneg_label = tac_instr_create(TACLABEL);
+    rhs_nonneg_label->instr.tac_label.label = rhs_nonneg;
+    concat_TAC_instrs(&instrs, rhs_nonneg_label);
+
+    struct TACInstr* rhs_copy = tac_instr_create(TACCOPY);
+    rhs_copy->instr.tac_copy.dst = rhs_abs;
+    rhs_copy->instr.tac_copy.src = rhs;
+    concat_TAC_instrs(&instrs, rhs_copy);
+
+    struct TACInstr* rhs_neg_false = tac_instr_create(TACCOPY);
+    rhs_neg_false->instr.tac_copy.dst = rhs_neg;
+    rhs_neg_false->instr.tac_copy.src = tac_make_const(0, rhs_neg->type);
+    concat_TAC_instrs(&instrs, rhs_neg_false);
+
+    struct TACInstr* rhs_done_label = tac_instr_create(TACLABEL);
+    rhs_done_label->instr.tac_label.label = rhs_done;
+    concat_TAC_instrs(&instrs, rhs_done_label);
+  }
+
+  struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
+  bin_instr->instr.tac_binary.alu_op = is_mod ? ALU_UMOD : ALU_UDIV;
+  bin_instr->instr.tac_binary.dst = dst;
+  bin_instr->instr.tac_binary.src1 = lhs;
+  bin_instr->instr.tac_binary.src2 = rhs_abs;
+  bin_instr->instr.tac_binary.type = lhs->type;
+  concat_TAC_instrs(&instrs, bin_instr);
+
+  if (!is_mod && rhs_neg != NULL) {
+    struct Slice* div_done = tac_make_label(func_name, "div_done");
+
+    struct TACInstr* cmp_neg = tac_instr_create(TACCMP);
+    cmp_neg->instr.tac_cmp.src1 = rhs_neg;
+    cmp_neg->instr.tac_cmp.src2 = tac_make_const(0, rhs_neg->type);
+    concat_TAC_instrs(&instrs, cmp_neg);
+
+    struct TACInstr* jump_done = tac_instr_create(TACCOND_JUMP);
+    jump_done->instr.tac_cond_jump.condition = CondE;
+    jump_done->instr.tac_cond_jump.label = div_done;
+    concat_TAC_instrs(&instrs, jump_done);
+
+    struct TACInstr* negate_dst = tac_instr_create(TACUNARY);
+    negate_dst->instr.tac_unary.op = NEGATE;
+    negate_dst->instr.tac_unary.dst = dst;
+    negate_dst->instr.tac_unary.src = dst;
+    concat_TAC_instrs(&instrs, negate_dst);
+
+    struct TACInstr* div_done_label = tac_instr_create(TACLABEL);
+    div_done_label->instr.tac_label.label = div_done;
+    concat_TAC_instrs(&instrs, div_done_label);
+  }
+
+  return instrs;
+}
+
 // Purpose: Allocate a new temporary variable for TAC lowering.
 // Inputs: func_name identifies the owning function; type documents the value type.
 // Outputs: Returns a Val naming the temporary.
@@ -409,15 +509,16 @@ struct TopLevel* symbol_to_TAC(struct SymbolEntry* symbol) {
     case FUN_ATTR:
       return NULL;
     case STATIC_ATTR: {
-      if (symbol->attrs->storage == EXTERN) {
-        // external static variable declaration; no TAC generated
+      if (symbol->attrs->storage == EXTERN &&
+          symbol->attrs->init.init_type == NO_INIT) {
+        // Pure extern declaration; no TAC generated.
         return NULL;
       }
 
       struct TopLevel* top_level = (struct TopLevel*)arena_alloc(sizeof(struct TopLevel));
       top_level->type = STATIC_VAR;
       top_level->name = symbol->key;
-      top_level->global = symbol->attrs->storage == NONE;
+      top_level->global = symbol->attrs->storage != STATIC;
 
       top_level->var_type = symbol->type;
       top_level->init_values = &symbol->attrs->init;
@@ -465,7 +566,7 @@ struct TopLevel* func_to_TAC(struct FunctionDclr* declaration) {
   struct TopLevel* top_level = (struct TopLevel*)arena_alloc(sizeof(struct TopLevel));
   top_level->type = FUNC;
   top_level->name = declaration->name;
-  top_level->global = symbol->attrs->storage == NONE;
+  top_level->global = symbol->attrs->storage != STATIC;
 
   top_level->body = body;
 
@@ -1416,6 +1517,24 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
             rhs_for_op = scaled;
           }
 
+          bool needs_unsigned_div = !pointer_lhs &&
+              (base_op == DIV_OP || base_op == MOD_OP) &&
+              is_signed_type(op_type) &&
+              (get_type_size(op_type) > get_type_size(lhs_type)) &&
+              !is_signed_type(lhs_type);
+          if (needs_unsigned_div) {
+            // Signed long division/modulo with a narrower unsigned lhs must zero-extend before op.
+            // The backend is 32-bit, so emulate by using unsigned ops and fixing the sign.
+            struct TACInstr* div_instrs =
+                emit_unsigned_lhs_signed_divmod(func_name, lhs_result.val, lhs_result.val,
+                                                rhs_for_op, rhs_for_op->type,
+                                                base_op == MOD_OP);
+            concat_TAC_instrs(&instrs, div_instrs);
+            result->type = PLAIN_OPERAND;
+            result->val = lhs_result.val;
+            return instrs;
+          }
+
           struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
           bin_instr->instr.tac_binary.alu_op = binop_to_aluop(base_op, op_type);
           bin_instr->instr.tac_binary.dst = lhs_result.val;
@@ -1459,6 +1578,28 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
             mul_instr->instr.tac_binary.type = rhs_type;
             concat_TAC_instrs(&instrs, mul_instr);
             rhs_for_op = scaled;
+          }
+
+          bool needs_unsigned_div = !pointer_lhs &&
+              (base_op == DIV_OP || base_op == MOD_OP) &&
+              is_signed_type(op_type) &&
+              (get_type_size(op_type) > get_type_size(lhs_type)) &&
+              !is_signed_type(lhs_type);
+          if (needs_unsigned_div) {
+            // Use the same unsigned-division emulation before storing back through the pointer.
+            struct TACInstr* div_instrs =
+                emit_unsigned_lhs_signed_divmod(func_name, cur, cur, rhs_for_op,
+                                                rhs_for_op->type, base_op == MOD_OP);
+            concat_TAC_instrs(&instrs, div_instrs);
+
+            struct TACInstr* store_instr = tac_instr_create(TACSTORE);
+            store_instr->instr.tac_store.dst_ptr = lhs_result.val;
+            store_instr->instr.tac_store.src = cur;
+            concat_TAC_instrs(&instrs, store_instr);
+
+            result->type = PLAIN_OPERAND;
+            result->val = cur;
+            return instrs;
           }
 
           struct TACInstr* bin_instr = tac_instr_create(TACBINARY);

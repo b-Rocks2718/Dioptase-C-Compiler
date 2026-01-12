@@ -30,6 +30,7 @@ Accepted flags:
 -tac                  print the generated TAC
 -interp               run the TAC interpreter and print the result
 -s                    emit assembly instead of assembling to hex
+-kernel               omit section directives and pass -kernel to the assembler
 -o <file>             set the output file path (defaults to a.hex, or a.s with -s)
 -DNAME[=value]        define a preprocessor macro (repeatable)
 ```
@@ -91,12 +92,41 @@ make test
 make test-release
 ```
 
-`make test` and `make test-release` also build and run the TAC interpreter and TAC execution tests from `tests/tac_interpreter_tests.c` and `tests/tac_exec_tests.c` (which uses sources in `tests/tac_exec/`).
+`make test` and `make test-release` also build and run the TAC interpreter, TAC execution, and emulator execution tests from `tests/tac_interpreter_tests.c`, `tests/tac_exec_tests.c`, and `tests/emu_exec_tests.c` (the execution tests use sources in `tests/tac_exec/` and `tests/emu_exec/`).
 
 I also use [test cases from Writing a C Compiler](https://github.com/nlsandler/writing-a-c-compiler-tests#) via the wrapper in `tests/wacc_tac_compiler.py`. Run them with:
 
 ```sh
 make test-wacc
+make test-wacc-release
+make test-tac-wacc
+make test-tac-wacc-release
 ```
 
-The WACC runner defaults can be overridden with `WACC_CORE_CHAPTER`, `WACC_EXTRA_CHAPTERS`, `WACC_EXTRA_CREDIT`, `WACC_SKIP_TYPES`, and `WACC_ARGS`.
+`test-wacc*` runs the WACC tests via the emulator + assembler pipeline, while `test-tac-wacc*` uses the TAC interpreter wrapper. The WACC runner defaults can be overridden with `WACC_CORE_CHAPTER`, `WACC_EXTRA_CHAPTERS`, `WACC_EXTRA_CREDIT`, `WACC_SKIP_TYPES`, and `WACC_ARGS`.
+
+## Makefile Targets
+
+Build and clean:
+
+- `make all` (same as `make debug`)
+- `make debug`
+- `make release`
+- `make clean`
+- `make purge`
+
+Test suites:
+
+- `make test`
+- `make test-release`
+- `make test-wacc`
+- `make test-wacc-release`
+- `make test-tac-wacc`
+- `make test-tac-wacc-release`
+
+Tooling helpers:
+
+- `make emulator-debug`
+- `make emulator-release`
+- `make assembler-debug`
+- `make assembler-release`

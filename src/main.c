@@ -103,12 +103,13 @@ static char* make_temp_asm_path(const char* output_path) {
 
 // Purpose: Invoke the assembler with -crt to emit the final hex file.
 // Inputs: assembler_path is the executable path, asm_path is the input assembly,
-//         output_path is the desired output file.
+//         output_path is the desired output file, kernel_mode forwards -kernel.
 // Outputs: Returns true on success and false on failure.
 // Invariants/Assumptions: Uses fork/exec to avoid shell interpretation.
-static bool run_assembler_with_crt(const char* assembler_path,
+static bool run_assembler(const char* assembler_path,
                                    const char* asm_path,
-                                   const char* output_path) {
+                                   const char* output_path,
+                                   bool kernel_mode) {
     if (assembler_path == NULL || asm_path == NULL || output_path == NULL) {
         fprintf(stderr, "Compiler Error: assembler invocation missing required paths\n");
         return false;
@@ -121,14 +122,19 @@ static bool run_assembler_with_crt(const char* assembler_path,
     }
 
     if (pid == 0) {
-        const char* const args[] = {
-            assembler_path,
-            "-crt",
-            "-o",
-            output_path,
-            asm_path,
-            NULL
-        };
+        const char* args[6];
+        int arg_idx = 0;
+        args[arg_idx++] = assembler_path;
+        if (kernel_mode) {
+            args[arg_idx++] = "-kernel";
+        } else {
+            args[arg_idx++] = "-crt";
+        }
+        args[arg_idx++] = "-o";
+        args[arg_idx++] = output_path;
+        args[arg_idx++] = asm_path;
+        args[arg_idx] = NULL;
+
         execvp(assembler_path, (char* const*)args);
         fprintf(stderr, "Compiler Error: exec failed for assembler %s: %s\n",
                 assembler_path, strerror(errno));
@@ -178,6 +184,7 @@ int main(int argc, const char *const *const argv) {
     int print_tac = 0;
     int print_asm = 0;
     int interpret_tac = 0;
+    int kernel_mode = 0;
     const char *filename = NULL;
     const char *output_path = NULL;
     int output_path_set = 0;
@@ -227,6 +234,10 @@ int main(int argc, const char *const *const argv) {
             emit_asm_file = 1;
             continue;
         }
+        if (strcmp(arg, "-kernel") == 0) {
+            kernel_mode = 1;
+            continue;
+        }
         if (strcmp(arg, "-o") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "option -o requires an output file path\n");
@@ -249,7 +260,7 @@ int main(int argc, const char *const *const argv) {
         }
         if (arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
             free(cli_defines);
             exit(1);
         }
@@ -258,13 +269,13 @@ int main(int argc, const char *const *const argv) {
             continue;
         }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
 
     if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
@@ -460,7 +471,9 @@ int main(int argc, const char *const *const argv) {
     }
 
     if (run_full || print_asm) {
-        asm_prog = prog_to_asm(tac_prog);
+        // Kernel-mode assembly is linear; omit user-mode section directives.
+        const bool emit_sections = !kernel_mode;
+        asm_prog = prog_to_asm(tac_prog, emit_sections);
         if (asm_prog == NULL) {
             fprintf(stderr, "ASM generation failed: asm_gen returned NULL\n");
             destroy_preprocess_result(&preprocessed);
@@ -526,7 +539,7 @@ int main(int argc, const char *const *const argv) {
                 arena_destroy();
                 return 6;
             }
-            if (!run_assembler_with_crt(assembler_path, asm_output_path, output_path)) {
+            if (!run_assembler(assembler_path, asm_output_path, output_path, kernel_mode)) {
                 remove_temp_asm(asm_output_path);
                 free(asm_output_path_alloc);
                 destroy_preprocess_result(&preprocessed);

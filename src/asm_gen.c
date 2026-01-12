@@ -105,50 +105,64 @@ static int allocate_stack_slot(size_t* stack_bytes);
 // Invariants/Assumptions: pseudo_map is initialized before use.
 static void replace_operand_if_pseudo(struct Operand** field);
 
+// Purpose: Append a top-level ASM node to the program list.
+// Inputs: prog is the ASM program; node is the top-level to append.
+// Outputs: Updates prog->head/tail to include node.
+// Invariants/Assumptions: node->next is either NULL or a valid list tail.
+static void append_asm_top_level(struct AsmProg* prog, struct AsmTopLevel* node) {
+    if (prog == NULL || node == NULL) {
+        asm_gen_error("top-level", NULL, "append requested with NULL program or node");
+    }
+
+    if (prog->head == NULL) {
+        prog->head = node;
+        prog->tail = node;
+        return;
+    }
+
+    prog->tail->next = node;
+    prog->tail = node;
+}
+
 // Purpose: Lower a TAC program into the ASM IR representation.
-// Inputs: tac_prog is the TAC program to lower (must be non-NULL).
+// Inputs: tac_prog is the TAC program to lower (must be non-NULL);
+//         emit_sections controls whether .data/.text directives are emitted.
 // Outputs: Returns a newly allocated ASM program rooted in arena storage.
 // Invariants/Assumptions: TAC top-level lists are well-formed and acyclic.
-struct AsmProg* prog_to_asm(struct TACProg* tac_prog) {
+struct AsmProg* prog_to_asm(struct TACProg* tac_prog, bool emit_sections) {
     if (tac_prog == NULL) {
         asm_gen_error("program", NULL, "input TAC program is NULL");
     }
 
     struct AsmProg* asm_prog = arena_alloc(sizeof(struct AsmProg));
+    asm_prog->head = NULL;
+    asm_prog->tail = NULL;
 
-    // emit .data
-    struct AsmTopLevel* data_directive = arena_alloc(sizeof(struct AsmTopLevel));
-    data_directive->type = ASM_SECTION;
-    data_directive->name = &data_directive_slice;
-
-    data_directive->next = NULL;
-
-    asm_prog->head = data_directive;
-    asm_prog->tail = data_directive;
+    if (emit_sections) {
+        // emit .data
+        struct AsmTopLevel* data_directive = arena_alloc(sizeof(struct AsmTopLevel));
+        data_directive->type = ASM_SECTION;
+        data_directive->name = &data_directive_slice;
+        data_directive->next = NULL;
+        append_asm_top_level(asm_prog, data_directive);
+    }
 
     for (struct TopLevel* tac_top = tac_prog->statics; tac_top != NULL; tac_top = tac_top->next) {
         struct AsmTopLevel* asm_top = top_level_to_asm(tac_top);
         if (asm_top == NULL) {
             asm_gen_error("top-level", NULL, "failed to lower TAC static");
         }
-        if (asm_prog->head == NULL) {
-            asm_prog->head = asm_top;
-            asm_prog->tail = asm_top;
-        } else {
-            asm_prog->tail->next = asm_top;
-            asm_prog->tail = asm_top;
-        }
+        append_asm_top_level(asm_prog, asm_top);
     }
 
-    // emit .text
-    struct AsmTopLevel* text_directive = arena_alloc(sizeof(struct AsmTopLevel));
-    text_directive->type = ASM_SECTION;
-    text_directive->name = &text_directive_slice;
-
-    text_directive->next = NULL;
-
-    asm_prog->tail->next = text_directive;
-    asm_prog->tail = text_directive;
+    if (emit_sections) {
+        // emit .text
+        struct AsmTopLevel* text_directive = arena_alloc(sizeof(struct AsmTopLevel));
+        text_directive->type = ASM_SECTION;
+        text_directive->name = &text_directive_slice;
+        text_directive->next = NULL;
+        append_asm_top_level(asm_prog, text_directive);
+    }
 
     for (struct TopLevel* tac_top = tac_prog->head; tac_top != NULL; tac_top = tac_top->next) {
         
@@ -156,13 +170,7 @@ struct AsmProg* prog_to_asm(struct TACProg* tac_prog) {
         if (asm_top == NULL) {
             asm_gen_error("top-level", NULL, "failed to lower TAC top-level");
         }
-        if (asm_prog->head == NULL) {
-            asm_prog->head = asm_top;
-            asm_prog->tail = asm_top;
-        } else {
-            asm_prog->tail->next = asm_top;
-            asm_prog->tail = asm_top;
-        }
+        append_asm_top_level(asm_prog, asm_top);
     }
 
     if (pseudo_map != NULL) {

@@ -110,6 +110,21 @@ static uint64_t normalize_static_init(uint64_t value, struct Type* target) {
   return truncated;
 }
 
+// Purpose: Merge storage classes across compatible declarations.
+// Inputs: existing is the prior storage; incoming is the new declaration storage.
+// Outputs: Returns the combined storage, preserving internal linkage if present.
+// Invariants/Assumptions: Caller has already validated linkage compatibility.
+static enum StorageClass merge_storage_class(enum StorageClass existing,
+                                             enum StorageClass incoming) {
+  if (existing == STATIC || incoming == STATIC) {
+    return STATIC;
+  }
+  if (existing == EXTERN || incoming == EXTERN) {
+    return EXTERN;
+  }
+  return NONE;
+}
+
 // Purpose: Extract a literal value from an initializer expression.
 // Inputs: expr is the initializer expression (literal or cast of a literal).
 // Outputs: Returns true and writes out_value on success.
@@ -261,11 +276,8 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
       return false;
     }
 
-    // By this point, types and linkage match; update storage for real definitions
-    // (extern declarations shouldn't keep the EXTERN storage tag once a definition appears).
-    if (var_dclr->storage != EXTERN) {
-      entry->attrs->storage = var_dclr->storage;
-    }
+    // By this point, types and linkage match; merge storage for explicit externs.
+    entry->attrs->storage = merge_storage_class(entry->attrs->storage, var_dclr->storage);
 
     // Update init state if it improves. Ordering is NO_INIT < TENTATIVE < INITIAL.
 
@@ -358,8 +370,13 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
 
     // check for conflicting linkage
     // extern matches previous linkage, cannot cause conflict
-    if (entry->attrs->storage != func_dclr->storage && 
-       (func_dclr->storage != EXTERN) &&
+    enum StorageClass effective_storage = func_dclr->storage;
+    if (effective_storage == NONE && entry->attrs->storage != NONE) {
+      // Block/file-scope declarations without storage inherit visible linkage.
+      effective_storage = entry->attrs->storage;
+    }
+    if (entry->attrs->storage != effective_storage &&
+       (effective_storage != EXTERN) &&
        (entry->attrs->storage != EXTERN)) {
       type_error_at(func_dclr->name->start,
                     "conflicting function linkage for function %.*s",
@@ -372,10 +389,7 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
       entry->attrs->is_defined = true;
     }
 
-    // Definitions replace prior extern storage; keep existing linkage otherwise.
-    if (func_dclr->body != NULL && func_dclr->storage != EXTERN) {
-      entry->attrs->storage = func_dclr->storage;
-    }
+    entry->attrs->storage = merge_storage_class(entry->attrs->storage, effective_storage);
   }
 
   // Parameters share the same symbol table as the body in this pass.
@@ -711,6 +725,8 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
                       (int)var_dclr->name->len, var_dclr->name->start);
         return false;
       }
+
+      entry->attrs->storage = merge_storage_class(entry->attrs->storage, EXTERN);
     }
 
     return true;

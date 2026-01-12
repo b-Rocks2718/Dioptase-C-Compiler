@@ -6,6 +6,7 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdint.h>
 
 // Purpose: Resolve control-flow labels (loops/switches/gotos/cases) in the AST.
 // Inputs: Traverses Program, Block, and Statement nodes produced by parsing.
@@ -48,6 +49,19 @@ static void label_error_at(const char* prefix, const char* loc, const char* fmt,
   vprintf(fmt, args);
   va_end(args);
   printf("\n");
+}
+
+// Purpose: Compute the decimal digit length of a 32-bit unsigned value.
+// Inputs: value is the unsigned integer to measure.
+// Outputs: Returns the number of base-10 digits needed.
+// Invariants/Assumptions: Always returns at least 1.
+static unsigned u32_len(uint32_t value) {
+  unsigned len = 0;
+  do {
+    len++;
+    value /= 10u;
+  } while (value != 0u);
+  return len;
 }
 
 // Purpose: Label all functions in a program and resolve gotos/cases.
@@ -559,8 +573,9 @@ bool collect_cases(struct Block* block) {
 // Outputs: Returns a new Slice containing "switch.case.N".
 // Invariants/Assumptions: Uses arena allocation for the label buffer.
 struct Slice* make_case_label(struct Slice* switch_label, int case_value) {
-  // append ".case.num" to current switch label
-  unsigned id_len = counter_len(case_value);
+  // append ".case.<u32>" to current switch label, using unsigned digits to keep labels valid
+  uint32_t unsigned_value = (uint32_t)case_value;
+  unsigned id_len = u32_len(unsigned_value);
   char* case_label_str = (char*)arena_alloc(switch_label->len + 6 + id_len); // len(".case.") == 6
   for (size_t i = 0; i < switch_label->len; i++) {
     case_label_str[i] = switch_label->start[i];
@@ -573,8 +588,8 @@ struct Slice* make_case_label(struct Slice* switch_label, int case_value) {
   case_label_str[switch_label->len + 5] = '.';
 
   for (unsigned i = 0; i < id_len; i++) {
-    case_label_str[switch_label->len + 6 + id_len - 1 - i] = '0' + (case_value % 10);
-    case_value /= 10;
+    case_label_str[switch_label->len + 6 + id_len - 1 - i] = '0' + (unsigned)(unsigned_value % 10u);
+    unsigned_value /= 10u;
   }
 
   struct Slice* case_label = (struct Slice*)arena_alloc(sizeof(struct Slice));
