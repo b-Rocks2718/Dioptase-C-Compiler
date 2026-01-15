@@ -31,6 +31,12 @@ void print_type(struct Type* type){
     case ULONG_TYPE:
       printf("ulong");
       break;
+    case SHORT_TYPE:
+      printf("short");
+      break;
+    case USHORT_TYPE:
+      printf("ushort");
+      break;
     case POINTER_TYPE:
       print_type(type->type_data.pointer_type.referenced_type);
       printf("*");
@@ -604,6 +610,8 @@ bool compare_types(struct Type* a, struct Type* b) {
   }
 
   switch (a->type) {
+    case SHORT_TYPE:
+    case USHORT_TYPE:
     case INT_TYPE:
     case UINT_TYPE:
     case LONG_TYPE:

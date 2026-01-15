@@ -1246,6 +1246,20 @@ bool is_arithmetic_type(struct Type* type) {
     case UINT_TYPE:
     case LONG_TYPE:
     case ULONG_TYPE:
+    case SHORT_TYPE:
+    case USHORT_TYPE:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool is_unsigned_type(struct Type* type) {
+  switch (type->type) {
+    case UINT_TYPE:
+    case ULONG_TYPE:
+    case USHORT_TYPE:
+    case POINTER_TYPE:
       return true;
     default:
       return false;
@@ -1260,6 +1274,7 @@ bool is_signed_type(struct Type* type) {
   switch (type->type) {
     case INT_TYPE:
     case LONG_TYPE:
+    case SHORT_TYPE:
       return true;
     default:
       return false;
@@ -1296,6 +1311,9 @@ void convert_expr_type(struct Expr** expr, struct Type* target) {
 // Invariants/Assumptions: Pointer size is treated as 4 bytes here.
 size_t get_type_size(struct Type* type) {
   switch (type->type) {
+    case SHORT_TYPE:
+    case USHORT_TYPE:
+      return 2;
     case INT_TYPE:
     case UINT_TYPE:
       return 4;
@@ -1413,6 +1431,10 @@ bool convert_by_assignment(struct Expr** expr, struct Type* target) {
 // Invariants/Assumptions: Only integer-like types are supported here.
 enum StaticInitType get_var_init(struct VariableDclr* var_dclr) {
   switch (var_dclr->type->type) {
+    case SHORT_TYPE:
+      return SHORT_INIT;
+    case USHORT_TYPE:
+      return USHORT_INIT;
     case INT_TYPE:
       return INT_INIT;
     case UINT_TYPE:

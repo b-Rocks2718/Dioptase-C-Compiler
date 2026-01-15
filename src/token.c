@@ -207,5 +207,11 @@ void print_token(struct Token token){
     case LONG_TOK:
       printf("long");
       break;
+    case SHORT_TOK:
+      printf("short");
+      break;
+    default:
+      printf("Token?");
+      break;
   };
 }

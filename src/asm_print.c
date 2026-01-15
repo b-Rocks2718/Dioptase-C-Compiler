@@ -4,6 +4,7 @@
 #include "asm_gen.h"
 #include "slice.h"
 #include "typechecking.h"
+#include "source_location.h"
 
 // Purpose: Provide human-readable printing of ASM IR for debugging.
 // Inputs/Outputs: Functions emit text to stdout.
@@ -53,6 +54,26 @@ static void print_reg(enum Reg reg) {
   }
 }
 
+static void print_asm_type(enum AsmType type) {
+  switch (type) {
+    case BYTE:
+      printf("BYTE");
+      break;
+    case DOUBLE:
+      printf("DOUBLE");
+      break;
+    case WORD:
+      printf("WORD");
+      break;
+    case LONG_WORD:
+      printf("LONG_WORD");
+      break;
+    default:
+      printf("ASMType<%d>?", (int)type);
+      break;
+  }
+}
+
 // Purpose: Print an ASM operand in a compact readable form.
 // Inputs: opr is the operand to print (may be NULL).
 // Outputs: Writes the operand representation to stdout.
@@ -85,7 +106,9 @@ static void print_operand(const struct Operand* opr) {
     case OPERAND_MEMORY:
       printf("Mem(");
       print_reg(opr->reg);
-      printf(", %d)", opr->lit_value);
+      printf(", %d, ", opr->lit_value);
+      print_asm_type(opr->asm_type);
+      printf(")");
       break;
     case OPERAND_DATA:
       printf("Data(");
@@ -286,13 +309,6 @@ static void print_asm_instr(const struct AsmInstr* instr, unsigned tabs) {
       print_operand(instr->src1);
       printf("\n");
       break;
-    case ASM_MOVSX:
-      printf("Movsx ");
-      print_operand(instr->dst);
-      printf(", ");
-      print_operand(instr->src1);
-      printf("\n");
-      break;
     case ASM_UNARY:
       printf("Unary ");
       print_asm_un_op(instr->unary_op);
@@ -373,6 +389,41 @@ static void print_asm_instr(const struct AsmInstr* instr, unsigned tabs) {
       print_operand(instr->src1);
       printf("\n");
       break;
+    case ASM_BOUNDARY:
+      struct SourceLocation loc = source_location_from_ptr(instr->loc);
+      const char* filename = source_filename_for_ptr(instr->loc);
+      printf("Line %s:%zu:%zu\n", filename, loc.line, loc.column);
+      break;
+    case ASM_TRUNC:
+      printf("Trunc ");
+      print_operand(instr->dst);
+      printf(", ");
+      print_operand(instr->src1);
+      printf(", %zu", instr->size);
+      printf("\n");
+      break;
+    case ASM_EXTEND:
+      printf("Extend ");
+      print_operand(instr->dst);
+      printf(", ");
+      print_operand(instr->src1);
+      printf(", %zu", instr->size);
+      printf("\n");
+      break;
+    case ASM_LOAD:
+      printf("Load ");
+      print_operand(instr->dst);
+      printf(", ");
+      print_operand(instr->src1);
+      printf("\n");
+      break;
+    case ASM_STORE:
+      printf("Store ");;
+      print_operand(instr->dst);
+      printf(", ");
+      print_operand(instr->src1);
+      printf("\n");
+      break;
     default:
       printf("Instr?\n");
       break;
@@ -424,6 +475,15 @@ static void print_asm_top_level(const struct AsmTopLevel* top, unsigned tabs) {
       printf("align=%d ", top->alignment);
       printf("inits=%zu ", top->num_inits);
       print_asm_init(top->init_values);
+      printf("\n");
+      break;
+    case ASM_SECTION:
+      printf("Section ");;
+      if (top->name != NULL) {
+        print_slice(top->name);
+      } else {
+        printf("<null>");
+      }
       printf("\n");
       break;
     default:

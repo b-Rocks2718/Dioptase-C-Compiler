@@ -31,6 +31,7 @@ static const char* kTacExecBuildDir = "build";
 static const char* kTacExecOutDir = "build/tac_exec";
 static const char* kTacExecCompilerEnv = "TAC_TEST_CC";
 static const char* kTacExecCStandard = "-std=c11";
+static const char* kTacExecHostWarnFlag = "-w";
 static const size_t kTacExecMaxPath = 512; // Supports test paths plus output suffixes.
 static const size_t kTacExecArenaBlockSize = 16384; // Mirrors main.c arena sizing.
 
@@ -51,6 +52,11 @@ static const struct TacExecTest kTacExecTests[] = {
     {"functions", "tests/exec/functions.c"},
     {"pointers", "tests/exec/pointers.c"},
     {"pointer_store", "tests/exec/pointer_store.c"},
+    {"short_casts", "tests/exec/short_casts.c"},
+    {"short_pointer_arithmetic", "tests/exec/short_pointer_arithmetic.c"},
+    {"align_locals", "tests/exec/align_locals.c"},
+    {"align_globals", "tests/exec/align_globals.c"},
+    {"align_params", "tests/exec/align_params.c"},
     {"global_pointer_basic", "tests/exec/global_pointer_basic.c"},
     {"global_pointer_cross", "tests/exec/global_pointer_cross.c"},
     {"globals", "tests/exec/globals.c"},
@@ -165,7 +171,8 @@ static bool tac_exec_compile_with_host(const char* source_path,
   if (compiler == NULL || compiler[0] == '\0') {
     compiler = "gcc";
   }
-  const char* argv[] = {compiler, kTacExecCStandard, source_path, "-o", out_path, NULL};
+  const char* argv[] = {compiler, kTacExecCStandard, kTacExecHostWarnFlag,
+                        source_path, "-o", out_path, NULL};
   int local_exit = 0;
   if (!tac_exec_run_process(argv, true, &local_exit)) {
     if (exit_code != NULL) {
@@ -263,7 +270,7 @@ static bool tac_exec_run_tac(const struct TacExecTest* test, int* out_result) {
     goto cleanup;
   }
 
-  struct TACProg* tac_prog = prog_to_TAC(prog);
+  struct TACProg* tac_prog = prog_to_TAC(prog, false);
   if (tac_prog == NULL) {
     tac_exec_error(test->name, "tac", "TAC lowering failed");
     goto cleanup;

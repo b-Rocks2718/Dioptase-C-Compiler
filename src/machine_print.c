@@ -6,6 +6,7 @@
 
 #include "asm_gen.h"
 #include "slice.h"
+#include "source_location.h"
 
 // Purpose: Write a slice to a file without assuming NUL termination.
 // Inputs: out is the file to write to; slice may be NULL.
@@ -120,6 +121,25 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       write_slice(out, instr->label);
       fputs(":\n", out);
       return true;
+    case MACHINE_DEBUG_LOC: {
+      if (instr->debug_loc == NULL) {
+        return true;
+      }
+      struct SourceLocation loc = source_location_from_ptr(instr->debug_loc);
+      const char* filename = source_filename_for_ptr(instr->debug_loc);
+      write_tab(out);
+      fprintf(out, "#line %s %zu %zu\n", filename, loc.line, loc.column);
+      return true;
+    }
+    case MACHINE_DEBUG_LOCAL:
+      if (instr->debug_name == NULL) {
+        return true;
+      }
+      write_tab(out);
+      fputs("#local ", out);
+      write_slice(out, instr->debug_name);
+      fprintf(out, " bp %d\n", instr->debug_offset);
+      return true;
     case MACHINE_COMMENT:
       write_tab(out);
       fputs("# ", out);
@@ -156,6 +176,22 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       write_tab(out);
       fprintf(out, ".fill %d\n", instr->imm);
       return true;
+    case MACHINE_FILD:
+      if (instr->label != NULL) {
+        write_slice(out, instr->label);
+        fputs(":\n", out);
+      }
+      write_tab(out);
+      fprintf(out, ".fild %d\n", instr->imm);
+      return true;
+    case MACHINE_FILB:
+      if (instr->label != NULL) {
+        write_slice(out, instr->label);
+        fputs(":\n", out);
+      }
+      write_tab(out);
+      fprintf(out, ".filb %d\n", instr->imm);
+      return true;
     case MACHINE_SPACE:
       if (instr->label != NULL) {
         write_slice(out, instr->label);
@@ -163,6 +199,10 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       }
       write_tab(out);
       fprintf(out, ".space %d\n", instr->imm);
+      return true;
+    case MACHINE_ALIGN:
+      write_tab(out);
+      fprintf(out, ".align %d\n", instr->imm);
       return true;
     case MACHINE_MOV:
       write_tab(out);
@@ -770,6 +810,38 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
     case MACHINE_CMP:
       write_tab(out);
       fputs("cmp ", out);
+      write_reg(out, instr->ra);
+      fputc(' ', out);
+      write_reg(out, instr->rb);
+      fputc('\n', out);
+      return true;
+    case MACHINE_TNCB:
+      write_tab(out);
+      fputs("tncb ", out);
+      write_reg(out, instr->ra);
+      fputc(' ', out);
+      write_reg(out, instr->rb);
+      fputc('\n', out);
+      return true;
+    case MACHINE_TNCD:
+      write_tab(out);
+      fputs("tncd ", out);
+      write_reg(out, instr->ra);
+      fputc(' ', out);
+      write_reg(out, instr->rb);
+      fputc('\n', out);
+      return true;
+    case MACHINE_SXTB:
+      write_tab(out);
+      fputs("sxtb ", out);
+      write_reg(out, instr->ra);
+      fputc(' ', out);
+      write_reg(out, instr->rb);
+      fputc('\n', out);
+      return true;
+    case MACHINE_SXTD:
+      write_tab(out);
+      fputs("sxtd ", out);
       write_reg(out, instr->ra);
       fputc(' ', out);
       write_reg(out, instr->rb);

@@ -72,6 +72,7 @@ enum TokenType {
   UNSIGNED_TOK,
   SIGNED_TOK,
   LONG_TOK,
+  SHORT_TOK,
 };
 
 union TokenVariant {

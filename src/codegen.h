@@ -78,6 +78,10 @@ enum MachineInstrType {
   MACHINE_BAEA,
   MACHINE_BBA,
   MACHINE_BBEA,
+  MACHINE_TNCB,
+  MACHINE_TNCD,
+  MACHINE_SXTB,
+  MACHINE_SXTD,
   MACHINE_SYS,
 
   // macros
@@ -97,15 +101,20 @@ enum MachineInstrType {
 
   // directives
   MACHINE_FILL,
+  MACHINE_FILD,
+  MACHINE_FILB,
   MACHINE_SPACE,
   MACHINE_GLOBAL,
   MACHINE_SECTION,
+  MACHINE_ALIGN,
 
   // other
   MACHINE_COMMENT,
   MACHINE_NLCOMMENT,
   MACHINE_NEWLINE,
   MACHINE_LABEL,
+  MACHINE_DEBUG_LOC,
+  MACHINE_DEBUG_LOCAL,
 };
 
 enum Exception {
@@ -127,6 +136,10 @@ struct MachineInstr {
   int  imm;
 
   struct Slice* label;
+
+  const char* debug_loc; // source pointer for debug line markers
+  struct Slice* debug_name; // debug local name for stack layout comments
+  int debug_offset; // stack offset relative to BP for debug locals
 
   enum Exception exc;
 

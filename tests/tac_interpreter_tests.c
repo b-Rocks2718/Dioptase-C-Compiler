@@ -167,13 +167,11 @@ static bool tac_test_arithmetic(void) {
   add_instr.instr.tac_binary.dst = &t0_val;
   add_instr.instr.tac_binary.src1 = &a_val;
   add_instr.instr.tac_binary.src2 = &b_val;
-  add_instr.instr.tac_binary.type = &kTestIntType;
 
   mul_instr.instr.tac_binary.alu_op = ALU_SMUL;
   mul_instr.instr.tac_binary.dst = &t1_val;
   mul_instr.instr.tac_binary.src1 = &t0_val;
   mul_instr.instr.tac_binary.src2 = &const_2;
-  mul_instr.instr.tac_binary.type = &kTestIntType;
 
   ret_instr.instr.tac_return.dst = &t1_val;
 
@@ -306,7 +304,6 @@ static bool tac_test_call(void) {
   add_bin.instr.tac_binary.dst = &t0_val;
   add_bin.instr.tac_binary.src1 = &p_val;
   add_bin.instr.tac_binary.src2 = &q_val;
-  add_bin.instr.tac_binary.type = &kTestIntType;
   add_ret.instr.tac_return.dst = &t0_val;
   tac_link_instr(&add_bin, &add_ret);
 
@@ -495,13 +492,11 @@ static bool tac_test_unary_ops(void) {
   add_0.instr.tac_binary.dst = &t0_val;
   add_0.instr.tac_binary.src1 = &neg_val;
   add_0.instr.tac_binary.src2 = &comp_val;
-  add_0.instr.tac_binary.type = &kTestIntType;
 
   add_1.instr.tac_binary.alu_op = ALU_ADD;
   add_1.instr.tac_binary.dst = &t1_val;
   add_1.instr.tac_binary.src1 = &t0_val;
   add_1.instr.tac_binary.src2 = &bnot_val;
-  add_1.instr.tac_binary.type = &kTestIntType;
 
   ret_instr.instr.tac_return.dst = &t1_val;
 
@@ -645,7 +640,6 @@ static bool tac_test_copy_to_offset(void) {
   add_addr.instr.tac_binary.dst = &addr2_val;
   add_addr.instr.tac_binary.src1 = &p_val;
   add_addr.instr.tac_binary.src2 = &const_offset;
-  add_addr.instr.tac_binary.type = &kTestPtrType;
   load.instr.tac_load.dst = &t0_val;
   load.instr.tac_load.src_ptr = &addr2_val;
   ret_instr.instr.tac_return.dst = &t0_val;

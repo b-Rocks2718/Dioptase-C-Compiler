@@ -89,4 +89,21 @@ struct Declarator* parse_simple_declarator();
 // Invariants/Assumptions: Pointer prefixes are handled by parse_declarator.
 struct Declarator* parse_direct_declarator();
 
+// Apply declarator structure to a base type, producing name/type/params.
+// Walks the declarator tree and constructs the derived type in order.
+// Purpose: Convert a declarator into a finalized type and name.
+// Inputs: decl is the parsed declarator; base_type is the starting type.
+// Outputs: Returns true on success and populates type_out/name_out.
+// Invariants/Assumptions: decl structure is validated by the parser.
+bool process_declarator(struct Declarator* decl, struct Type* base_type,
+                        struct Slice** name_out, struct Type** derived_type_out,
+                        struct ParamList** params_out);
+
+// Purpose: Parse a token stream into AST structures for the C subset.
+// Inputs: Consumes tokens produced by the lexer.
+// Outputs: Allocates AST nodes in the arena and returns parse results.
+// Invariants/Assumptions: Tokens are well-formed and include locations.
+
+void parse_type_and_storage_class(struct Type** type, enum StorageClass* class);
+
 #endif

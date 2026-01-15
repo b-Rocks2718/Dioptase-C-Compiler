@@ -25,6 +25,7 @@ static const char* kEmuExecBccEnv = "DIOPTASE_BCC";
 static const char* kEmuExecEmulatorEnv = "DIOPTASE_EMULATOR_SIMPLE";
 static const char* kEmuExecEmuMaxCyclesEnv = "TAC_EMU_MAX_CYCLES";
 static const char* kEmuExecCStandard = "-std=c11";
+static const char* kEmuExecHostWarnFlag = "-w";
 static const size_t kEmuExecMaxPath = 512; // Supports test paths plus output suffixes.
 static const size_t kEmuExecMaxOutput = 256; // Enough for emulator output + newline.
 static const uint32_t kEmuExecEmuMaxCyclesDefault = 100000; // Bounds emulator runtime for stuck programs.
@@ -58,6 +59,11 @@ static const struct EmuExecTest kEmuExecTests[] = {
     {"functions", "tests/exec/functions.c"},
     {"pointers", "tests/exec/pointers.c"},
     {"pointer_store", "tests/exec/pointer_store.c"},
+    {"short_casts", "tests/exec/short_casts.c"},
+    {"short_pointer_arithmetic", "tests/exec/short_pointer_arithmetic.c"},
+    {"align_locals", "tests/exec/align_locals.c"},
+    {"align_globals", "tests/exec/align_globals.c"},
+    {"align_params", "tests/exec/align_params.c"},
     {"global_pointer_basic", "tests/exec/global_pointer_basic.c"},
     {"global_pointer_cross", "tests/exec/global_pointer_cross.c"},
     {"globals", "tests/exec/globals.c"},
@@ -270,7 +276,8 @@ static bool emu_exec_compile_with_host(const char* source_path,
   if (compiler == NULL || compiler[0] == '\0') {
     compiler = "gcc";
   }
-  const char* argv[] = {compiler, kEmuExecCStandard, source_path, "-o", out_path, NULL};
+  const char* argv[] = {compiler, kEmuExecCStandard, kEmuExecHostWarnFlag,
+                        source_path, "-o", out_path, NULL};
   int local_exit = 0;
   if (!emu_exec_run_process(argv, true, &local_exit)) {
     if (exit_code != NULL) {

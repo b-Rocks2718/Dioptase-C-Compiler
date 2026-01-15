@@ -1,17 +1,155 @@
 #include "asm_gen.h"
 #include "arena.h"
+#include "typechecking.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
 #include <stdarg.h>
+#include <assert.h>
 
 struct PseudoMap* pseudo_map = NULL;
 
 static struct Slice text_directive_slice = {"text", 4};
 static struct Slice data_directive_slice = {"data", 4};
 
-static const size_t STACK_SLOT_SIZE = 4; // 4 bytes per stack slot
+static const char kTempMarker[] = ".tmp.";
+static const size_t kTempMarkerLen = sizeof(kTempMarker) - 1;
+
+struct AsmSymbolTable* asm_symbol_table = NULL;
+
+enum AsmType type_to_asm_type(struct Type* type){
+    switch (type->type){
+        case SHORT_TYPE:
+        case USHORT_TYPE:
+            return DOUBLE;
+        case INT_TYPE:
+        case UINT_TYPE:
+        case POINTER_TYPE:
+            return WORD;
+        case LONG_TYPE:
+        case ULONG_TYPE:
+            return LONG_WORD;
+        case FUN_TYPE:
+            return -1; // this value will never be used
+        default:
+            // unknown type
+            asm_gen_error("symbol table", NULL, "invalid type for ASM symbol conversion");
+            return -1;
+    }
+}
+
+struct AsmSymbolTable* convert_symbol_table(struct SymbolTable* symbols){
+    struct AsmSymbolTable* asm_table = create_asm_symbol_table(symbols->size);
+    
+    for (size_t i = 0; i < symbols->size; i++){
+        struct SymbolEntry* cur = symbols->arr[i];
+        while (cur != NULL){
+            enum AsmType asm_type = type_to_asm_type(cur->type);
+            bool is_static = cur->attrs != NULL && cur->attrs->attr_type == STATIC_ATTR;
+            bool is_defined = cur->attrs != NULL && cur->attrs->is_defined;
+            
+            asm_symbol_table_insert(asm_table, cur->key, asm_type, is_static, is_defined);
+            cur = cur->next;
+        }
+    }
+    
+    return asm_table;
+}
+
+// Purpose: Check whether a slice contains the compiler temp marker.
+// Inputs: name is a slice of the symbol name.
+// Outputs: Returns true if the marker appears in the slice.
+// Invariants/Assumptions: name->start may not be NUL-terminated.
+static bool slice_contains_temp_marker(const struct Slice* name) {
+    if (name == NULL || name->start == NULL || name->len < kTempMarkerLen) {
+        return false;
+    }
+    for (size_t i = 0; i + kTempMarkerLen <= name->len; i++) {
+        bool match = true;
+        for (size_t j = 0; j < kTempMarkerLen; j++) {
+            if (name->start[i + j] != kTempMarker[j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Purpose: Append a debug local entry into a list sorted by stack offset.
+// Inputs: head is the list head; entry is the node to insert.
+// Outputs: Updates the head pointer to keep ascending offset order.
+// Invariants/Assumptions: entry is not already in the list.
+static void insert_debug_local_sorted(struct DebugLocal** head, struct DebugLocal* entry) {
+    if (head == NULL || entry == NULL) {
+        return;
+    }
+    if (*head == NULL || entry->offset < (*head)->offset) {
+        entry->next = *head;
+        *head = entry;
+        return;
+    }
+    struct DebugLocal* cur = *head;
+    while (cur->next != NULL && cur->next->offset <= entry->offset) {
+        cur = cur->next;
+    }
+    entry->next = cur->next;
+    cur->next = entry;
+}
+
+// Purpose: Collect stack-local debug metadata from a pseudo map.
+// Inputs: map is the pseudo map for a single function.
+// Outputs: Returns a sorted list of locals and sets out_count.
+// Invariants/Assumptions: map entries map pseudos to stack or static storage.
+static struct DebugLocal* collect_debug_locals(const struct PseudoMap* map, size_t* out_count) {
+    if (out_count != NULL) {
+        *out_count = 0;
+    }
+    if (map == NULL || map->arr == NULL) {
+        return NULL;
+    }
+    struct DebugLocal* head = NULL;
+    for (size_t i = 0; i < map->size; i++) {
+        for (struct PseudoEntry* entry = map->arr[i]; entry != NULL; entry = entry->next) {
+            if (entry->pseudo == NULL || entry->mapped == NULL) {
+                continue;
+            }
+            struct Slice* name = entry->pseudo->pseudo;
+            if (slice_contains_temp_marker(name)) {
+                continue;
+            }
+            if (entry->mapped->type != OPERAND_MEMORY || entry->mapped->reg != BP) {
+                continue;
+            }
+            struct DebugLocal* local = arena_alloc(sizeof(struct DebugLocal));
+            local->name = name;
+            local->offset = entry->mapped->lit_value;
+            local->next = NULL;
+            insert_debug_local_sorted(&head, local);
+            if (out_count != NULL) {
+                (*out_count)++;
+            }
+        }
+    }
+    return head;
+}
+
+// Purpose: Detect whether a function body contains debug markers.
+// Inputs: instrs is the function instruction list.
+// Outputs: Returns true if at least one debug boundary is present.
+// Invariants/Assumptions: instrs may be NULL for empty bodies.
+static bool asm_has_debug_markers(const struct AsmInstr* instrs) {
+    for (const struct AsmInstr* cur = instrs; cur != NULL; cur = cur->next) {
+        if (cur->type == ASM_BOUNDARY) {
+            return true;
+        }
+    }
+    return false;
+}
 
 // Purpose: Print a slice to stderr for error reporting.
 // Inputs: slice may be NULL; otherwise points to a valid slice.
@@ -29,7 +167,7 @@ static void asm_gen_fprint_slice(const struct Slice* slice) {
 // Inputs: operation labels the failing step; func_name may be NULL.
 // Outputs: Writes an actionable error message to stderr and exits.
 // Invariants/Assumptions: fmt is a printf-style format string.
-static void asm_gen_error(const char* operation,
+void asm_gen_error(const char* operation,
                           const struct Slice* func_name,
                           const char* fmt,
                           ...) {
@@ -87,24 +225,6 @@ static const char* tac_instr_name(enum TACInstrType type) {
     }
 }
 
-// Purpose: Detect whether a pseudo operand maps to a static storage symbol.
-// Inputs: opr is the operand to classify.
-// Outputs: Returns true if the operand names a static symbol.
-// Invariants/Assumptions: global_symbol_table is initialized before use.
-static bool is_static_symbol_operand(const struct Operand* opr);
-
-// Purpose: Reserve space for a new stack slot in the current frame.
-// Inputs: stack_bytes tracks the total allocated stack bytes.
-// Outputs: Returns the negative offset from BP for the new slot.
-// Invariants/Assumptions: stack_bytes is non-NULL.
-static int allocate_stack_slot(size_t* stack_bytes);
-
-// Purpose: Replace a pseudo operand field with its mapped location if present.
-// Inputs: field points to an operand field that may hold a pseudo.
-// Outputs: Updates *field in place when a mapping exists.
-// Invariants/Assumptions: pseudo_map is initialized before use.
-static void replace_operand_if_pseudo(struct Operand** field);
-
 // Purpose: Append a top-level ASM node to the program list.
 // Inputs: prog is the ASM program; node is the top-level to append.
 // Outputs: Updates prog->head/tail to include node.
@@ -134,6 +254,8 @@ struct AsmProg* prog_to_asm(struct TACProg* tac_prog, bool emit_sections) {
         asm_gen_error("program", NULL, "input TAC program is NULL");
     }
 
+    asm_symbol_table = convert_symbol_table(global_symbol_table);
+
     struct AsmProg* asm_prog = arena_alloc(sizeof(struct AsmProg));
     asm_prog->head = NULL;
     asm_prog->tail = NULL;
@@ -143,6 +265,8 @@ struct AsmProg* prog_to_asm(struct TACProg* tac_prog, bool emit_sections) {
         struct AsmTopLevel* data_directive = arena_alloc(sizeof(struct AsmTopLevel));
         data_directive->type = ASM_SECTION;
         data_directive->name = &data_directive_slice;
+        data_directive->locals = NULL;
+        data_directive->num_locals = 0;
         data_directive->next = NULL;
         append_asm_top_level(asm_prog, data_directive);
     }
@@ -160,6 +284,8 @@ struct AsmProg* prog_to_asm(struct TACProg* tac_prog, bool emit_sections) {
         struct AsmTopLevel* text_directive = arena_alloc(sizeof(struct AsmTopLevel));
         text_directive->type = ASM_SECTION;
         text_directive->name = &text_directive_slice;
+        text_directive->locals = NULL;
+        text_directive->num_locals = 0;
         text_directive->next = NULL;
         append_asm_top_level(asm_prog, text_directive);
     }
@@ -188,6 +314,8 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
 
     struct AsmTopLevel* asm_top = arena_alloc(sizeof(struct AsmTopLevel));
     asm_top->next = NULL;
+    asm_top->locals = NULL;
+    asm_top->num_locals = 0;
     
     if (tac_top->type == FUNC) {
         asm_top->type = ASM_FUNC;
@@ -207,12 +335,15 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
         alloc_instr->dst->type = OPERAND_REG;
         alloc_instr->dst->reg = SP;
         alloc_instr->dst->lit_value = 0;
+        alloc_instr->dst->asm_type = WORD;
         alloc_instr->src1 = arena_alloc(sizeof(struct Operand));
         alloc_instr->src1->type = OPERAND_REG;
         alloc_instr->src1->reg = SP;
+        alloc_instr->src1->asm_type = WORD;
         alloc_instr->src2 = arena_alloc(sizeof(struct Operand));
         alloc_instr->src2->type = OPERAND_LIT;
         alloc_instr->src2->lit_value = 0; // placeholder, to be filled after stack size calculation
+        alloc_instr->src2->asm_type = WORD;
         alloc_instr->next = asm_body;
         asm_body = alloc_instr;
 
@@ -232,6 +363,11 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
         }
 
         size_t stack_size = create_maps(asm_body);
+        //print_pseudo_map(asm_top->name, pseudo_map);
+        
+        if (asm_has_debug_markers(asm_body)) {
+            asm_top->locals = collect_debug_locals(pseudo_map, &asm_top->num_locals);
+        }
         asm_body->src2->lit_value = (int)(stack_size + 4); // update stack allocation size
 
         replace_pseudo(asm_body);
@@ -272,6 +408,13 @@ struct AsmInstr* params_to_asm(struct Slice** params, size_t num_params) {
     // Mov Pseudo(p0), Reg(R1) ... Mov Pseudo(p7), Reg(R8)
     // Mov Pseudo(p8+), Mem(BP, offset)
     for (size_t i = 0; i < num_params; i++) {
+        struct AsmSymbolEntry* param_entry = asm_symbol_table_get(asm_symbol_table, params[i]);
+        if (param_entry == NULL) {
+            asm_gen_error("params", NULL,
+                          "missing symbol table entry for parameter %.*s",
+                          (int)params[i]->len, params[i]->start);
+        }
+
         struct AsmInstr* copy_instr = arena_alloc(sizeof(struct AsmInstr));
         copy_instr->next = NULL;
 
@@ -281,9 +424,12 @@ struct AsmInstr* params_to_asm(struct Slice** params, size_t num_params) {
           copy_instr->dst = arena_alloc(sizeof(struct Operand));
           copy_instr->dst->type = OPERAND_PSEUDO;
           copy_instr->dst->pseudo = params[i];
+          // Preserve parameter width for stack mapping and sized stores.
+          copy_instr->dst->asm_type = param_entry->type;
           copy_instr->src1 = arena_alloc(sizeof(struct Operand));
           copy_instr->src1->type = OPERAND_REG;
           copy_instr->src1->reg = (enum Reg)(R1 + i);
+          copy_instr->src1->asm_type = param_entry->type;
           copy_instr->src2 = NULL;
         } else {
           // additional args are passed on the stack at BP + offset
@@ -291,12 +437,15 @@ struct AsmInstr* params_to_asm(struct Slice** params, size_t num_params) {
           copy_instr->dst = arena_alloc(sizeof(struct Operand));
           copy_instr->dst->type = OPERAND_PSEUDO;
           copy_instr->dst->pseudo = params[i];
+          // Preserve parameter width for stack mapping and sized stores.
+          copy_instr->dst->asm_type = param_entry->type;
           copy_instr->src1 = arena_alloc(sizeof(struct Operand));
           copy_instr->src1->type = OPERAND_MEMORY;
           copy_instr->src1->reg = BP;
           // the - 6 is we do -8 for the 8 stack operands, but + 2
           // because bp and ra are on the stack before any params
           copy_instr->src1->lit_value = (int)(4 * (i - 6)); // offset from BP
+          copy_instr->src1->asm_type = param_entry->type;
           copy_instr->src2 = NULL;
         }
 
@@ -332,7 +481,9 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
             asm_instr->dst = arena_alloc(sizeof(struct Operand));
             asm_instr->dst->type = OPERAND_REG;
             asm_instr->dst->reg = R1;
+            asm_instr->dst->asm_type = type_to_asm_type(ret_instr->dst->type);
             asm_instr->src1 = tac_val_to_asm(ret_instr->dst);
+            asm_instr->src1->asm_type = type_to_asm_type(ret_instr->dst->type);
             asm_instr->src2 = NULL;
             struct AsmInstr* ret_asm_instr = arena_alloc(sizeof(struct AsmInstr));
             ret_asm_instr->type = ASM_RET;
@@ -466,14 +617,53 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
             const size_t REG_ARG_LIMIT = 8;
             size_t stack_arg_start = num_args > REG_ARG_LIMIT ? REG_ARG_LIMIT : num_args;
 
+            size_t stack_bytes = 0; // track how much stack space we use for args
+
             for (size_t idx = num_args; idx > stack_arg_start; ) {
                 idx--;
                 struct AsmInstr* push_instr = arena_alloc(sizeof(struct AsmInstr));
                 push_instr->type = ASM_PUSH;
                 push_instr->src1 = tac_val_to_asm(&args[idx]);
                 push_instr->src2 = NULL;
+
+                enum AsmType type = asm_symbol_table_get(asm_symbol_table, args[idx].val.var_name)->type;
+                size_t type_size = asm_type_size(type);
+
                 push_instr->dst = NULL;
                 push_instr->next = NULL;
+
+                size_t alignment = type_size <= 4 ? type_size : 4;
+
+                // ensure proper alignment
+                size_t padding = (alignment - (stack_bytes % alignment)) % alignment;
+                stack_bytes += padding;
+                stack_bytes += type_size;
+
+                if (alignment != 0) {
+                    // add padding if needed
+                    // sub sp sp <padding>
+                    struct AsmInstr* pad_instr = arena_alloc(sizeof(struct AsmInstr));
+                    pad_instr->type = ASM_BINARY;
+                    pad_instr->alu_op = ALU_SUB;
+                    pad_instr->dst = arena_alloc(sizeof(struct Operand));
+                    pad_instr->dst->type = OPERAND_REG;
+                    pad_instr->dst->reg = SP;
+                    pad_instr->dst->asm_type = WORD;
+                    pad_instr->src1 = arena_alloc(sizeof(struct Operand));
+                    pad_instr->src1->type = OPERAND_REG;
+                    pad_instr->src1->reg = SP;
+                    pad_instr->src1->asm_type = WORD;
+                    pad_instr->src2 = arena_alloc(sizeof(struct Operand));
+                    pad_instr->src2->type = OPERAND_LIT;
+                    pad_instr->src2->lit_value = padding;
+                    pad_instr->src2->asm_type = WORD;
+                    pad_instr->next = NULL;
+                    // append padding instruction
+                    *call_tail = pad_instr;
+                    call_tail = &pad_instr->next;
+                }
+
+                // append push instruction (possibly after padding)
                 *call_tail = push_instr;
                 call_tail = &push_instr->next;
             }
@@ -485,6 +675,7 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
                 mov_instr->dst = arena_alloc(sizeof(struct Operand));
                 mov_instr->dst->type = OPERAND_REG;
                 mov_instr->dst->reg = (enum Reg)(R1 + i);
+                mov_instr->dst->asm_type = WORD;
                 mov_instr->src1 = tac_val_to_asm(&args[i]);
                 mov_instr->src2 = NULL;
                 mov_instr->next = NULL;
@@ -504,19 +695,21 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
 
             size_t stack_arg_count = num_args > REG_ARG_LIMIT ? num_args - REG_ARG_LIMIT : 0;
             if (stack_arg_count > 0) {
-                int stack_bytes = (int)(stack_arg_count * STACK_SLOT_SIZE);
                 struct AsmInstr* stack_adjust = arena_alloc(sizeof(struct AsmInstr));
                 stack_adjust->type = ASM_BINARY;
                 stack_adjust->alu_op = ALU_ADD;
                 stack_adjust->dst = arena_alloc(sizeof(struct Operand));
                 stack_adjust->dst->type = OPERAND_REG;
                 stack_adjust->dst->reg = SP;
+                stack_adjust->dst->asm_type = WORD;
                 stack_adjust->src1 = arena_alloc(sizeof(struct Operand));
                 stack_adjust->src1->type = OPERAND_REG;
                 stack_adjust->src1->reg = SP;
+                stack_adjust->src1->asm_type = WORD;
                 stack_adjust->src2 = arena_alloc(sizeof(struct Operand));
                 stack_adjust->src2->type = OPERAND_LIT;
                 stack_adjust->src2->lit_value = stack_bytes;
+                stack_adjust->src2->asm_type = WORD;
                 stack_adjust->next = NULL;
                 *call_tail = stack_adjust;
                 call_tail = &stack_adjust->next;
@@ -529,6 +722,7 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
                 result_mov->src1 = arena_alloc(sizeof(struct Operand));
                 result_mov->src1->type = OPERAND_REG;
                 result_mov->src1->reg = R1;
+                result_mov->src1->asm_type = type_to_asm_type(call_instr->dst->type);
                 result_mov->src2 = NULL;
                 result_mov->next = NULL;
                 *call_tail = result_mov;
@@ -556,81 +750,31 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
             // Load dst, [ptr]
             //
             // ASM:
-            // Mov R3, ptr
-            // Mov R4, [R3 + 0]
-            // Mov dst, R4
+            // Load dst, [ptr]
             struct TACLoad* load_instr = &tac_instr->instr.tac_load;
-            asm_instr->type = ASM_MOV;
-            asm_instr->dst = arena_alloc(sizeof(struct Operand));
-            asm_instr->dst->type = OPERAND_REG;
-            asm_instr->dst->reg = R1;
+
+            asm_instr->type = ASM_LOAD;
+            asm_instr->dst = tac_val_to_asm(load_instr->dst);
             asm_instr->src1 = tac_val_to_asm(load_instr->src_ptr);
             asm_instr->src2 = NULL;
-
-            struct AsmInstr* mov_mem_instr = arena_alloc(sizeof(struct AsmInstr));
-            mov_mem_instr->type = ASM_MOV;
-            mov_mem_instr->dst = arena_alloc(sizeof(struct Operand));
-            mov_mem_instr->dst->type = OPERAND_REG;
-            mov_mem_instr->dst->reg = R2;
-            mov_mem_instr->src1 = arena_alloc(sizeof(struct Operand));
-            mov_mem_instr->src1->type = OPERAND_MEMORY;
-            mov_mem_instr->src1->reg = R1;
-            mov_mem_instr->src1->lit_value = 0;
-            mov_mem_instr->src2 = NULL;
-            mov_mem_instr->next = NULL;
-            asm_instr->next = mov_mem_instr;
-            
-            struct AsmInstr* final_mov_instr = arena_alloc(sizeof(struct AsmInstr));
-            final_mov_instr->type = ASM_MOV;
-            final_mov_instr->dst = tac_val_to_asm(load_instr->dst);
-            final_mov_instr->src1 = arena_alloc(sizeof(struct Operand));
-            final_mov_instr->src1->type = OPERAND_REG;
-            final_mov_instr->src1->reg = R2;
-            final_mov_instr->src2 = NULL;
-            final_mov_instr->next = NULL;
-            mov_mem_instr->next = final_mov_instr;
+            asm_instr->next = NULL;
 
             return asm_instr;
         }
         case TACSTORE:{
             // TAC:
-            // Store [ptr], src
+            // Store src, [ptr]
             //
             // ASM:
-            // Mov R3, ptr
-            // Mov R4, src
-            // Mov [R3 + 0], R4
+            // Store src, [ptr]
             struct TACStore* store_instr = &tac_instr->instr.tac_store;
-            asm_instr->type = ASM_MOV;
-            asm_instr->dst = arena_alloc(sizeof(struct Operand));
-            asm_instr->dst->type = OPERAND_REG;
-            asm_instr->dst->reg = R1;
-            asm_instr->src1 = tac_val_to_asm(store_instr->dst_ptr);
+
+            asm_instr->type = ASM_STORE;
+            asm_instr->dst = tac_val_to_asm(store_instr->dst_ptr);
+            asm_instr->src1 = tac_val_to_asm(store_instr->src);
             asm_instr->src2 = NULL;
-            
-            struct AsmInstr* mov_src_instr = arena_alloc(sizeof(struct AsmInstr));
-            mov_src_instr->type = ASM_MOV;
-            mov_src_instr->dst = arena_alloc(sizeof(struct Operand));
-            mov_src_instr->dst->type = OPERAND_REG;
-            mov_src_instr->dst->reg = R2;
-            mov_src_instr->src1 = tac_val_to_asm(store_instr->src);
-            mov_src_instr->src2 = NULL;
+            asm_instr->next = NULL;
 
-            struct AsmInstr* store_mem_instr = arena_alloc(sizeof(struct AsmInstr));
-            store_mem_instr->type = ASM_MOV;
-            store_mem_instr->dst = arena_alloc(sizeof(struct Operand));
-            store_mem_instr->dst->type = OPERAND_MEMORY;
-            store_mem_instr->dst->reg = R1;
-            store_mem_instr->dst->lit_value = 0;
-            store_mem_instr->src1 = arena_alloc(sizeof(struct Operand));
-            store_mem_instr->src1->type = OPERAND_REG;
-            store_mem_instr->src1->reg = R2;
-            store_mem_instr->src2 = NULL;
-
-            store_mem_instr->next = NULL;
-            asm_instr->next = mov_src_instr;
-            mov_src_instr->next = store_mem_instr;
-            
             return asm_instr;
         }
         case TACCOPY_TO_OFFSET:{
@@ -638,6 +782,34 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
                         "TAC instruction %s is unsupported in asm_gen",
                         tac_instr_name(tac_instr->type));
           return NULL;
+        }
+        case TACBOUNDARY: {
+            // TAC:
+            // Line marker
+            //
+            // ASM:
+            // Line marker
+            asm_instr->type = ASM_BOUNDARY;
+            asm_instr->loc = tac_instr->instr.tac_boundary.loc;
+            return asm_instr;
+        }
+        case TACTRUNC: {
+            asm_instr->type = ASM_TRUNC;
+            asm_instr->dst = tac_val_to_asm(tac_instr->instr.tac_trunc.dst);
+            asm_instr->src1 = tac_val_to_asm(tac_instr->instr.tac_trunc.src);
+            asm_instr->size = tac_instr->instr.tac_trunc.target_size;
+            asm_instr->src2 = NULL;
+            asm_instr->next = NULL;
+            return asm_instr;
+        }
+        case TACEXTEND: {
+            asm_instr->type = ASM_EXTEND;
+            asm_instr->dst = tac_val_to_asm(tac_instr->instr.tac_extend.dst);
+            asm_instr->src1 = tac_val_to_asm(tac_instr->instr.tac_extend.src);
+            asm_instr->size = tac_instr->instr.tac_extend.src_size;
+            asm_instr->src2 = NULL;
+            asm_instr->next = NULL;
+            return asm_instr;
         }
         default:
           asm_gen_error("instruction", func_name,
@@ -685,15 +857,17 @@ size_t create_maps(struct AsmInstr* asm_instr) {
                 mapped->reg = 0;
                 mapped->lit_value = 0;
                 mapped->pseudo = opr->pseudo;
+                mapped->asm_type = opr->asm_type;
             } else {
                 mapped->type = OPERAND_MEMORY;
                 mapped->reg = BP;
-                mapped->lit_value = allocate_stack_slot(&stack_bytes);
+                mapped->lit_value = allocate_stack_slot(opr, &stack_bytes);
                 // TODO: handle PSEUDO_MEM offset (part of implementing arrays)
                 //if (opr->type == OPERAND_PSEUDO_MEM) {
                 //    mapped->lit_value += opr->lit_value;
                 //}
                 mapped->pseudo = NULL;
+                mapped->asm_type = opr->asm_type;
             }
 
             pseudo_map_insert(pseudo_map, opr, mapped);
@@ -757,6 +931,28 @@ struct Operand** get_srcs(struct AsmInstr* asm_instr, size_t* out_count) {
             struct Operand** srcs_getaddr = arena_alloc(sizeof(struct Operand*));
             srcs_getaddr[0] = asm_instr->src1;
             return srcs_getaddr;
+        case ASM_LOAD:
+            *out_count = 1;
+            struct Operand** srcs_load = arena_alloc(sizeof(struct Operand*));
+            srcs_load[0] = asm_instr->src1;
+            return srcs_load;
+        case ASM_STORE:
+            *out_count = 2;
+            struct Operand** srcs_store = arena_alloc(2 * sizeof(struct Operand*));
+            srcs_store[0] = asm_instr->src1;
+            // Store uses dst as the address operand.
+            srcs_store[1] = asm_instr->dst;
+            return srcs_store;
+        case ASM_TRUNC:
+            *out_count = 1;
+            struct Operand** srcs_trunc = arena_alloc(sizeof(struct Operand*));
+            srcs_trunc[0] = asm_instr->src1;
+            return srcs_trunc;
+        case ASM_EXTEND:
+            *out_count = 1;
+            struct Operand** srcs_extend = arena_alloc(sizeof(struct Operand*));
+            srcs_extend[0] = asm_instr->src1;
+            return srcs_extend;
         default:
             *out_count = 0;
             return NULL;
@@ -773,6 +969,12 @@ struct Operand* get_dst(struct AsmInstr* asm_instr) {
             return asm_instr->dst;
         case ASM_GET_ADDRESS:
             return asm_instr->dst;
+        case ASM_LOAD:
+            return asm_instr->dst;
+        case ASM_TRUNC:
+            return asm_instr->dst;
+        case ASM_EXTEND:
+            return asm_instr->dst;
         default:
             return NULL;
     }
@@ -786,7 +988,7 @@ void replace_pseudo(struct AsmInstr* asm_instr) {
     }
 }
 
-static bool is_static_symbol_operand(const struct Operand* opr) {
+bool is_static_symbol_operand(const struct Operand* opr) {
     if (opr == NULL || opr->pseudo == NULL || global_symbol_table == NULL) {
         return false;
     }
@@ -794,13 +996,28 @@ static bool is_static_symbol_operand(const struct Operand* opr) {
     return entry != NULL && entry->attrs != NULL && entry->attrs->attr_type == STATIC_ATTR;
 }
 
-static int allocate_stack_slot(size_t* stack_bytes) {
-    size_t next_size = *stack_bytes + STACK_SLOT_SIZE;
+int allocate_stack_slot(struct Operand* opr, size_t* stack_bytes) {
+    assert(opr != NULL);
+    assert(opr->type == OPERAND_PSEUDO);
+
+    struct AsmSymbolEntry* sym_entry = asm_symbol_table_get(asm_symbol_table, opr->pseudo);
+    if (sym_entry == NULL) {
+        asm_gen_error("stack-map", NULL,
+                      "missing symbol table entry for pseudo %.*s",
+                      (int)opr->pseudo->len, opr->pseudo->start);
+    }
+    // add padding if necessary for alignment
+    size_t type_size = asm_type_size(sym_entry->type);
+    size_t alignment = type_size <= 4 ? type_size : 4;
+    size_t padding = (alignment - (*stack_bytes % alignment)) % alignment;
+    *stack_bytes += padding;
+
+    size_t next_size = *stack_bytes + asm_type_size(sym_entry->type);
     *stack_bytes = next_size;
     return -((int)next_size);
 }
 
-static void replace_operand_if_pseudo(struct Operand** field) {
+void replace_operand_if_pseudo(struct Operand** field) {
     if (field == NULL || *field == NULL) {
         return;
     }
@@ -837,11 +1054,13 @@ struct Operand* tac_val_to_asm(struct Val* val) {
         case CONSTANT: {
             opr->type = OPERAND_LIT;
             opr->lit_value = (int)(val->val.const_value); // assuming fits in int
+            opr->asm_type = type_to_asm_type(val->type);
             return opr;
         }
         case VARIABLE: {
             opr->type = OPERAND_PSEUDO;
             opr->pseudo = val->val.var_name;
+            opr->asm_type = type_to_asm_type(val->type);
             return opr;
         }
         default:
@@ -860,6 +1079,7 @@ struct Operand* make_pseudo_mem(struct Val* val, int offset) {
         opr->type = OPERAND_PSEUDO_MEM;
         opr->pseudo = val->val.var_name;
         opr->lit_value = offset;
+        opr->asm_type = type_to_asm_type(val->type);
         return opr;
     } else {
         asm_gen_error("operand", NULL,
@@ -876,6 +1096,9 @@ size_t type_alignment(struct Type* type, const struct Slice* symbol_name) {
         asm_gen_error("type-alignment", symbol_name, "NULL type for static symbol");
     }
     switch (type->type) {
+        case SHORT_TYPE:
+        case USHORT_TYPE:
+            return 2;
         case INT_TYPE:
         case UINT_TYPE:
         case LONG_TYPE:
@@ -1011,4 +1234,142 @@ void destroy_pseudo_map(struct PseudoMap* hmap){
   }
   free(hmap->arr);
   free(hmap);
+}
+
+struct AsmSymbolTable* create_asm_symbol_table(size_t numBuckets){
+  struct AsmSymbolTable* table = arena_alloc(sizeof(struct AsmSymbolTable));
+  table->size = numBuckets;
+  table->arr = arena_alloc(sizeof(struct AsmSymbolEntry*) * numBuckets);
+  for (size_t i = 0; i < numBuckets; i++){
+    table->arr[i] = NULL;
+  }
+  return table;
+}
+
+void asm_symbol_table_insert(struct AsmSymbolTable* hmap, struct Slice* key, enum AsmType type, 
+    bool is_static, bool is_defined){
+  size_t label = hash_slice(key) % hmap->size;
+  
+  struct AsmSymbolEntry* newEntry = arena_alloc(sizeof(struct AsmSymbolEntry));
+  newEntry->key = key;
+  newEntry->type = type;
+  newEntry->is_static = is_static;
+  newEntry->is_defined = is_defined;
+  newEntry->next = NULL;
+
+  if (hmap->arr[label] == NULL){
+    hmap->arr[label] = newEntry;
+  } else {
+    struct AsmSymbolEntry* cur = hmap->arr[label];
+    while (cur->next != NULL){
+      cur = cur->next;
+    }
+    cur->next = newEntry;
+  }
+}
+
+struct AsmSymbolEntry* asm_symbol_table_get(struct AsmSymbolTable* hmap, struct Slice* key){
+  size_t label = hash_slice(key) % hmap->size;
+
+  struct AsmSymbolEntry* cur = hmap->arr[label];
+  while (cur != NULL){
+    if (compare_slice_to_slice(cur->key, key)){
+      return cur;
+    }
+    cur = cur->next;
+  }
+  return NULL;
+}
+
+bool asm_symbol_table_contains(struct AsmSymbolTable* hmap, struct Slice* key){
+  size_t label = hash_slice(key) % hmap->size;
+
+  struct AsmSymbolEntry* cur = hmap->arr[label];
+  while (cur != NULL){
+    if (compare_slice_to_slice(cur->key, key)){
+      return true;
+    }
+    cur = cur->next;
+  }
+  return false;
+}
+
+void print_pseudo_map(struct Slice* func, struct PseudoMap* hmap){
+  printf("%.*s pseudo map:\n", (int)func->len, func->start);
+  for (size_t i = 0; i < hmap->size; i++){
+    struct PseudoEntry* cur = hmap->arr[i];
+    while (cur != NULL){
+      printf("  Key: %.*s\n", 
+        (int)cur->pseudo->pseudo->len, 
+        cur->pseudo->pseudo->start);
+      printf("    BP Offset: %d\n", 
+        cur->mapped->lit_value);
+      printf("    Type: ");
+      switch (cur->mapped->asm_type) {
+        case BYTE:
+          printf("BYTE\n");
+          break;
+        case DOUBLE:
+          printf("DOUBLE\n");
+          break;
+        case WORD:
+          printf("WORD\n");
+          break;
+        case LONG_WORD:
+          printf("LONG_WORD\n");
+          break;
+        default:
+          printf("unknown\n");
+          break;
+      }
+      cur = cur->next;
+    }
+  }
+}
+
+void print_asm_symbol_table(struct AsmSymbolTable* hmap){
+  for (size_t i = 0; i < hmap->size; i++){
+    struct AsmSymbolEntry* cur = hmap->arr[i];
+    while (cur != NULL){
+      printf("Key: %.*s\n", (int)cur->key->len, cur->key->start);
+      printf("  Type: ");
+      switch (cur->type){
+        case BYTE:
+          printf("BYTE\n");
+          break;
+        case DOUBLE:
+          printf("DOUBLE\n");
+          break;
+        case WORD:
+          printf("WORD\n");
+          break;
+        case LONG_WORD:
+          printf("LONG_WORD\n");
+          break;
+        default:
+          printf("Unknown (%d)\n", (int)cur->type);
+          break;
+      }
+      printf("  Is Static: %s\n", cur->is_static ? "true" : "false");
+      printf("  Is Defined: %s\n", cur->is_defined ? "true" : "false");
+      printf("\n");
+      cur = cur->next;
+    }
+  }
+}
+
+size_t asm_type_size(enum AsmType type){
+  switch (type){
+    case BYTE:
+      return 1;
+    case DOUBLE:
+      return 2;
+    case WORD:
+      return 4;
+    case LONG_WORD:
+      return 8;
+    default:
+      asm_gen_error("asm-type-size", NULL, "unknown asm type %d", (int)type);
+      return 0;
+  }
 }

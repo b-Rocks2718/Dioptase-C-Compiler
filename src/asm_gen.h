@@ -9,16 +9,41 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+extern struct AsmSymbolTable* asm_symbol_table;
+
 enum AsmType {
-  BYTE,
+  BYTE = 1,
   DOUBLE,
   WORD,
   LONG_WORD
 };
 
+struct AsmSymbolEntry{
+  struct Slice* key;
+  enum AsmType type; // for data
+  bool is_static;  // for data
+  bool is_defined; // for functions
+
+  struct AsmSymbolEntry* next;
+};
+
+struct AsmSymbolTable{
+  size_t size;
+  struct AsmSymbolEntry** arr;
+};
+
 struct AsmProg {
   struct AsmTopLevel* head;
   struct AsmTopLevel* tail;
+};
+
+// Purpose: Capture a stack-local debug entry for assembly emission.
+// Inputs/Outputs: name identifies the source variable; offset is relative to BP.
+// Invariants/Assumptions: offset matches the lowered stack frame layout.
+struct DebugLocal {
+    struct Slice* name;
+    int offset;
+    struct DebugLocal* next;
 };
 
 enum AsmTopLevelType {
@@ -33,6 +58,8 @@ struct AsmTopLevel {
     bool global;
 
     struct AsmInstr* body; // for Func
+    struct DebugLocal* locals; // for Func debug output
+    size_t num_locals; // for Func debug output
 
     int alignment; // for StaticVar
     struct IdentInit* init_values; // for StaticVar
@@ -43,7 +70,6 @@ struct AsmTopLevel {
 
 enum AsmInstrType {
     ASM_MOV,
-    ASM_MOVSX,
     ASM_UNARY,
     ASM_BINARY,
     ASM_CMP,
@@ -54,6 +80,11 @@ enum AsmInstrType {
     ASM_LABEL,
     ASM_RET,
     ASM_GET_ADDRESS,
+    ASM_LOAD,
+    ASM_STORE,
+    ASM_BOUNDARY,
+    ASM_TRUNC,
+    ASM_EXTEND,
 };
 
 struct AsmInstr {
@@ -63,11 +94,15 @@ struct AsmInstr {
     enum ALUOp alu_op;     // for Binary
     enum TACCondition cond;   // for CondJump
 
+    size_t size; // for truncate/extend
+
     struct Operand* dst;
     struct Operand* src1;
     struct Operand* src2; // for binary
 
     struct Slice* label; // for Jump, CondJump, Label
+
+    const char* loc; // for debug line markers
 
     struct AsmInstr* next;
 };
@@ -122,6 +157,7 @@ static const enum Reg RA = R29; // return address register
 
 struct Operand {
     enum OperandType type;
+    enum AsmType asm_type;
     
     enum Reg reg;          // for Reg / Memory
     int lit_value;        // for Lit / PsuedoMem / Memory
@@ -175,6 +211,10 @@ struct Operand* pseudo_map_get(struct PseudoMap* hmap, struct Operand* key);
 
 bool pseudo_map_contains(struct PseudoMap* hmap, struct Operand* key);
 
+size_t asm_type_size(enum AsmType type);
+
+void print_pseudo_map(struct Slice* func, struct PseudoMap* hmap);
+
 void destroy_pseudo_map(struct PseudoMap* hmap);
 
 // Purpose: Print a debugging representation of an ASM program.
@@ -182,5 +222,47 @@ void destroy_pseudo_map(struct PseudoMap* hmap);
 // Outputs: Writes a readable summary to stdout.
 // Invariants/Assumptions: The program list is well-formed and acyclic.
 void print_asm_prog(const struct AsmProg* prog);
+
+void print_asm_symbols(const struct AsmSymbolTable* sym_table);
+
+// Purpose: Detect whether a pseudo operand maps to a static storage symbol.
+// Inputs: opr is the operand to classify.
+// Outputs: Returns true if the operand names a static symbol.
+// Invariants/Assumptions: global_symbol_table is initialized before use.
+bool is_static_symbol_operand(const struct Operand* opr);
+
+// Purpose: Reserve space for a new stack slot in the current frame.
+// Inputs: operand to allocate space for, and stack_bytes tracks the total allocated stack bytes.
+// Outputs: Returns the negative offset from BP for the new slot.
+// Invariants/Assumptions: stack_bytes is non-NULL.
+int allocate_stack_slot(struct Operand* opr, size_t* stack_bytes);
+
+// Purpose: Calculate total stack size needed for arguments passed on the stack.
+// Inputs: args is the array of argument values; num_args is the number of arguments.
+// Outputs: Returns the total size in bytes needed for stack arguments.
+size_t get_stack_size(struct Val* args, size_t num_args);
+
+// Purpose: Replace a pseudo operand field with its mapped location if present.
+// Inputs: field points to an operand field that may hold a pseudo.
+// Outputs: Updates *field in place when a mapping exists.
+// Invariants/Assumptions: pseudo_map is initialized before use.
+void replace_operand_if_pseudo(struct Operand** field);
+
+
+struct AsmSymbolTable* create_asm_symbol_table(size_t numBuckets);
+
+void asm_symbol_table_insert(struct AsmSymbolTable* hmap, struct Slice* key, 
+    enum AsmType type, bool is_static, bool is_defined);
+
+struct AsmSymbolEntry* asm_symbol_table_get(struct AsmSymbolTable* hmap, struct Slice* key);
+
+bool asm_symbol_table_contains(struct AsmSymbolTable* hmap, struct Slice* key);
+
+void print_asm_symbol_table(struct AsmSymbolTable* hmap);
+
+void asm_gen_error(const char* operation,
+                          const struct Slice* func_name,
+                          const char* fmt,
+                          ...);
 
 #endif // ASM_GEN_H

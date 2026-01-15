@@ -3,6 +3,7 @@
 
 #include "TAC.h"
 #include "slice.h"
+#include "source_location.h"
 
 // Purpose: Emit indentation for TAC output formatting.
 // Inputs: tabs is the indentation level in 4-space units.
@@ -230,10 +231,6 @@ static void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
       print_tac_val(instr->instr.tac_binary.src1);
       printf(", ");
       print_tac_val(instr->instr.tac_binary.src2);
-      if (instr->instr.tac_binary.type != NULL) {
-        printf(" : ");
-        print_type(instr->instr.tac_binary.type);
-      }
       printf("\n");
       break;
     case TACCOND_JUMP:
@@ -309,6 +306,25 @@ static void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
       printf(", ");
       print_tac_val(instr->instr.tac_copy_to_offset.src);
       printf(", %d\n", instr->instr.tac_copy_to_offset.offset);
+      break;
+    case TACBOUNDARY:
+      struct SourceLocation loc = source_location_from_ptr(instr->instr.tac_boundary.loc);
+      const char* filename = source_filename_for_ptr(instr->instr.tac_boundary.loc);
+      printf("Line %s:%zu:%zu\n", filename, loc.line, loc.column);
+      break;
+    case TACTRUNC:
+      printf("Trunc ");;
+      print_tac_val(instr->instr.tac_trunc.dst);
+      printf(", ");
+      print_tac_val(instr->instr.tac_trunc.src);
+      printf(", %zu\n", instr->instr.tac_trunc.target_size);
+      break;
+    case TACEXTEND:
+      printf("Extend ");
+      print_tac_val(instr->instr.tac_extend.dst);
+      printf(", ");
+      print_tac_val(instr->instr.tac_extend.src);
+      printf(", %zu\n", instr->instr.tac_extend.src_size);
       break;
     default:
       printf("Instr?\n");

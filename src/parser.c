@@ -10,18 +10,6 @@
 #include "token_array.h"
 #include "source_location.h"
 
-// Purpose: Parse a token stream into AST structures for the C subset.
-// Inputs: Consumes tokens produced by the lexer.
-// Outputs: Allocates AST nodes in the arena and returns parse results.
-// Invariants/Assumptions: Tokens are well-formed and include locations.
-
-void parse_type_and_storage_class(struct Type** type, enum StorageClass* class);
-bool process_declarator(struct Declarator* decl,
-                        struct Type* base_type,
-                        struct Slice** name_out,
-                        struct Type** type_out,
-                        struct ParamList** params_out);
-
 static struct Token * program;
 static size_t prog_size;
 static struct Token * current;
@@ -271,6 +259,7 @@ enum TypeSpecifier parse_type_spec(){
   if (consume(SIGNED_TOK)) return SINT_SPEC;
   if (consume(UNSIGNED_TOK)) return UINT_SPEC;
   if (consume(LONG_TOK)) return LONG_SPEC;
+  if (consume(SHORT_TOK)) return SHORT_SPEC;
   else return 0;
 }
 
@@ -306,6 +295,7 @@ bool spec_list_has_duplicates(struct TypeSpecList* types){
   unsigned num_uints = 0;
   unsigned num_sints = 0;
   unsigned num_longs = 0;
+  unsigned num_shorts = 0;
   struct TypeSpecList* cur = types;
   while (cur != NULL){
     switch (cur->spec){
@@ -321,6 +311,11 @@ bool spec_list_has_duplicates(struct TypeSpecList* types){
       case LONG_SPEC:
         num_longs++;
         break;
+      case SHORT_SPEC:
+        num_shorts++;
+        break;
+      default:
+        break;
     }
     cur = cur->next;
   }
@@ -328,6 +323,7 @@ bool spec_list_has_duplicates(struct TypeSpecList* types){
   if (num_uints > 1) return true;
   if (num_sints > 1) return true;
   if (num_longs > 1) return true;
+  if (num_shorts > 1) return true;
   return false;
 }
 
@@ -345,6 +341,21 @@ struct Type* parse_param_type(){
              spec_list_contains(types, UINT_SPEC)){
     parse_error_at(parser_error_ptr(), "invalid type specifiers");
     return NULL;
+  } else if (spec_list_contains(types, UINT_SPEC) && spec_list_contains(types, SHORT_SPEC)){
+    // ignoring long types for now
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = USHORT_TYPE;
+    return type;
+  } else if (spec_list_contains(types, SINT_SPEC) && spec_list_contains(types, SHORT_SPEC)){
+    // ignoring long types for now
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = SHORT_TYPE;
+    return type;
+  } else if (spec_list_contains(types, SHORT_SPEC)){
+    // ignoring long types for now
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = SHORT_TYPE;
+    return type;
   } else if (spec_list_contains(types, UINT_SPEC)){
     // ignoring long types for now
     struct Type* type = arena_alloc(sizeof(struct Type));
@@ -1392,6 +1403,12 @@ struct DclrPrefix* parse_type_or_storage_class(){
     dclr_prefix->prefix.type_spec = LONG_SPEC;
     return dclr_prefix;
   }
+  else if (consume(SHORT_TOK)) {
+    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
+    dclr_prefix->type = TYPE_PREFIX;
+    dclr_prefix->prefix.type_spec = SHORT_SPEC;
+    return dclr_prefix;
+  }
   else if (consume(STATIC_TOK)){
     struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = STORAGE_PREFIX;
@@ -1404,7 +1421,7 @@ struct DclrPrefix* parse_type_or_storage_class(){
     dclr_prefix->prefix.type_spec = EXTERN;
     return dclr_prefix;
   }
-  else return NULL;
+  return NULL;
 }
 
 // Collect a sequence of type and storage keywords into lists.
@@ -1472,15 +1489,32 @@ void parse_type_and_storage_class(struct Type** type, enum StorageClass* class){
     *type = NULL;
     *class = NONE;
     return;
+  } else if (spec_list_contains(specs, SHORT_SPEC) &&
+             spec_list_contains(specs, LONG_SPEC)){
+    parse_error_at(parser_error_ptr(), "invalid type specifiers");
+    *type = NULL;
+    *class = NONE;
+    return;
   } else if (spec_list_contains(specs, UINT_SPEC) &&
              spec_list_contains(specs, LONG_SPEC)){
     *type = arena_alloc(sizeof(struct Type));
     (*type)->type = ULONG_TYPE;
     *class = storage;
     return;
+  } else if (spec_list_contains(specs, UINT_SPEC) &&
+             spec_list_contains(specs, SHORT_SPEC)){
+    *type = arena_alloc(sizeof(struct Type));
+    (*type)->type = USHORT_TYPE;
+    *class = storage;
+    return;
   } else if (spec_list_contains(specs, UINT_SPEC)){
     *type = arena_alloc(sizeof(struct Type));
     (*type)->type = UINT_TYPE;
+    *class = storage;
+    return;
+  } else if (spec_list_contains(specs, SHORT_SPEC)){
+    *type = arena_alloc(sizeof(struct Type));
+    (*type)->type = SHORT_TYPE;
     *class = storage;
     return;
   } else if (spec_list_contains(specs, LONG_SPEC)) {
@@ -1639,16 +1673,6 @@ struct ParamTypeList* params_to_types(struct ParamList* params){
   }
   return head;
 }
-
-// Apply declarator structure to a base type, producing name/type/params.
-// Walks the declarator tree and constructs the derived type in order.
-// Purpose: Convert a declarator into a finalized type and name.
-// Inputs: decl is the parsed declarator; base_type is the starting type.
-// Outputs: Returns true on success and populates type_out/name_out.
-// Invariants/Assumptions: decl structure is validated by the parser.
-bool process_declarator(struct Declarator* decl, struct Type* base_type,
-                        struct Slice** name_out, struct Type** derived_type_out,
-                        struct ParamList** params_out);
 
 // Purpose: Convert a parameter declarator into a VariableDclr entry.
 // Inputs: param describes the parameter; name_out/type_out capture results.
@@ -1826,6 +1850,7 @@ struct Declaration* parse_declaration(){
     case SIGNED_TOK:
     case UNSIGNED_TOK:
     case LONG_TOK:
+    case SHORT_TOK:
     case STATIC_TOK:
     case EXTERN_TOK:
       break;

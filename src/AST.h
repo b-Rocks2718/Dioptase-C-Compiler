@@ -19,8 +19,10 @@ enum StorageClass {
 enum TypeType {
   INT_TYPE,
   LONG_TYPE,
+  SHORT_TYPE,
   UINT_TYPE,
   ULONG_TYPE,
+  USHORT_TYPE,
   FUN_TYPE,
   POINTER_TYPE
 };
@@ -178,7 +180,9 @@ enum ConstType {
 };
 
 union ConstVariant {
-  int int_val; // yeah this is probably redundant but whatever
+  short short_val;
+  unsigned short ushort_val;
+  int int_val;
   unsigned uint_val;
   long long_val;
   unsigned long ulong_val;
@@ -466,7 +470,8 @@ enum TypeSpecifier {
   INT_SPEC = 1,
   UINT_SPEC,
   SINT_SPEC,
-  LONG_SPEC
+  LONG_SPEC,
+  SHORT_SPEC,
 };
 
 struct TypeSpecList {

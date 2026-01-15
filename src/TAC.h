@@ -62,7 +62,10 @@ enum TACInstrType {
     TACGET_ADDRESS,
     TACLOAD,
     TACSTORE,
-    TACCOPY_TO_OFFSET
+    TACCOPY_TO_OFFSET,
+    TACBOUNDARY,
+    TACTRUNC,
+    TACEXTEND,
 };
 
 enum TACCondition {
@@ -111,7 +114,6 @@ struct TACBinary {
   struct Val* dst;
   struct Val* src1;
   struct Val* src2;
-  struct Type* type;
 };
 
 struct TACCondJump {
@@ -165,6 +167,22 @@ struct TACCopyToOffset {
   int offset;
 };
 
+struct TACBoundary {
+  const char* loc; // start of the statement for debug line markers
+};
+
+struct TACTrunc {
+  struct Val* dst;
+  struct Val* src;
+  size_t target_size; // in bytes
+};
+
+struct TACExtend {
+  struct Val* dst;
+  struct Val* src;
+  size_t src_size; // in bytes
+};
+
 union TACInstrVariant {
   struct TACReturn tac_return;
   struct TACUnary tac_unary;
@@ -179,6 +197,9 @@ union TACInstrVariant {
   struct TACLoad tac_load;
   struct TACStore tac_store;
   struct TACCopyToOffset tac_copy_to_offset;
+  struct TACBoundary tac_boundary; // used for statement/declaration debug line markers
+  struct TACTrunc tac_trunc;
+  struct TACExtend tac_extend;
 };
 
 struct TACInstr {
@@ -200,7 +221,11 @@ struct ExprResult {
 
 // ----- Main TAC conversion functions -----
 
-struct TACProg* prog_to_TAC(struct Program* program);
+// Purpose: Lower a full program into TAC, optionally emitting debug boundaries.
+// Inputs: program is the typed AST; emit_debug_info controls boundary emission.
+// Outputs: Returns a TAC program with top-level lists or NULL on failure.
+// Invariants/Assumptions: Program declarations are in source order.
+struct TACProg* prog_to_TAC(struct Program* program, bool emit_debug_info);
 
 struct TopLevel* file_scope_dclr_to_TAC(struct Declaration* declaration);
 

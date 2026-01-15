@@ -117,52 +117,6 @@ static void tac_interp_error(const char* fmt, ...) {
   exit(EXIT_FAILURE);
 }
 
-// Purpose: Compute the bit width for a TAC value type.
-// Inputs: type is the value type or NULL for unknown.
-// Outputs: Returns the type size in bits; 0 means unknown size.
-// Invariants/Assumptions: Uses get_type_size for size computation.
-static size_t tac_type_bits(const struct Type* type) {
-  if (type == NULL) {
-    return 0;
-  }
-  size_t size = get_type_size((struct Type*)type);
-  if (size == 0) {
-    return 0;
-  }
-  return size * 8;
-}
-
-// Purpose: Build a bitmask for a given bit width.
-// Inputs: bits is the width in bits.
-// Outputs: Returns a mask with the low bits set, or all ones for 0/64+ bits.
-// Invariants/Assumptions: bits may be 0 when type size is unknown.
-static uint64_t tac_mask_for_bits(size_t bits) {
-  if (bits == 0 || bits >= 64) {
-    return UINT64_MAX;
-  }
-  return (UINT64_C(1) << bits) - 1;
-}
-
-// Purpose: Normalize a value to the width/sign of the given type.
-// Inputs: value is the raw bits; type controls width/sign rules.
-// Outputs: Returns the normalized value with truncation and sign/zero extension.
-// Invariants/Assumptions: Signed types use two's-complement sign extension.
-static uint64_t tac_normalize_value(uint64_t value, const struct Type* type) {
-  size_t bits = tac_type_bits(type);
-  uint64_t mask = tac_mask_for_bits(bits);
-  uint64_t truncated = value & mask;
-  if (bits == 0 || bits >= 64) {
-    return truncated;
-  }
-  if (type != NULL && is_signed_type((struct Type*)type)) {
-    uint64_t sign_bit = UINT64_C(1) << (bits - 1);
-    if (truncated & sign_bit) {
-      truncated |= ~mask;
-    }
-  }
-  return truncated;
-}
-
 // Purpose: Initialize a TacMemory structure.
 // Inputs: mem points to the memory object to initialize.
 // Outputs: Resets memory tracking to an empty state.
@@ -413,9 +367,9 @@ static uint64_t tac_eval_val(struct TacInterpreter* interp,
   }
   switch (val->val_type) {
     case CONSTANT:
-      return tac_normalize_value(val->val.const_value, val->type);
+      return val->val.const_value;
     case VARIABLE:
-      return tac_normalize_value(tac_read_var(interp, frame, val->val.var_name), val->type);
+      return tac_read_var(interp, frame, val->val.var_name);
     default:
       tac_interp_error("unknown TAC value type %d", (int)val->val_type);
       return 0;
@@ -433,7 +387,7 @@ static void tac_assign_val(struct TacInterpreter* interp,
   if (dst == NULL || dst->val_type != VARIABLE) {
     tac_interp_error("assignment target is not a variable");
   }
-  tac_write_var(interp, frame, dst->val.var_name, tac_normalize_value(value, dst->type));
+  tac_write_var(interp, frame, dst->val.var_name, value);
 }
 
 // Purpose: Determine the result of a TAC conditional jump.
@@ -473,27 +427,26 @@ static bool tac_condition_true(enum TACCondition cond, uint64_t left, uint64_t r
 // Outputs: Returns the result of the unary operation.
 // Invariants/Assumptions: Boolean not returns 1 or 0.
 static uint64_t tac_apply_unary(enum UnOp op, uint64_t value, const struct Type* type) {
-  uint64_t normalized = tac_normalize_value(value, type);
   uint64_t result = 0;
   switch (op) {
     case COMPLEMENT:
-      result = ~normalized;
+      result = ~value;
       break;
     case NEGATE:
       if (type != NULL && is_signed_type((struct Type*)type)) {
-        result = (uint64_t)(-((int64_t)normalized));
+        result = (uint64_t)(-((int64_t)value));
       } else {
-        result = (uint64_t)(0 - normalized);
+        result = (uint64_t)(0 - value);
       }
       break;
     case BOOL_NOT:
-      result = (normalized == 0) ? 1u : 0u;
+      result = (value == 0) ? 1u : 0u;
       break;
     default:
       tac_interp_error("unsupported unary operator %d", (int)op);
       return 0;
   }
-  return tac_normalize_value(result, type);
+  return result;
 }
 
 // Purpose: Apply a binary operator to two values.
@@ -502,94 +455,75 @@ static uint64_t tac_apply_unary(enum UnOp op, uint64_t value, const struct Type*
 // Invariants/Assumptions: Division or modulo by zero is an error.
 static uint64_t tac_apply_binary(enum ALUOp op,
                                  uint64_t left,
-                                 uint64_t right,
-                                 const struct Type* type) {
-  uint64_t left_norm = tac_normalize_value(left, type);
-  uint64_t right_norm = tac_normalize_value(right, type);
-  size_t bits = tac_type_bits(type);
-  if (bits == 0 || bits > 64) {
-    bits = 64;
-  }
+                                 uint64_t right) {
   uint64_t result = 0;
   switch (op) {
     case ALU_ADD:
-      result = left_norm + right_norm;
+      result = left + right;
       break;
     case ALU_SUB:
-      result = left_norm - right_norm;
+      result = left - right;
       break;
     case ALU_SMUL:
-      result = (uint64_t)(((int64_t)left_norm) * ((int64_t)right_norm));
+      result = (uint64_t)(((int64_t)left) * ((int64_t)right));
       break;
     case ALU_UMUL:
-      result = left_norm * right_norm;
+      result = left * right;
       break;
     case ALU_SDIV:
-      if ((int64_t)right_norm == 0) {
+      if ((int64_t)right == 0) {
         tac_interp_error("division by zero in TACBINARY");
       }
-      result = (uint64_t)(((int64_t)left_norm) / ((int64_t)right_norm));
+      result = (uint64_t)(((int64_t)left) / ((int64_t)right));
       break;
     case ALU_UDIV:
-      if (right_norm == 0) {
+      if (right == 0) {
         tac_interp_error("division by zero in TACBINARY");
       }
-      result = left_norm / right_norm;
+      result = left / right;
       break;
     case ALU_SMOD:
-      if ((int64_t)right_norm == 0) {
+      if ((int64_t)right == 0) {
         tac_interp_error("modulo by zero in TACBINARY");
       }
-      result = (uint64_t)(((int64_t)left_norm) % ((int64_t)right_norm));
+      result = (uint64_t)(((int64_t)left) % ((int64_t)right));
       break;
     case ALU_UMOD:
-      if (right_norm == 0) {
+      if (right == 0) {
         tac_interp_error("modulo by zero in TACBINARY");
       }
-      result = left_norm % right_norm;
+      result = left % right;
       break;
     case ALU_AND:
-      result = left_norm & right_norm;
+      result = left & right;
       break;
     case ALU_OR:
-      result = left_norm | right_norm;
+      result = left | right;
       break;
     case ALU_XOR:
-      result = left_norm ^ right_norm;
+      result = left ^ right;
       break;
     case ALU_LSR: {
-      uint64_t shift = right_norm;
-      if (shift >= bits) {
-        result = 0;
-      } else {
-        result = left_norm >> shift;
-      }
+      uint64_t shift = right;
+      result = left >> shift;
       break;
     }
     case ALU_LSL:
     case ALU_ASL: {
-      uint64_t shift = right_norm;
-      if (shift >= bits) {
-        result = 0;
-      } else {
-        result = left_norm << shift;
-      }
+      uint64_t shift = right;
+      result = left << shift;
       break;
     }
     case ALU_ASR: {
-      uint64_t shift = right_norm;
-      if (shift >= bits) {
-        result = ((int64_t)left_norm < 0) ? UINT64_MAX : 0;
-      } else {
-        result = (uint64_t)(((int64_t)left_norm) >> shift);
-      }
+      uint64_t shift = right;
+      result = (uint64_t)(((int64_t)left) >> shift);
       break;
     }
     default:
       tac_interp_error("unsupported binary operator %d", (int)op);
       return 0;
   }
-  return tac_normalize_value(result, type);
+  return result;
 }
 
 // Purpose: Initialize label metadata for a function frame.
@@ -739,11 +673,7 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
       case TACBINARY: {
         uint64_t left = tac_eval_val(interp, &frame, pc->instr.tac_binary.src1);
         uint64_t right = tac_eval_val(interp, &frame, pc->instr.tac_binary.src2);
-        const struct Type* bin_type = pc->instr.tac_binary.type;
-        if (bin_type == NULL && pc->instr.tac_binary.dst != NULL) {
-          bin_type = pc->instr.tac_binary.dst->type;
-        }
-        uint64_t result = tac_apply_binary(pc->instr.tac_binary.alu_op, left, right, bin_type);
+        uint64_t result = tac_apply_binary(pc->instr.tac_binary.alu_op, left, right);
         tac_assign_val(interp, &frame, pc->instr.tac_binary.dst, result);
         break;
       }
@@ -843,6 +773,31 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
         tac_memory_store(&interp->memory, addr, value);
         break;
       }
+      case TACBOUNDARY:
+        // No operation needed for boundary markers in the interpreter.
+        break;
+      case TACTRUNC: {
+        uint64_t value = tac_eval_val(interp, &frame, pc->instr.tac_trunc.src);
+        size_t target_bits = pc->instr.tac_trunc.target_size * 8;
+        // Truncate by masking, guarding against shifts of 64 bits.
+        uint64_t mask = target_bits >= 64 ? ~0ull : ((1ull << target_bits) - 1ull);
+        tac_assign_val(interp, &frame, pc->instr.tac_trunc.dst, value & mask);
+        break;
+      }
+      case TACEXTEND: {
+        uint64_t value = tac_eval_val(interp, &frame, pc->instr.tac_extend.src);
+        size_t src_bits = pc->instr.tac_extend.src_size * 8;
+        // Sign-extend when the source width is narrower than 64 bits.
+        if (src_bits < 64) {
+          uint64_t sign_bit = 1ull << (src_bits - 1);
+          if ((value & sign_bit) != 0) {
+            uint64_t extend_mask = ~0ull << src_bits;
+            value |= extend_mask;
+          }
+        }
+        tac_assign_val(interp, &frame, pc->instr.tac_extend.dst, value);
+        break;
+      }
       default:
         tac_interp_error("unsupported TAC instruction %d in interpreter", (int)pc->type);
     }
@@ -877,7 +832,7 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
         cur->init_values->init_type == TENTATIVE) {
       tac_memory_store(&interp->memory,
                        base_addr,
-                       tac_normalize_value(0, cur->var_type));
+                       0);
       continue;
     }
 
@@ -888,7 +843,7 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
       uint64_t init_value = init->value.value;
       tac_memory_store(&interp->memory,
                        addr,
-                       tac_normalize_value(init_value, cur->var_type));
+                       init_value);
       init = init->next;
       idx++;
     }

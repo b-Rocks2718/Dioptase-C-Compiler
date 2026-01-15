@@ -66,6 +66,8 @@ struct IdentInit {
 // Outputs: Guides data emission for static variables.
 // Invariants/Assumptions: ZERO_INIT represents zero-fill.
 enum StaticInitType {
+  SHORT_INIT,
+  USHORT_INIT,
   INT_INIT,
   UINT_INIT,
   LONG_INIT,
@@ -207,6 +209,12 @@ bool is_arithmetic_type(struct Type* type);
 // Outputs: Returns true for signed integer types.
 // Invariants/Assumptions: Unsigned types return false.
 bool is_signed_type(struct Type* type);
+
+// Purpose: Check whether a type is unsigned.
+// Inputs: type is the Type node.
+// Outputs: Returns true for unsigned integer types.
+// Invariants/Assumptions: Signed types return false.
+bool is_unsigned_type(struct Type* type);
 
 // Purpose: Check whether a type is a pointer type.
 // Inputs: type is the Type node.

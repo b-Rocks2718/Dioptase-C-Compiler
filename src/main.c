@@ -236,6 +236,7 @@ int main(int argc, const char *const *const argv) {
     const char *filename = NULL;
     const char *output_path = NULL;
     int output_path_set = 0;
+    int emit_debug_info = 0;
     int emit_asm_file = 0;
     const char **cli_defines = malloc(argc * sizeof(char*));
     int num_defines = 0;
@@ -282,6 +283,10 @@ int main(int argc, const char *const *const argv) {
             emit_asm_file = 1;
             continue;
         }
+        if (strcmp(arg, "-g") == 0) {
+            emit_debug_info = 1;
+            continue;
+        }
         if (strcmp(arg, "-kernel") == 0) {
             kernel_mode = 1;
             continue;
@@ -308,7 +313,7 @@ int main(int argc, const char *const *const argv) {
         }
         if (arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-g] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
             free(cli_defines);
             exit(1);
         }
@@ -317,13 +322,13 @@ int main(int argc, const char *const *const argv) {
             continue;
         }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-g] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
 
     if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-g] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
@@ -495,7 +500,7 @@ int main(int argc, const char *const *const argv) {
     struct AsmProg* asm_prog = NULL;
 
     if (run_full || print_tac || print_asm || interpret_tac) {
-        tac_prog = prog_to_TAC(prog);
+        tac_prog = prog_to_TAC(prog, emit_debug_info);
         if (tac_prog == NULL) {
             fprintf(stderr, "TAC lowering failed\n");
             destroy_preprocess_result(&preprocessed);
@@ -505,6 +510,7 @@ int main(int argc, const char *const *const argv) {
         }
 
         if (print_tac) {
+            print_symbol_table(global_symbol_table);
             print_tac_prog(tac_prog);
         }
         const bool stop_after_tac =
@@ -531,10 +537,11 @@ int main(int argc, const char *const *const argv) {
         }
 
         if (print_asm) {
+            print_asm_symbol_table(asm_symbol_table);
             print_asm_prog(asm_prog);
         }
         const bool stop_after_asm =
-            any_stage_flag && print_asm && !interpret_tac;
+            any_stage_flag && print_asm && !interpret_tac && !emit_asm_file;
         if (stop_after_asm) {
             destroy_preprocess_result(&preprocessed);
             destroy_token_array(tokens);
@@ -543,7 +550,7 @@ int main(int argc, const char *const *const argv) {
         }
     }
 
-    if (run_full) {
+    if (run_full || emit_asm_file) {
         struct MachineProg* machine_prog = prog_to_machine(asm_prog);
         if (machine_prog == NULL) {
             fprintf(stderr, "ASM generation failed: codegen returned NULL\n");

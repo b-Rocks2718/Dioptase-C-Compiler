@@ -296,6 +296,7 @@ static struct Token* consume_any(){
   if (consume_keyword("unsigned")) return finish_simple_token(token, UNSIGNED_TOK);
   if (consume_keyword("signed")) return finish_simple_token(token, SIGNED_TOK);
   if (consume_keyword("long")) return finish_simple_token(token, LONG_TOK);
+  if (consume_keyword("short")) return finish_simple_token(token, SHORT_TOK);
 
   if (consume(",")) return finish_simple_token(token, COMMA);
   if (consume("?")) return finish_simple_token(token, QUESTION);
