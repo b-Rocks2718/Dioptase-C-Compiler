@@ -41,6 +41,19 @@ static void append_instr(struct MachineInstr** head,
   *tail = instr;
 }
 
+// Purpose: Find the first source location marker in a function body.
+// Inputs: instrs is the ASM instruction list for the function body.
+// Outputs: Returns the loc pointer for the first ASM_BOUNDARY, or NULL if none.
+// Invariants/Assumptions: instrs is a well-formed list produced by asm_gen.
+static const char* find_function_entry_loc(const struct AsmInstr* instrs) {
+  for (const struct AsmInstr* cur = instrs; cur != NULL; cur = cur->next) {
+    if (cur->type == ASM_BOUNDARY) {
+      return cur->loc;
+    }
+  }
+  return NULL;
+}
+
 // Purpose: Report a codegen error with context, then exit.
 // Inputs: func_name is the current function (may be NULL), instr_type is the ASM opcode.
 // Outputs: Prints an actionable message to stderr and terminates.
@@ -161,7 +174,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             // word store
             store = alloc_machine_instr(MACHINE_SWA);
             break;
-          case LONG_WORD:
+          default:
             codegen_errorf(func_name, cur->type,
                            "unsupported LONG_WORD type for memory operand store");
             break;
@@ -187,7 +200,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             // word store
             store = alloc_machine_instr(MACHINE_SW);
             break;
-          case LONG_WORD:
+          default:
             codegen_errorf(func_name, cur->type,
                            "unsupported LONG_WORD type for data operand store");
             break;
@@ -215,7 +228,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
              // word load
              load = alloc_machine_instr(MACHINE_LWA);
              break;
-           case LONG_WORD:
+           default:
              codegen_errorf(func_name, cur->type,
                             "unsupported LONG_WORD type for memory operand load");
              break;
@@ -242,7 +255,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             // word load
             load = alloc_machine_instr(MACHINE_LW);
             break;
-          case LONG_WORD:
+          default:
             codegen_errorf(func_name, cur->type,
                            "unsupported LONG_WORD type for data operand load");
             break;
@@ -331,7 +344,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             case WORD:
               load = alloc_machine_instr(MACHINE_LWA);
               break;
-            case LONG_WORD:
+            default:
               codegen_errorf(func_name, cur->type,
                              "unsupported LONG_WORD type for source operand");
               break;
@@ -359,7 +372,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             case WORD:
               load = alloc_machine_instr(MACHINE_LW);
               break;
-            case LONG_WORD:
+            default:
               codegen_errorf(func_name, cur->type,
                              "unsupported LONG_WORD type for source operand");
               break;
@@ -394,7 +407,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             case WORD:
               load = alloc_machine_instr(MACHINE_LWA);
               break;
-            case LONG_WORD:
+            default:
               codegen_errorf(func_name, cur->type,
                              "unsupported LONG_WORD type for source operand");
               break;
@@ -422,7 +435,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             case WORD:
               load = alloc_machine_instr(MACHINE_LW);
               break;
-            case LONG_WORD:
+            default:
               codegen_errorf(func_name, cur->type,
                              "unsupported LONG_WORD type for source operand");
               break;
@@ -486,7 +499,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             case WORD:
               load = alloc_machine_instr(MACHINE_LW);
               break;
-            case LONG_WORD:
+            default:
               codegen_errorf(func_name, cur->type,
                              "unsupported LONG_WORD type for source operand");
               break;
@@ -903,7 +916,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             case WORD:
               store = alloc_machine_instr(MACHINE_SWA);
               break;
-            case LONG_WORD:
+            default:
               codegen_errorf(func_name, cur->type,
                              "unsupported LONG_WORD type for destination operand");
               break;
@@ -925,7 +938,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             case WORD:
               store = alloc_machine_instr(MACHINE_SW);
               break;
-            case LONG_WORD:
+            default:
               codegen_errorf(func_name, cur->type,
                              "unsupported LONG_WORD type for destination operand");
               break;
@@ -991,11 +1004,21 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
     label->type = MACHINE_LABEL;
     label->label = asm_top->name;
 
+    const char* entry_loc = find_function_entry_loc(asm_top->body);
+
     // Machine: Comment "Function Prologue"
     struct MachineInstr* prologue_comment = arena_alloc(sizeof(struct MachineInstr));
     prologue_comment->type = MACHINE_COMMENT;
     prologue_comment->label = &kFunctionPrologueLabel;
-    label->next = prologue_comment;
+    if (entry_loc != NULL) {
+      // Emit a line marker at function entry so debugger locations are valid at the label.
+      struct MachineInstr* entry_marker = alloc_machine_instr(MACHINE_DEBUG_LOC);
+      entry_marker->debug_loc = entry_loc;
+      label->next = entry_marker;
+      entry_marker->next = prologue_comment;
+    } else {
+      label->next = prologue_comment;
+    }
     
     // Machine: Swa ra, [sp, -4]
     struct MachineInstr* save_ra = arena_alloc(sizeof(struct MachineInstr));
