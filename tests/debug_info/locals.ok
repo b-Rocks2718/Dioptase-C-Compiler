@@ -1,5 +1,5 @@
 .line tests/debug_info/locals.c 2
 .line tests/debug_info/locals.c 3
 .line tests/debug_info/locals.c 4
-.local a.0 -4
-.local b.1 -8
+.local a.0 -4 4
+.local b.1 -8 2

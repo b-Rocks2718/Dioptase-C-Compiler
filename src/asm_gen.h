@@ -43,6 +43,7 @@ struct AsmProg {
 struct DebugLocal {
     struct Slice* name;
     int offset;
+    size_t size;
     struct DebugLocal* next;
 };
 

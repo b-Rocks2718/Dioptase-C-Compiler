@@ -138,7 +138,7 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       write_tab(out);
       fputs(".local ", out);
       write_slice(out, instr->debug_name);
-      fprintf(out, " %d\n", instr->debug_offset);
+      fprintf(out, " %d %d\n", instr->debug_offset, instr->imm); // offset, size
       return true;
     case MACHINE_COMMENT:
       write_tab(out);

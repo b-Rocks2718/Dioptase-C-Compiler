@@ -1036,6 +1036,7 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
         struct MachineInstr* local_instr = alloc_machine_instr(MACHINE_DEBUG_LOCAL);
         local_instr->debug_name = local->name;
         local_instr->debug_offset = local->offset;
+        local_instr->imm = local->size;
         locals_tail->next = local_instr;
         locals_tail = local_instr;
       }

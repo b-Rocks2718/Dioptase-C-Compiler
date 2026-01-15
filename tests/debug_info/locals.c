@@ -1,5 +1,5 @@
 int main(void){
   int a = 1;
-  int b = 2;
+  short b = 2;
   return a + b;
 }

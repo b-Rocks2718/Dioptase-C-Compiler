@@ -128,6 +128,7 @@ static struct DebugLocal* collect_debug_locals(const struct PseudoMap* map, size
             struct DebugLocal* local = arena_alloc(sizeof(struct DebugLocal));
             local->name = name;
             local->offset = entry->mapped->lit_value;
+            local->size = asm_type_size(entry->mapped->asm_type); // store size in bytes
             local->next = NULL;
             insert_debug_local_sorted(&head, local);
             if (out_count != NULL) {
