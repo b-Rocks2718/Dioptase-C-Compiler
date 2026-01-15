@@ -128,7 +128,7 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       struct SourceLocation loc = source_location_from_ptr(instr->debug_loc);
       const char* filename = source_filename_for_ptr(instr->debug_loc);
       write_tab(out);
-      fprintf(out, "#line %s %zu %zu\n", filename, loc.line, loc.column);
+      fprintf(out, ".line %s %zu\n", filename, loc.line);
       return true;
     }
     case MACHINE_DEBUG_LOCAL:
@@ -136,9 +136,9 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
         return true;
       }
       write_tab(out);
-      fputs("#local ", out);
+      fputs(".local ", out);
       write_slice(out, instr->debug_name);
-      fprintf(out, " bp %d\n", instr->debug_offset);
+      fprintf(out, " %d\n", instr->debug_offset);
       return true;
     case MACHINE_COMMENT:
       write_tab(out);

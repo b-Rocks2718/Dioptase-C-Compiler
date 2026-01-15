@@ -25,6 +25,7 @@ TEST_IDENTS_DIR := tests/idents
 TEST_IDENTS_INVALID_DIR := tests/idents_invalid
 TEST_LABELS_DIR := tests/labels
 TEST_LABELS_INVALID_DIR := tests/labels_invalid
+TEST_DEBUG_INFO_DIR := tests/debug_info
 TEST_TYPES_DIR := tests/types
 TEST_TYPES_INVALID_DIR := tests/types_invalid
 TAC_INTERP_TESTS := tac_interpreter
@@ -96,6 +97,8 @@ LABELS_SRCS := $(wildcard $(TEST_LABELS_DIR)/*.c)
 LABELS_TESTS := $(patsubst $(TEST_LABELS_DIR)/%.c,%, $(LABELS_SRCS))
 LABELS_INVALID_SRCS := $(wildcard $(TEST_LABELS_INVALID_DIR)/*.c)
 LABELS_INVALID_TESTS := $(patsubst $(TEST_LABELS_INVALID_DIR)/%.c,%, $(LABELS_INVALID_SRCS))
+DEBUG_INFO_SRCS := $(wildcard $(TEST_DEBUG_INFO_DIR)/*.c)
+DEBUG_INFO_TESTS := $(patsubst $(TEST_DEBUG_INFO_DIR)/%.c,%, $(DEBUG_INFO_SRCS))
 TYPES_SRCS := $(wildcard $(TEST_TYPES_DIR)/*.c)
 TYPES_TESTS := $(patsubst $(TEST_TYPES_DIR)/%.c,%, $(TYPES_SRCS))
 TYPES_INVALID_SRCS := $(wildcard $(TEST_TYPES_INVALID_DIR)/*.c)
@@ -160,6 +163,7 @@ clean:
 		$(TEST_IDENTS_INVALID_DIR)/*.out \
 		$(TEST_LABELS_DIR)/*.out \
 		$(TEST_LABELS_INVALID_DIR)/*.out \
+		$(TEST_DEBUG_INFO_DIR)/*.s \
 		$(TEST_TYPES_DIR)/*.out \
 		$(TEST_TYPES_INVALID_DIR)/*.out
 	rm -rf $(BUILD_ROOT)/tac_exec $(BUILD_ROOT)/emu_exec
@@ -172,7 +176,7 @@ define RUN_TESTS
 	@GREEN="\033[0;32m"; \
 	RED="\033[0;31m"; \
 	NC="\033[0m"; \
-	passed=0; total=$$(( $(words $(PREPROCESS_TESTS)) + $(words $(PREPROCESS_INVALID_TESTS)) + $(words $(LEXER_TESTS)) + $(words $(LEXER_INVALID_TESTS)) + $(words $(PARSER_TESTS)) + $(words $(PARSER_INVALID_TESTS)) + $(words $(IDENTS_TESTS)) + $(words $(IDENTS_INVALID_TESTS)) + $(words $(LABELS_TESTS)) + $(words $(LABELS_INVALID_TESTS)) + $(words $(TYPES_TESTS)) + $(words $(TYPES_INVALID_TESTS)) + $(words $(TAC_INTERP_TESTS)) + $(words $(TAC_EXEC_TESTS)) + $(words $(EMU_EXEC_TESTS)) )); \
+	passed=0; total=$$(( $(words $(PREPROCESS_TESTS)) + $(words $(PREPROCESS_INVALID_TESTS)) + $(words $(LEXER_TESTS)) + $(words $(LEXER_INVALID_TESTS)) + $(words $(PARSER_TESTS)) + $(words $(PARSER_INVALID_TESTS)) + $(words $(IDENTS_TESTS)) + $(words $(IDENTS_INVALID_TESTS)) + $(words $(LABELS_TESTS)) + $(words $(LABELS_INVALID_TESTS)) + $(words $(DEBUG_INFO_TESTS)) + $(words $(TYPES_TESTS)) + $(words $(TYPES_INVALID_TESTS)) + $(words $(TAC_INTERP_TESTS)) + $(words $(TAC_EXEC_TESTS)) + $(words $(EMU_EXEC_TESTS)) )); \
 	echo "Running $(words $(PREPROCESS_TESTS)) preprocess tests:"; \
 	for t in $(PREPROCESS_TESTS); do \
 		printf "%s %-20s " '-' "$$t"; \
@@ -331,6 +335,32 @@ define RUN_TESTS
 			else \
 				echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
 			fi; \
+		fi; \
+	done; \
+	echo "\nRunning $(words $(DEBUG_INFO_TESTS)) debug info tests:"; \
+	for t in $(DEBUG_INFO_TESTS); do \
+		printf "%s %-20s " '-' "$$t"; \
+		out="$(TEST_DEBUG_INFO_DIR)/$$t.s"; \
+		rm -f "$$out"; \
+		if $(TEST_EXEC) -g -s -o "$$out" "$(TEST_DEBUG_INFO_DIR)/$$t.c" >/dev/null 2>&1; then \
+			ok=1; \
+			if [ -f "$(TEST_DEBUG_INFO_DIR)/$$t.ok" ]; then \
+				while IFS= read -r line; do \
+					if ! grep -Fq "$$line" "$$out"; then \
+						ok=0; \
+						break; \
+					fi; \
+				done < "$(TEST_DEBUG_INFO_DIR)/$$t.ok"; \
+			else \
+				ok=0; \
+			fi; \
+			if [ $$ok -eq 1 ]; then \
+				echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
+			else \
+				echo "$$RED FAIL $$NC"; \
+			fi; \
+		else \
+			echo "$$RED FAIL $$NC"; \
 		fi; \
 	done; \
 	echo "\nRunning $(words $(TYPES_TESTS)) typechecking tests:"; \

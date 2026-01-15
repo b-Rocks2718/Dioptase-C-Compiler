@@ -157,7 +157,8 @@ static char* make_temp_asm_path(const char* output_path) {
 static bool run_assembler(const char* assembler_path,
                                    const char* asm_path,
                                    const char* output_path,
-                                   bool kernel_mode) {
+                                   bool kernel_mode,
+                                   int emit_debug_info) {
     if (assembler_path == NULL || asm_path == NULL || output_path == NULL) {
         fprintf(stderr, "Compiler Error: assembler invocation missing required paths\n");
         return false;
@@ -170,7 +171,7 @@ static bool run_assembler(const char* assembler_path,
     }
 
     if (pid == 0) {
-        const char* args[6];
+        const char* args[7];
         int arg_idx = 0;
         args[arg_idx++] = assembler_path;
         if (kernel_mode) {
@@ -181,6 +182,9 @@ static bool run_assembler(const char* assembler_path,
         args[arg_idx++] = "-o";
         args[arg_idx++] = output_path;
         args[arg_idx++] = asm_path;
+        if (emit_debug_info) {
+            args[arg_idx++] = "-g";
+        }
         args[arg_idx] = NULL;
 
         execvp(assembler_path, (char* const*)args);
@@ -596,7 +600,7 @@ int main(int argc, const char *const *const argv) {
                 arena_destroy();
                 return 6;
             }
-            bool assembled = run_assembler(assembler_path, asm_output_path, output_path, kernel_mode);
+            bool assembled = run_assembler(assembler_path, asm_output_path, output_path, kernel_mode, emit_debug_info);
             free(assembler_path);
             if (!assembled) {
                 remove_temp_asm(asm_output_path);
