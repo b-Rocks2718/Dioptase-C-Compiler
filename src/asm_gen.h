@@ -259,6 +259,7 @@ size_t get_stack_size(struct Val* args, size_t num_args);
 // Invariants/Assumptions: pseudo_map is initialized before use.
 void replace_operand_if_pseudo(struct Operand** field);
 
+size_t asm_type_alignment(struct AsmType* type);
 
 struct AsmSymbolTable* create_asm_symbol_table(size_t numBuckets);
 

@@ -194,11 +194,11 @@ struct Expr* parse_paren_var(){
 // Purpose: Parse prefix ++/-- by translating to compound assignments.
 // Inputs: Consumes tokens from the current cursor.
 // Outputs: Returns an expression node or NULL if no prefix op matches.
-// Invariants/Assumptions: Only lvalue variables are accepted by parse_paren_var.
+// Invariants/Assumptions: Operand parsing is deferred to parse_factor.
 struct Expr* parse_pre_op(){
   if (consume(INC_TOK)){
     const char* op_loc = (current - 1)->start;
-    struct Expr* inner = parse_paren_var();
+    struct Expr* inner = parse_factor();
     if (inner == NULL) {
       current--;
       return NULL;
@@ -215,7 +215,7 @@ struct Expr* parse_pre_op(){
     return result;
   } else if (consume(DEC_TOK)){
     const char* op_loc = (current - 1)->start;
-    struct Expr* inner = parse_paren_var();
+    struct Expr* inner = parse_factor();
     if (inner == NULL) {
       current--;
       return NULL;
@@ -532,7 +532,7 @@ struct Type* process_abstract_declarator(
 }
 
 // Purpose: Parse a cast expression.
-// Inputs: Consumes tokens starting at '(' type ')' expr.
+// Inputs: Consumes tokens starting at '(' type ')' and a cast operand.
 // Outputs: Returns a CAST expression or NULL if the pattern does not match.
 // Invariants/Assumptions: Uses parse_param_type to parse the target type.
 struct Expr* parse_cast(){
@@ -549,7 +549,7 @@ struct Expr* parse_cast(){
     current = old_current;
     return NULL;
   }
-  struct Expr* expr = parse_expr();
+  struct Expr* expr = parse_factor();
   if (expr == NULL){
     current = old_current;
     return NULL;
@@ -757,6 +757,18 @@ struct Expr* parse_postfix() {
       struct Expr* new_expr = alloc_expr(SUBSCRIPT, (current - 1)->start);
       new_expr->expr.subscript_expr = subscript_expr;
       expr = new_expr;
+    } else if (consume(INC_TOK)) {
+      const char* op_loc = (current - 1)->start;
+      struct PostAssignExpr add_one = {POST_INC, expr};
+      struct Expr* new_expr = alloc_expr(POST_ASSIGN, op_loc);
+      new_expr->expr.post_assign_expr = add_one;
+      expr = new_expr;
+    } else if (consume(DEC_TOK)) {
+      const char* op_loc = (current - 1)->start;
+      struct PostAssignExpr sub_one = {POST_DEC, expr};
+      struct Expr* new_expr = alloc_expr(POST_ASSIGN, op_loc);
+      new_expr->expr.post_assign_expr = sub_one;
+      expr = new_expr;
     } else {
       break;
     }
@@ -768,7 +780,6 @@ struct Expr* parse_postfix() {
 struct Expr* parse_factor(){
   struct Expr* expr = NULL;
   if ((expr = parse_unary())) return expr;
-  else if ((expr = parse_post_op())) return expr;
   else if ((expr = parse_cast())) return expr;
   else if ((expr = parse_postfix())) return expr;
   else return NULL;
@@ -1530,6 +1541,11 @@ struct Initializer* parse_var_init(struct Type* type){
     }
     prev_init = next_init;
     if (!consume(COMMA)) break;
+  }
+  if (init_list == NULL) {
+    parse_error_at(init_loc, "initializer list must have at least one element");
+    current = old_current;
+    return NULL;
   }
   if (!consume(CLOSE_B)){
     current = old_current;

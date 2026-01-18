@@ -176,7 +176,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             break;
           default:
             codegen_errorf(func_name, cur->type,
-                           "unsupported LONG_WORD type for memory operand store");
+                           "unsupported asm type %d for memory operand store", (int)cur->dst->asm_type->type);
             break;
         }
         store->ra = cur->src1->reg;
@@ -202,7 +202,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             break;
           default:
             codegen_errorf(func_name, cur->type,
-                           "unsupported LONG_WORD type for data operand store");
+                           "unsupported asm type %d for data operand store", (int)cur->dst->asm_type->type);
             break;
         }
         store->ra = cur->src1->reg;
@@ -230,7 +230,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
              break;
            default:
              codegen_errorf(func_name, cur->type,
-                            "unsupported LONG_WORD type for memory operand load");
+                            "unsupported asm type %d for memory operand load", (int)cur->src1->asm_type->type);
              break;
          }
          load->ra = cur->dst->reg;
@@ -257,7 +257,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             break;
           default:
             codegen_errorf(func_name, cur->type,
-                           "unsupported LONG_WORD type for data operand load");
+                           "unsupported asm type %d for data operand load", (int)cur->src1->asm_type->type);
             break;
         }
         load->ra = cur->dst->reg;
@@ -346,7 +346,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
               break;
             default:
               codegen_errorf(func_name, cur->type,
-                             "unsupported LONG_WORD type for source operand");
+                             "unsupported asm type %d for source operand", (int)cur->src1->asm_type->type);
               break;
           }
           load->ra = kScratchRegA;
@@ -374,7 +374,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
               break;
             default:
               codegen_errorf(func_name, cur->type,
-                             "unsupported LONG_WORD type for source operand");
+                             "unsupported asm type %d for source operand", (int)cur->src1->asm_type->type);
               break;
           }
           load->ra = kScratchRegA;
@@ -409,7 +409,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
               break;
             default:
               codegen_errorf(func_name, cur->type,
-                             "unsupported LONG_WORD type for source operand");
+                             "unsupported asm type %d for source operand", (int)cur->src2->asm_type->type);
               break;
           }
           load->ra = kScratchRegB;
@@ -437,7 +437,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
               break;
             default:
               codegen_errorf(func_name, cur->type,
-                             "unsupported LONG_WORD type for source operand");
+                             "unsupported asm type %d for source operand", (int)cur->src2->asm_type->type);
               break;
           }
           load->ra = kScratchRegB;
@@ -473,7 +473,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
               break;
             default:
               codegen_errorf(func_name, cur->type,
-                             "unsupported LONG_WORD type for source operand");
+                             "unsupported asm type %d for source operand", (int)cur->src1->asm_type->type);
               break;
           }
           load->ra = kScratchRegA;
@@ -501,7 +501,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
               break;
             default:
               codegen_errorf(func_name, cur->type,
-                             "unsupported LONG_WORD type for source operand");
+                             "unsupported asm type %d for source operand", (int)cur->src1->asm_type->type);
               break;
           }
           load->ra = kScratchRegA;
@@ -918,7 +918,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
               break;
             default:
               codegen_errorf(func_name, cur->type,
-                             "unsupported LONG_WORD type for destination operand");
+                             "unsupported asm type %d for destination operand", (int)dst->asm_type->type);
               break;
           }
           store->ra = kScratchRegA;
@@ -940,7 +940,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
               break;
             default:
               codegen_errorf(func_name, cur->type,
-                             "unsupported LONG_WORD type for destination operand");
+                             "unsupported asm type %d for destination operand", (int)dst->asm_type->type);
               break;
           }
           store->ra = kScratchRegA;
@@ -1092,7 +1092,7 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
     // emit .align directive
     struct MachineInstr* align_instr = arena_alloc(sizeof(struct MachineInstr));
     align_instr->type = MACHINE_ALIGN;
-    align_instr->imm = asm_type_size(type);
+    align_instr->imm = asm_type_alignment(type);
     machine_prog->head = align_instr;
     machine_prog->tail = align_instr;
 
@@ -1112,11 +1112,14 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
     // Machine: .space or .fill for static data
     struct MachineInstr* data_instr = make_data(init, type);
     data_instr->label = asm_top->name;
-    data_instr->next = NULL;
 
-    // append data_instr to machine_prog
+    // append data instructions to machine_prog
+    struct MachineInstr* data_tail = data_instr;
+    while (data_tail->next != NULL) {
+      data_tail = data_tail->next;
+    }
     machine_prog->tail->next = data_instr;
-    machine_prog->tail = data_instr;
+    machine_prog->tail = data_tail;
   } else if (asm_top->type == ASM_SECTION){
     // directive
     struct MachineInstr* dir_instr = arena_alloc(sizeof(struct MachineInstr));
@@ -1136,32 +1139,51 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
 }
 
 static struct MachineInstr* make_data(struct InitList* init, struct AsmType* type){
-  struct MachineInstr* instr = arena_alloc(sizeof(struct MachineInstr));
-  instr->imm = 0;
-  instr->label = NULL;
+  if (init == NULL) {
+    // Tentative definitions emit zero-filled storage for the full symbol size.
+    struct MachineInstr* instr = alloc_machine_instr(MACHINE_SPACE);
+    instr->imm = (int)asm_type_size(type);
+    return instr;
+  }
 
-  switch (type->type) {
-    case BYTE:
-      instr->type = MACHINE_FILB;
-      break;
-    case DOUBLE:
-      instr->type = MACHINE_FILD;
-      break;
-    case WORD:
-      instr->type = MACHINE_FILL;
-      break;
-    default:
-      codegen_errorf(NULL, type->type,
-                     "unsupported asm type for static data");
-      break;
+  struct MachineInstr* instr = NULL;
+  struct MachineInstr* tail = NULL;
+  for (struct InitList* cur = init; cur != NULL; cur = cur->next){
+    struct MachineInstr* cur_instr = alloc_machine_instr(MACHINE_FILL);
+
+    switch (cur->value->int_type) {
+      case SHORT_INIT:
+      case USHORT_INIT:
+        cur_instr->type = MACHINE_FILD;
+        break;
+      case INT_INIT:
+      case UINT_INIT:
+        cur_instr->type = MACHINE_FILL;
+        break;
+      case LONG_INIT:
+      case ULONG_INIT:
+        codegen_errorf(NULL, 0,
+                       "64-bit static initializers are not supported");
+        break;
+      case ZERO_INIT:
+        cur_instr->type = MACHINE_SPACE;
+        break;
+      default:
+        codegen_errorf(NULL, 0,
+                       "unsupported static initializer type %d", (int)cur->value->int_type);
+    }
+
+    cur_instr->imm = (int)cur->value->value;
+
+    if (instr == NULL){
+      instr = cur_instr;
+      tail = cur_instr;
+    } else {
+      tail->next = cur_instr;
+      tail = cur_instr;
+    }
   }
- 
-  if (init != NULL){
-    instr->imm = init->value->value;
-  } else {
-    instr->imm = 0;
-  }
-  
+
   return instr;
 }
 

@@ -42,10 +42,10 @@ struct AsmType* type_to_asm_type(struct Type* type){
       return asm_type;
     }
     case FUN_TYPE:
-      return NULL;
+      return NULL; // dont error, functions just have no asm type
     default:
       // unknown type
-      asm_gen_error("symbol table", NULL, "invalid type for ASM symbol conversion");
+      asm_gen_error("symbol table", NULL, "invalid type %d for ASM symbol conversion");
       return NULL;
   }
 }
@@ -1139,6 +1139,24 @@ size_t type_alignment(struct Type* type, const struct Slice* symbol_name) {
   }
 }
 
+size_t asm_type_alignment(struct AsmType* type){
+  if (type == NULL) {
+    asm_gen_error("asm-type-alignment", NULL, "NULL asm type");
+  }
+  switch (type->type) {
+    case DOUBLE:
+      return 2;
+    case WORD:
+    case LONG_WORD:
+      return 4;
+    case BYTE_ARRAY:
+      return type->byte_array.alignment;
+    default:
+      asm_gen_error("asm-type-alignment", NULL,
+                    "unknown asm type kind %d", (int)type->type);
+      return 0;
+  }
+}
 
 struct PseudoMap* create_pseudo_map(size_t num_buckets){
   struct PseudoEntry** arr = malloc(num_buckets * sizeof(struct PseudoEntry*));
@@ -1365,25 +1383,29 @@ void print_asm_symbol_table(struct AsmSymbolTable* hmap){
     while (cur != NULL){
       printf("Key: %.*s\n", (int)cur->key->len, cur->key->start);
       printf("  Type: ");
-      switch (cur->type->type){
-        case BYTE:
-          printf("BYTE\n");
-          break;
-        case DOUBLE:
-          printf("DOUBLE\n");
-          break;
-        case WORD:
-          printf("WORD\n");
-          break;
-        case LONG_WORD:
-          printf("LONG_WORD\n");
-          break;
-        case BYTE_ARRAY:
-          printf("BYTE_ARRAY(size=%zu, alignment=%zu)\n", cur->type->byte_array.size, cur->type->byte_array.alignment);
-          break;
-        default:
-          printf("Unknown (%d)\n", (int)cur->type->type);
-          break;
+      if (cur->type == NULL) {
+        printf("NULL\n");
+      } else {
+        switch (cur->type->type){
+          case BYTE:
+            printf("BYTE\n");
+            break;
+          case DOUBLE:
+            printf("DOUBLE\n");
+            break;
+          case WORD:
+            printf("WORD\n");
+            break;
+          case LONG_WORD:
+            printf("LONG_WORD\n");
+            break;
+          case BYTE_ARRAY:
+            printf("BYTE_ARRAY(size=%zu, alignment=%zu)\n", cur->type->byte_array.size, cur->type->byte_array.alignment);
+            break;
+          default:
+            printf("Unknown (%d)\n", (int)cur->type->type);
+            break;
+        }
       }
       printf("  Is Static: %s\n", cur->is_static ? "true" : "false");
       printf("  Is Defined: %s\n", cur->is_defined ? "true" : "false");

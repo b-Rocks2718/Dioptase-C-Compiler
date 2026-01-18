@@ -665,6 +665,15 @@ bool compare_types(struct Type* a, struct Type* b) {
       return compare_types(a->type_data.pointer_type.referenced_type,
                            b->type_data.pointer_type.referenced_type);
 
+    case ARRAY_TYPE: {
+      struct ArrayType* arr_a = &a->type_data.array_type;
+      struct ArrayType* arr_b = &b->type_data.array_type;
+      if (arr_a->size != arr_b->size) {
+        return false;
+      }
+      return compare_types(arr_a->element_type, arr_b->element_type);
+    }
+
     case FUN_TYPE: {
       struct FunType* fun_a = &a->type_data.fun_type;
       struct FunType* fun_b = &b->type_data.fun_type;

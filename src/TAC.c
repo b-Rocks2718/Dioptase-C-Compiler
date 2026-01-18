@@ -808,11 +808,22 @@ static struct TACInstr* array_init_to_TAC_with_base(struct Slice* func_name,
         struct TACInstr* expr_instrs =
             expr_to_TAC_convert(func_name, cur->init->init.single_init, src);
 
-        struct TACInstr* copy_instr = tac_instr_create(TACCOPY_TO_OFFSET);
-        copy_instr->instr.tac_copy_to_offset.dst = base_ptr;
-        copy_instr->instr.tac_copy_to_offset.src = src;
-        copy_instr->instr.tac_copy_to_offset.offset = (int)cur_offset;
-        concat_TAC_instrs(&expr_instrs, copy_instr);
+        struct Val* addr = base_ptr;
+        if (cur_offset != 0) {
+          addr = make_temp(func_name, base_ptr->type);
+          struct TACInstr* add_instr = tac_instr_create(TACBINARY);
+          add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, base_ptr->type);
+          add_instr->instr.tac_binary.dst = addr;
+          add_instr->instr.tac_binary.src1 = base_ptr;
+          add_instr->instr.tac_binary.src2 =
+              tac_make_const((uint64_t)cur_offset, base_ptr->type);
+          concat_TAC_instrs(&expr_instrs, add_instr);
+        }
+
+        struct TACInstr* store_instr = tac_instr_create(TACSTORE);
+        store_instr->instr.tac_store.dst_ptr = addr;
+        store_instr->instr.tac_store.src = src;
+        concat_TAC_instrs(&expr_instrs, store_instr);
         concat_TAC_instrs(&instrs, expr_instrs);
         break;
       }
@@ -2013,27 +2024,13 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
     }
     case POST_ASSIGN: {
       struct PostAssignExpr* post_assign = &expr->expr.post_assign_expr;
-      if (post_assign->expr == NULL || post_assign->expr->type != VAR) {
-        tac_error_at(expr->loc, "post-assignment requires a variable lvalue");
+      if (post_assign->expr == NULL) {
+        tac_error_at(expr->loc, "post-assignment requires an lvalue");
         return NULL;
       }
 
-      struct Slice* name = post_assign->expr->expr.var_expr.name;
-      struct Val* src = tac_make_var(name, expr->value_type);
-      struct Val* old_val = make_temp(func_name, expr->value_type);
-
-      struct TACInstr* instrs = NULL;
-      // AST:
-      // x++ or x--
-      // TAC:
-      // Copy old, x
-      // Binary op x, x, step
-      // result = old
-      // Preserve the pre-update value for post-increment/decrement semantics.
-      struct TACInstr* copy_instr = tac_instr_create(TACCOPY);
-      copy_instr->instr.tac_copy.dst = old_val;
-      copy_instr->instr.tac_copy.src = src;
-      concat_TAC_instrs(&instrs, copy_instr);
+      struct ExprResult lhs_result;
+      struct TACInstr* lhs_instrs = expr_to_TAC(func_name, post_assign->expr, &lhs_result);
 
       enum BinOp bin_op = (post_assign->op == POST_INC) ? ADD_OP : SUB_OP;
       struct Val* step_val = tac_make_const(1, tac_builtin_type(INT_TYPE));
@@ -2043,16 +2040,67 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
                                   tac_builtin_type(INT_TYPE));
       }
 
-      struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
-      bin_instr->instr.tac_binary.alu_op = binop_to_aluop(bin_op, expr->value_type);
-      bin_instr->instr.tac_binary.dst = src;
-      bin_instr->instr.tac_binary.src1 = src;
-      bin_instr->instr.tac_binary.src2 = step_val;
-      concat_TAC_instrs(&instrs, bin_instr);
+      struct Val* old_val = make_temp(func_name, expr->value_type);
+      struct TACInstr* instrs = NULL;
+      concat_TAC_instrs(&instrs, lhs_instrs);
 
-      result->type = PLAIN_OPERAND;
-      result->val = old_val;
-      return instrs;
+      if (lhs_result.type == PLAIN_OPERAND) {
+        struct Val* src = lhs_result.val;
+
+        // AST:
+        // x++ or x--
+        // TAC:
+        // Copy old, x
+        // Binary op x, x, step
+        struct TACInstr* copy_instr = tac_instr_create(TACCOPY);
+        copy_instr->instr.tac_copy.dst = old_val;
+        copy_instr->instr.tac_copy.src = src;
+        concat_TAC_instrs(&instrs, copy_instr);
+
+        struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
+        bin_instr->instr.tac_binary.alu_op = binop_to_aluop(bin_op, expr->value_type);
+        bin_instr->instr.tac_binary.dst = src;
+        bin_instr->instr.tac_binary.src1 = src;
+        bin_instr->instr.tac_binary.src2 = step_val;
+        concat_TAC_instrs(&instrs, bin_instr);
+
+        result->type = PLAIN_OPERAND;
+        result->val = old_val;
+        return instrs;
+      }
+
+      if (lhs_result.type == DEREFERENCED_POINTER) {
+        // AST:
+        // (*ptr)++ or (*ptr)--
+        // TAC:
+        // Load old, [ptr]
+        // Binary new, old, step
+        // Store [ptr], new
+        struct TACInstr* load_instr = tac_instr_create(TACLOAD);
+        load_instr->instr.tac_load.dst = old_val;
+        load_instr->instr.tac_load.src_ptr = lhs_result.val;
+        concat_TAC_instrs(&instrs, load_instr);
+
+        struct Val* new_val = make_temp(func_name, expr->value_type);
+        struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
+        bin_instr->instr.tac_binary.alu_op = binop_to_aluop(bin_op, expr->value_type);
+        bin_instr->instr.tac_binary.dst = new_val;
+        bin_instr->instr.tac_binary.src1 = old_val;
+        bin_instr->instr.tac_binary.src2 = step_val;
+        concat_TAC_instrs(&instrs, bin_instr);
+
+        struct TACInstr* store_instr = tac_instr_create(TACSTORE);
+        store_instr->instr.tac_store.dst_ptr = lhs_result.val;
+        store_instr->instr.tac_store.src = new_val;
+        concat_TAC_instrs(&instrs, store_instr);
+
+        result->type = PLAIN_OPERAND;
+        result->val = old_val;
+        return instrs;
+      }
+
+      tac_error_at(expr->loc, "post-assignment requires an lvalue");
+      return NULL;
     }
     case CONDITIONAL: {
       struct ConditionalExpr* cond_expr = &expr->expr.conditional_expr;

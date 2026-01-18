@@ -254,7 +254,34 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
 // Inputs: func_dclr is the function declaration node.
 // Outputs: Returns true on success; false on any type error.
 // Invariants/Assumptions: Parameters and body share the global symbol table.
+// Purpose: Apply array-to-pointer decay to function parameter types.
+// Inputs: func_dclr is the function declaration to update.
+// Outputs: Updates both parameter lists in-place.
+// Invariants/Assumptions: Param list and type list are in sync.
+static void decay_param_array_types(struct FunctionDclr* func_dclr) {
+  if (func_dclr == NULL || func_dclr->type == NULL ||
+      func_dclr->type->type != FUN_TYPE) {
+    return;
+  }
+  struct ParamList* param_cur = func_dclr->params;
+  struct ParamTypeList* type_cur = func_dclr->type->type_data.fun_type.param_types;
+  for (; param_cur != NULL && type_cur != NULL;
+       param_cur = param_cur->next, type_cur = type_cur->next) {
+    if (param_cur->param.type != NULL &&
+        param_cur->param.type->type == ARRAY_TYPE) {
+      struct Type* array_type = param_cur->param.type;
+      struct Type* pointer_type = arena_alloc(sizeof(struct Type));
+      pointer_type->type = POINTER_TYPE;
+      pointer_type->type_data.pointer_type.referenced_type =
+          array_type->type_data.array_type.element_type;
+      param_cur->param.type = pointer_type;
+      type_cur->type = pointer_type;
+    }
+  }
+}
+
 bool typecheck_func(struct FunctionDclr* func_dclr) {
+  decay_param_array_types(func_dclr);
   struct SymbolEntry* entry = symbol_table_get(global_symbol_table, func_dclr->name);
 
   if (entry == NULL) {
@@ -264,21 +291,6 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
                     "function %.*s cannot have array return type",
                     (int)func_dclr->name->len, func_dclr->name->start);
       return false;
-    }
-
-    // convert param types from array to pointer types
-    struct ParamList* param_cur = func_dclr->params;
-    while (param_cur != NULL) {
-      if (param_cur->param.type->type == ARRAY_TYPE) {
-        struct Type* array_type = param_cur->param.type;
-        struct Type* pointer_type = arena_alloc(sizeof(struct Type));
-        pointer_type->type = POINTER_TYPE;
-        struct PointerType* ptr_data = arena_alloc(sizeof(struct PointerType));
-        ptr_data->referenced_type = array_type->type_data.array_type.element_type;
-        pointer_type->type_data.pointer_type = *ptr_data;
-        param_cur->param.type = pointer_type;
-      }
-      param_cur = param_cur->next;
     }
 
     // First declaration/definition of this function.
@@ -982,10 +994,7 @@ bool typecheck_expr(struct Expr* expr) {
         return true;
       }
 
-      // Equality allows pointer comparisons; otherwise use arithmetic common type.
-      if (bin_expr->op == BOOL_EQ || bin_expr->op == BOOL_NEQ || 
-          bin_expr->op == BOOL_LE || bin_expr->op == BOOL_LEQ ||
-          bin_expr->op == BOOL_GE || bin_expr->op == BOOL_GEQ) {
+      if (bin_expr->op == BOOL_EQ || bin_expr->op == BOOL_NEQ) {
         struct Type* common_type = NULL;
         if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
           common_type = get_common_pointer_type(bin_expr->left, bin_expr->right);
@@ -1005,6 +1014,22 @@ bool typecheck_expr(struct Expr* expr) {
         convert_expr_type(&bin_expr->right, common_type);
         expr->value_type = arena_alloc(sizeof(struct Type));
         expr->value_type->type = INT_TYPE; // result type of equality comparison is int
+        return true;
+      } else if (bin_expr->op == BOOL_LE || bin_expr->op == BOOL_LEQ ||
+                 bin_expr->op == BOOL_GE || bin_expr->op == BOOL_GEQ) {
+        if (!is_arithmetic_type(left_type) || !is_arithmetic_type(right_type)) {
+          type_error_at(expr->loc, "invalid types in relational comparison");
+          return false;
+        }
+        struct Type* common_type = get_common_type(left_type, right_type);
+        if (common_type == NULL) {
+          type_error_at(expr->loc, "incompatible types in relational comparison");
+          return false;
+        }
+        convert_expr_type(&bin_expr->left, common_type);
+        convert_expr_type(&bin_expr->right, common_type);
+        expr->value_type = arena_alloc(sizeof(struct Type));
+        expr->value_type->type = INT_TYPE;
         return true;
       }
       else if (bin_expr->op == ADD_OP || bin_expr->op == PLUS_EQ_OP) {
@@ -1245,7 +1270,7 @@ bool typecheck_expr(struct Expr* expr) {
     }
     case ADDR_OF: {
       struct AddrOfExpr* addr_of_expr = &expr->expr.addr_of_expr;
-      if (!typecheck_convert_expr(&addr_of_expr->expr)) {
+      if (!typecheck_expr(addr_of_expr->expr)) {
         return false;
       }
       if (!is_lvalue(addr_of_expr->expr)) {

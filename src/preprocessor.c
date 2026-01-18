@@ -885,6 +885,98 @@ static bool parse_ifdef_name(const char* line, const char* line_end,
   return true;
 }
 
+// Purpose: Parse a "defined" term used in #if expressions.
+// Inputs: line/line_end describe the directive contents.
+// Outputs: Returns true on success and fills out_value/next.
+// Invariants/Assumptions: Supports optional leading '!' and optional parentheses.
+static bool parse_if_defined_term(const char* line, const char* line_end,
+                                  const char* filename, size_t line_no,
+                                  struct Macro* macros,
+                                  bool* out_value, const char** next) {
+  const char* p = line;
+  while (p < line_end && isspace((unsigned char)*p)) p++;
+  bool negate = false;
+  if (p < line_end && *p == '!') {
+    negate = true;
+    p++;
+    while (p < line_end && isspace((unsigned char)*p)) p++;
+  }
+
+  if (line_end - p < 7 || strncmp(p, "defined", 7) != 0) {
+    preprocessor_error_at(filename, line_no, "invalid #if directive (expected defined)");
+    return false;
+  }
+  p += 7;
+  while (p < line_end && isspace((unsigned char)*p)) p++;
+
+  bool has_paren = false;
+  if (p < line_end && *p == '(') {
+    has_paren = true;
+    p++;
+    while (p < line_end && isspace((unsigned char)*p)) p++;
+  }
+
+  if (p >= line_end || !is_ident_start(*p)) {
+    preprocessor_error_at(filename, line_no, "invalid #if directive (expected identifier)");
+    return false;
+  }
+  const char* name_start = p;
+  p++;
+  while (p < line_end && is_ident_char(*p)) p++;
+  size_t name_len = (size_t)(p - name_start);
+
+  while (p < line_end && isspace((unsigned char)*p)) p++;
+  if (has_paren) {
+    if (p >= line_end || *p != ')') {
+      preprocessor_error_at(filename, line_no, "invalid #if directive (missing ')')");
+      return false;
+    }
+    p++;
+  }
+
+  bool is_defined = is_macro_defined(macros, name_start, name_len);
+  *out_value = negate ? !is_defined : is_defined;
+  *next = p;
+  return true;
+}
+
+// Purpose: Parse a limited #if condition with defined/!defined and &&.
+// Inputs: line/line_end describe the directive contents.
+// Outputs: Returns true on success and fills out_value.
+// Invariants/Assumptions: Only supports AND-combined defined checks.
+static bool parse_if_condition(const char* line, const char* line_end,
+                               const char* filename, size_t line_no,
+                               struct Macro* macros, bool* out_value) {
+  const char* p = line;
+  bool value = false;
+  if (!parse_if_defined_term(p, line_end, filename, line_no, macros, &value, &p)) {
+    return false;
+  }
+
+  while (true) {
+    while (p < line_end && isspace((unsigned char)*p)) p++;
+    if (p + 1 < line_end && p[0] == '&' && p[1] == '&') {
+      p += 2;
+      bool rhs = false;
+      if (!parse_if_defined_term(p, line_end, filename, line_no, macros, &rhs, &p)) {
+        return false;
+      }
+      value = value && rhs;
+      continue;
+    }
+    break;
+  }
+
+  while (p < line_end && isspace((unsigned char)*p)) p++;
+  if (p != line_end) {
+    preprocessor_error_at(filename, line_no, "invalid #if directive (unexpected tokens)");
+    return false;
+  }
+
+  *out_value = value;
+  return true;
+}
+
 // Purpose: Process a single preprocessor directive line.
 // Inputs: line_start/line_end span the directive; if_stack tracks conditionals.
 // Outputs: Returns true on success and updates macros/output buffers as needed.
@@ -924,6 +1016,26 @@ static bool preprocess_directive(
     return parse_define_line(p, line_end, filename, line_no, macros);
   }
 
+  if (word_len == 2 && strncmp(word_start, "if", 2) == 0) {
+    bool condition_true = false;
+    if (if_stack->current_active) {
+      if (!parse_if_condition(p, line_end, filename, line_no, *macros, &condition_true)) {
+        return false;
+      }
+    } else {
+      bool ignored = false;
+      if (!parse_if_condition(p, line_end, filename, line_no, *macros, &ignored)) {
+        return false;
+      }
+      condition_true = false;
+    }
+    if (!ifstack_push(if_stack, condition_true)) {
+      fprintf(stderr, "Preprocessor memory error\n");
+      return false;
+    }
+    return true;
+  }
+
   if (word_len == 5 && strncmp(word_start, "ifdef", 5) == 0) {
     const char* name_start = NULL;
     size_t name_len = 0;
@@ -955,6 +1067,11 @@ static bool preprocess_directive(
       fprintf(stderr, "Preprocessor memory error\n");
       return false;
     }
+    return true;
+  }
+
+  if (word_len == 6 && strncmp(word_start, "pragma", 6) == 0) {
+    // Ignore pragmas in this minimal preprocessor.
     return true;
   }
 
