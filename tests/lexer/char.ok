@@ -1,0 +1,12 @@
+[
+    char, x, =, 65, ;, char, x, =, 98, ;, 
+    char, x, =, 46, ;, char, x, =, 48, ;, 
+    char, x, =, 32, ;, char, x, =, 35, ;, 
+    char, x, =, 63, ;, char, x, =, 39, ;, 
+    char, x, =, 34, ;, char, x, =, 63, ;, 
+    char, x, =, 92, ;, char, x, =, 7, ;, 
+    char, x, =, 8, ;, char, x, =, 12, ;, 
+    char, x, =, 10, ;, char, x, =, 13, ;, 
+    char, x, =, 9, ;, char, x, =, 11, ;, 
+    char, x, =, 0, ;
+]

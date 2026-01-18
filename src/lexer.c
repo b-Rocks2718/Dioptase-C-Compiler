@@ -175,6 +175,7 @@ static int hex_digit_value(int ch) {
 static bool consume_literal(struct Token* token) {
   skip();
   if (isdigit((unsigned char)*current)) {
+    // number literal
     char const * start = current;
     uint64_t v = 0;
     bool is_hex = false;
@@ -254,6 +255,122 @@ static bool consume_literal(struct Token* token) {
     token->start = start;
     token->len = (size_t)(current - start);
     return true;
+  } else if (*current == '\'') {
+    const char* start = current;
+
+    // char literal
+    consume("\'");
+
+    // detect escape characters
+    if (*current == '\\'){
+      switch (*(current + 1)){
+        case '\'':
+          token->data.char_val = '\'';
+          break;
+        case '\"':
+          token->data.char_val = '\"';
+          break;
+        case '\?':
+          token->data.char_val = '\?';
+          break;
+        case '\\':
+          token->data.char_val = '\\';
+          break;
+        case 'a':
+          token->data.char_val = '\a';
+          break;
+        case 'b':
+          token->data.char_val = '\b';
+          break;
+        case 'f':
+          token->data.char_val = '\f';
+          break;
+        case 'n':
+          token->data.char_val = '\n';
+          break;
+        case 'r':
+          token->data.char_val = '\r';
+          break;
+        case 't':
+          token->data.char_val = '\t';
+          break;
+        case 'v':
+          token->data.char_val = '\v';
+          break;
+        case '0':
+          token->data.char_val = '\0';
+          break;
+        default:
+          print_error();
+          exit(1);
+      }
+
+      current += 2;
+    } else {
+      token->data.char_val = *current;
+      current += 1;
+    }
+
+    if (!consume("\'")){
+      print_error();
+      exit(1);
+    }
+
+    token->start = start;
+    token->type = CHAR_LIT;
+    token->len = (size_t)(current - start);
+    return true;
+  } else if (*current == '\"') {
+    const char* start = current;
+
+    // string literal
+    current += 1;
+    bool escaped = false;
+    while ((*current != '\"' || *(current - 1) == '\\') && *current != '\0') {
+      if (escaped){
+        switch (*current){
+          case '\'':
+          case '\"':
+          case '\?':
+          case '\\':
+          case 'a':
+          case 'b':
+          case 'f':
+          case 'n':
+          case 'r':
+          case 't':
+          case 'v':
+          case '0':
+            // allowed escapes
+            break;
+          default:
+            // unrecognized escape
+            print_error();
+            exit(1);
+        }
+      }
+
+      if (!escaped && *current == '\\') escaped = true;
+      else escaped = false;
+      current++;
+    }
+
+    if (*current != '\"'){
+      print_error();
+      exit(1);
+    }
+
+    current++;
+
+    struct Slice* slice = malloc(sizeof(struct Slice));
+    slice->len = (size_t)(current - start - 2);
+    slice->start = start + 1;
+    token->data.string = slice;
+    token->start = start;
+    token->type = STRING_LIT;
+    token->len = (size_t)(current - start);
+    return true;
+
   } else {
     return false;
   }
@@ -297,6 +414,7 @@ static struct Token* consume_any(){
   if (consume_keyword("signed")) return finish_simple_token(token, SIGNED_TOK);
   if (consume_keyword("long")) return finish_simple_token(token, LONG_TOK);
   if (consume_keyword("short")) return finish_simple_token(token, SHORT_TOK);
+  if (consume_keyword("char")) return finish_simple_token(token, CHAR_TOK);
 
   if (consume(",")) return finish_simple_token(token, COMMA);
   if (consume("?")) return finish_simple_token(token, QUESTION);

@@ -24,6 +24,12 @@ void print_token(struct Token token){
     case U_LONG_LIT:
       printf("%lu", token.data.ulong_val);
       break;
+    case CHAR_LIT:
+      printf("%d", (int)token.data.char_val);
+      break;
+    case STRING_LIT:
+      printf("\"%.*s\"", (int)token.data.string->len, token.data.string->start);
+      break;
     case IDENT:
       print_slice(token.data.ident_name);
       break;
@@ -209,6 +215,9 @@ void print_token(struct Token token){
       break;
     case SHORT_TOK:
       printf("short");
+      break;
+    case CHAR_TOK:
+      printf("char");
       break;
     case OPEN_S:
       printf("[");

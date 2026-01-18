@@ -1,0 +1,3 @@
+Lexer error at tests/lexer_invalid/invalid_string.c:1:27: unexpected character 'g'
+ghij";
+

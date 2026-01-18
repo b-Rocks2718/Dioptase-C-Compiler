@@ -1,0 +1,3 @@
+Lexer error at tests/lexer_invalid/invalid_char_lit.c:1:11: unexpected character '\'
+\d'
+

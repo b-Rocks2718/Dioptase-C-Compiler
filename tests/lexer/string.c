@@ -1,0 +1,3 @@
+const char* str = "hello";
+const char* str = "\t\v\\abc";
+const char* str = "\"\"\"";

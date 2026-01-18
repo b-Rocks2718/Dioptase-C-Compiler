@@ -5,11 +5,13 @@
 
 enum TokenType {
   // tokens with data
-  INT_LIT, // CONTAINS INT
-  LONG_LIT, // CONTAINS LONG
-  U_INT_LIT, // CONTAINS UNSIGNED
-  U_LONG_LIT, // CONTINS UNSIGNED LONG
-  IDENT, // CONTAINS SLICE
+  INT_LIT, // contains int
+  LONG_LIT, // contains long
+  U_INT_LIT, // contains unsigned
+  U_LONG_LIT, // contains unsigned long
+  CHAR_LIT, // contains char
+  STRING_LIT, // contains slice
+  IDENT, // contains slice
 
   // TOKENS WITHOUT DATA
   VOID_TOK,
@@ -75,6 +77,7 @@ enum TokenType {
   SIGNED_TOK,
   LONG_TOK,
   SHORT_TOK,
+  CHAR_TOK,
 };
 
 union TokenVariant {
@@ -82,6 +85,8 @@ union TokenVariant {
   unsigned uint_val;
   long long_val;
   unsigned long ulong_val;
+  char char_val;
+  struct Slice* string;
   struct Slice* ident_name;
 };
 

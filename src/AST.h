@@ -17,6 +17,9 @@ enum StorageClass {
 };
 
 enum TypeType {
+  CHAR_TYPE,
+  SCHAR_TYPE,
+  UCHAR_TYPE,
   INT_TYPE,
   LONG_TYPE,
   SHORT_TYPE,
@@ -134,6 +137,7 @@ enum ExprType {
   ADDR_OF,
   DEREFERENCE,
   SUBSCRIPT,
+  STRING,
 };
 
 enum BinOp {
@@ -203,6 +207,8 @@ struct ConditionalExpr {
 };
 
 enum ConstType {
+  CHAR_CONST,
+  UCHAR_CONST,
   INT_CONST,
   UINT_CONST,
   LONG_CONST,
@@ -255,6 +261,10 @@ struct SubscriptExpr {
   struct Expr* index;
 };
 
+struct StringExpr {
+  struct Slice* string;
+};
+
 union ExprVariant {
   struct BinaryExpr bin_expr;
   struct AssignExpr assign_expr;
@@ -268,6 +278,7 @@ union ExprVariant {
   struct AddrOfExpr addr_of_expr;
   struct DereferenceExpr deref_expr;
   struct SubscriptExpr subscript_expr;
+  struct StringExpr string_expr;
 };
 
 struct Expr {
