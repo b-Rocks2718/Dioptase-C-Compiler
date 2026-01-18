@@ -679,6 +679,9 @@ bool compare_types(struct Type* a, struct Type* b) {
     case UINT_TYPE:
     case LONG_TYPE:
     case ULONG_TYPE:
+    case CHAR_TYPE:
+    case SCHAR_TYPE:
+    case UCHAR_TYPE:
       return true; // primitive types match
 
     case POINTER_TYPE:

@@ -130,6 +130,8 @@ bool resolve_expr(struct Expr* expr) {
       return resolve_expr(expr->expr.conditional_expr.right);
     case LIT:
       return true;
+    case STRING:
+      return true;
     case UNARY:
       return resolve_expr(expr->expr.un_expr.expr);
     case VAR: {

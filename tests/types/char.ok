@@ -1,0 +1,58 @@
+Key: a.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: b.1
+  Type: schar
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: x
+  Type: char
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Initial [CHAR: 1] 
+    Is Defined: true
+    Storage Class: Static
+
+Key: c.2
+  Type: uchar
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: d.3
+  Type: char
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Program(
+    VarDclr(static, char, x, SingleInit(Cast(char, LitExpr(int, 1):int):char));
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int, a.0, SingleInit(LitExpr(int, 1):int));
+            VarDclr(none, schar, b.1, SingleInit(Cast(schar, Var(a.0):int):schar));
+            VarDclr(none, uchar, c.2, SingleInit(Cast(uchar, LitExpr(int, 92):int):uchar));
+            VarDclr(none, char, d.3, SingleInit(Cast(char, LitExpr(int, 65):int):char));
+            Return(Cast(int, Var(d.3):char):int, main);
+    );
+)

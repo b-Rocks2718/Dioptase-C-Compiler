@@ -35,7 +35,7 @@ struct Token token_array_get(struct TokenArray* arr, size_t i){
 void destroy_token_array(struct TokenArray* arr){
   for (int i = 0; i < arr->size; ++i){
     if (arr->tokens[i].type == IDENT) free(arr->tokens[i].data.ident_name);
-    else if (arr->tokens[i].type == STRING_LIT) free(arr->tokens[i].data.string);
+    else if (arr->tokens[i].type == STRING_LIT) free(arr->tokens[i].data.string_val);
   }
   free(arr->tokens);
   free(arr);

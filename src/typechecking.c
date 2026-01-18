@@ -18,6 +18,7 @@
 struct SymbolTable* global_symbol_table = NULL;
 
 static struct Type kIntType = { .type = INT_TYPE };
+static struct Type kCharType = { .type = CHAR_TYPE };
 
 // Purpose: Identify compound assignment operators.
 // Inputs: op is the binary operator enum value.
@@ -820,17 +821,31 @@ bool typecheck_init(struct Initializer* init, struct Type* type) {
 
   switch (init->init_type) {
     case SINGLE_INIT: {
-      if (!typecheck_convert_expr(&init->init.single_init)) {
-        return false;
+      if (type->type == ARRAY_TYPE && init->init.single_init->type == STRING) {
+        if (!is_char_type(type->type_data.array_type.element_type)) {
+          type_error_at(init->loc, "string initializer requires char array type");
+          return false;
+        }
+        if (init->init.single_init->expr.string_expr.string->len >
+            type->type_data.array_type.size) {
+          type_error_at(init->loc, "string initializer too long for array");
+          return false;
+        }
+        init->type = type;
+        return true;
+      } else {
+        if (!typecheck_convert_expr(&init->init.single_init)) {
+          return false;
+        }
+
+        if (!convert_by_assignment(&init->init.single_init, type)) {
+          return false;
+        }
+
+        init->type = type;
+
+        return true;
       }
-
-      if (!convert_by_assignment(&init->init.single_init, type)) {
-        return false;
-      }
-
-      init->type = type;
-
-      return true;
     }
     case COMPOUND_INIT: {
       if (type->type != ARRAY_TYPE) {
@@ -890,6 +905,9 @@ struct Initializer* make_zero_initializer(struct Type* type) {
   init->loc = NULL;
   
   switch (type->type) {
+    case CHAR_TYPE:
+    case UCHAR_TYPE:
+    case SCHAR_TYPE:
     case SHORT_TYPE:
     case USHORT_TYPE:
     case INT_TYPE:
@@ -960,7 +978,7 @@ bool typecheck_expr(struct Expr* expr) {
       struct Type* right_type = bin_expr->right->value_type;
 
       if (is_compound_assign_op(bin_expr->op)) {
-        if (!is_lvalue(bin_expr->left)) {
+        if (!is_assignable(bin_expr->left)) {
           type_error_at(expr->loc, "cannot assign to non-lvalue");
           return false;
         }
@@ -1028,8 +1046,7 @@ bool typecheck_expr(struct Expr* expr) {
         }
         convert_expr_type(&bin_expr->left, common_type);
         convert_expr_type(&bin_expr->right, common_type);
-        expr->value_type = arena_alloc(sizeof(struct Type));
-        expr->value_type->type = INT_TYPE;
+        expr->value_type = &kIntType;
         return true;
       }
       else if (bin_expr->op == ADD_OP || bin_expr->op == PLUS_EQ_OP) {
@@ -1067,8 +1084,7 @@ bool typecheck_expr(struct Expr* expr) {
       } 
       else if (bin_expr->op == BOOL_AND || bin_expr->op == BOOL_OR) {
         // Logical operators always yield int in this language subset.
-        expr->value_type = arena_alloc(sizeof(struct Type));
-        expr->value_type->type = INT_TYPE; // result type of logical operations is int
+        expr->value_type = &kIntType; // result type of logical operations is int
         return true;
       }
       else if (bin_expr->op == BIT_SHL || bin_expr->op == BIT_SHR) {
@@ -1102,7 +1118,7 @@ bool typecheck_expr(struct Expr* expr) {
         return false;
       }
 
-      if (!is_lvalue(assign_expr->left)) {
+      if (!is_assignable(assign_expr->left)) {
         type_error_at(expr->loc, "cannot assign to non-lvalue");
         return false;
       }
@@ -1125,7 +1141,7 @@ bool typecheck_expr(struct Expr* expr) {
         return false;
       }
 
-      if (!is_lvalue(post_assign_expr->expr)) {
+      if (!is_assignable(post_assign_expr->expr)) {
         type_error_at(expr->loc, "cannot apply post-increment/decrement to non-lvalue");
         return false;
       }
@@ -1227,9 +1243,14 @@ bool typecheck_expr(struct Expr* expr) {
         type_error_at(expr->loc, "invalid pointer operation in unary expression");
         return false;
       }
+      if (is_char_type(expr_type) &&
+          (unary_expr->op == NEGATE || unary_expr->op == COMPLEMENT)) {
+        //  Promote char to int for these operations.
+        convert_expr_type(&unary_expr->expr, &kIntType);
+        expr_type = unary_expr->expr->value_type;
+      }
       if (unary_expr->op == BOOL_NOT) {
-        expr->value_type = arena_alloc(sizeof(struct Type));
-        expr->value_type->type = INT_TYPE;
+        expr->value_type = &kIntType;
       } else {
         expr->value_type = expr_type;
       }
@@ -1334,6 +1355,14 @@ bool typecheck_expr(struct Expr* expr) {
       expr->value_type = ptr_type->type_data.pointer_type.referenced_type;
       return true;
     }
+    case STRING: {
+      struct StringExpr* str_expr = &expr->expr.string_expr;
+      expr->value_type = arena_alloc(sizeof(struct Type));
+      expr->value_type->type = ARRAY_TYPE;
+      expr->value_type->type_data.array_type.size = str_expr->string->len + 1; // include null terminator
+      expr->value_type->type_data.array_type.element_type = &kCharType;
+      return true;
+    }
     default: {
       type_error_at(expr->loc, "unknown expression type in typecheck_expr");
       return false; // Unknown expression type
@@ -1376,6 +1405,9 @@ bool is_arithmetic_type(struct Type* type) {
     case ULONG_TYPE:
     case SHORT_TYPE:
     case USHORT_TYPE:
+    case CHAR_TYPE:
+    case SCHAR_TYPE:
+    case UCHAR_TYPE:
       return true;
     default:
       return false;
@@ -1388,6 +1420,7 @@ bool is_unsigned_type(struct Type* type) {
     case ULONG_TYPE:
     case USHORT_TYPE:
     case POINTER_TYPE:
+    case UCHAR_TYPE:
       return true;
     default:
       return false;
@@ -1403,6 +1436,8 @@ bool is_signed_type(struct Type* type) {
     case INT_TYPE:
     case LONG_TYPE:
     case SHORT_TYPE:
+    case SCHAR_TYPE:
+    case CHAR_TYPE:
       return true;
     default:
       return false;
@@ -1415,6 +1450,10 @@ bool is_signed_type(struct Type* type) {
 // Invariants/Assumptions: Does not inspect referenced type.
 bool is_pointer_type(struct Type* type) {
   return type->type == POINTER_TYPE;
+}
+
+bool is_char_type(struct Type* type) {
+  return type->type == CHAR_TYPE || type->type == UCHAR_TYPE || type->type == SCHAR_TYPE;
 }
 
 // Purpose: Insert a cast expression to convert to a target type.
@@ -1439,6 +1478,10 @@ void convert_expr_type(struct Expr** expr, struct Type* target) {
 // Invariants/Assumptions: Pointer size is treated as 4 bytes here.
 size_t get_type_size(struct Type* type) {
   switch (type->type) {
+    case CHAR_TYPE:
+    case UCHAR_TYPE:
+    case SCHAR_TYPE:
+      return 1;
     case SHORT_TYPE:
     case USHORT_TYPE:
       return 2;
@@ -1464,6 +1507,14 @@ size_t get_type_size(struct Type* type) {
 // Outputs: Returns a common type or NULL if incompatible.
 // Invariants/Assumptions: Pointer types are not handled here.
 struct Type* get_common_type(struct Type* t1, struct Type* t2) {
+  // promote char types to int
+  if (is_char_type(t1)) {
+    t1 = &kIntType;
+  }
+  if (is_char_type(t2)) {
+    t2 = &kIntType;
+  }
+
   if (compare_types(t1, t2)) {
     return t1;
   }
@@ -1484,10 +1535,7 @@ struct Type* get_common_type(struct Type* t1, struct Type* t2) {
   }
 }
 
-// Purpose: Determine if an expression is an lvalue.
-// Inputs: expr is the expression node.
-// Outputs: Returns true if assignable.
-// Invariants/Assumptions: Only VAR and DEREFERENCE are lvalues here.
+// Purpose: Determine if an expression is an lvalue
 bool is_lvalue(struct Expr* expr) {
   switch (expr->type) {
     case VAR:
@@ -1496,9 +1544,18 @@ bool is_lvalue(struct Expr* expr) {
       return true;
     case SUBSCRIPT:
       return true;
+    case STRING:
+      return true; // string literals can be treated as lvalues for address-of
     default:
       return false;
   }
+}
+
+bool is_assignable(struct Expr* expr) {
+  if (expr->type == STRING) {
+    return false; // string literals are not assignable, but are still lvalues
+  }
+  return is_lvalue(expr);
 }
 
 // Purpose: Check if an expression is a null pointer constant.
@@ -1565,6 +1622,11 @@ bool convert_by_assignment(struct Expr** expr, struct Type* target) {
 // Invariants/Assumptions: Only integer-like types are supported here.
 enum StaticInitType get_var_init(struct Type* type) {
   switch (type->type) {
+    case CHAR_TYPE:
+    case SCHAR_TYPE:
+      return CHAR_INIT;
+    case UCHAR_TYPE:
+      return UCHAR_INIT;
     case SHORT_TYPE:
       return SHORT_INIT;
     case USHORT_TYPE:
@@ -1744,6 +1806,12 @@ void print_ident_init(struct IdentInit* init){
       for (struct InitList* cur = init->init_list; cur != NULL; cur = cur->next) {
         printf("[");
         switch (cur->value->int_type){
+          case CHAR_INIT:
+            printf("CHAR: %d", (int8_t)cur->value->value);
+            break;
+          case UCHAR_INIT:
+            printf("UCHAR: %u", (uint8_t)cur->value->value);
+            break;
           case SHORT_INIT:
             printf("SHORT: %d", (int16_t)cur->value->value);
             break;

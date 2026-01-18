@@ -1,0 +1,33 @@
+Key: str.0
+  Type: char*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: str2.1
+  Type: char[3]
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, char*, str.0, SingleInit(AddrOf(String(hello):char[6]):char*));
+            VarDclr(none, char[3], str2.1, SingleInit(String(\tb\n):untyped));
+            Return(AddOp(Cast(int, Subscript(Var(str.0):char*, LitExpr(int, 0):int):char):int, Cast(int, Subscript(AddrOf(Var(str2.1):char[3]):char*, LitExpr(int, 0):int):char):int):int, main);
+    );
+)

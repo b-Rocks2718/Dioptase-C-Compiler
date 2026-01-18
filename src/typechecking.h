@@ -66,13 +66,17 @@ struct IdentInit {
 // Outputs: Guides data emission for static variables.
 // Invariants/Assumptions: ZERO_INIT represents zero-fill.
 enum StaticInitType {
+  CHAR_INIT,
+  UCHAR_INIT,
   SHORT_INIT,
   USHORT_INIT,
   INT_INIT,
   UINT_INIT,
   LONG_INIT,
   ULONG_INIT,
-  ZERO_INIT
+  STRING_INIT,
+  POINTER_INIT,
+  ZERO_INIT,
 };
 
 // Purpose: Hold the value for a static initializer entry.
@@ -204,6 +208,8 @@ bool typecheck_args(struct ArgList* args, struct ParamTypeList* params, struct E
 // Invariants/Assumptions: Pointer and function types are not arithmetic.
 bool is_arithmetic_type(struct Type* type);
 
+bool is_char_type(struct Type* type);
+
 // Purpose: Check whether a type is signed.
 // Inputs: type is the Type node.
 // Outputs: Returns true for signed integer types.
@@ -251,6 +257,8 @@ void convert_expr_type(struct Expr** expr, struct Type* target_type);
 // Outputs: Returns true if the expression is assignable.
 // Invariants/Assumptions: Only variables and dereferences are lvalues here.
 bool is_lvalue(struct Expr* expr);
+
+bool is_assignable(struct Expr* expr);
 
 // Purpose: Compute the static initializer kind for a variable type.
 // Inputs: type of the variable declaration.

@@ -69,9 +69,12 @@ Limitations:
 
 - No structs/unions, enums, `sizeof`, floating-point, `char`, or string literals
 - No `long` integers, no `void` or `void*`
-- No `typedef`, `const`, or `volatile`
+- No `typedef`, `const`, `volatile`, or `restrict`
 - No multiple declarators per declaration (e.g., `int a, b;`)
-- Global initializers must be integer literals (pointer globals may only use null pointer literals)
+- No comma operator or unary + operator
+- No function pointers
+- No variadic functions
+- No inline assembly
 
 ## Tests
 
