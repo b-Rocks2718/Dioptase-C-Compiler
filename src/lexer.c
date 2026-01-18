@@ -365,7 +365,7 @@ static bool consume_literal(struct Token* token) {
     struct Slice* slice = malloc(sizeof(struct Slice));
     slice->len = (size_t)(current - start - 2);
     slice->start = start + 1;
-    token->data.string = slice;
+    token->data.string_val = slice;
     token->start = start;
     token->type = STRING_LIT;
     token->len = (size_t)(current - start);

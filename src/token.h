@@ -86,7 +86,7 @@ union TokenVariant {
   long long_val;
   unsigned long ulong_val;
   char char_val;
-  struct Slice* string;
+  struct Slice* string_val;
   struct Slice* ident_name;
 };
 

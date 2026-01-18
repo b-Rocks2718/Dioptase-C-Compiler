@@ -207,8 +207,6 @@ struct ConditionalExpr {
 };
 
 enum ConstType {
-  CHAR_CONST,
-  UCHAR_CONST,
   INT_CONST,
   UINT_CONST,
   LONG_CONST,
@@ -216,6 +214,7 @@ enum ConstType {
 };
 
 union ConstVariant {
+  char char_val;
   short short_val;
   unsigned short ushort_val;
   int int_val;
@@ -536,10 +535,11 @@ struct AbstractDeclarator {
 
 enum TypeSpecifier {
   INT_SPEC = 1,
-  UINT_SPEC,
-  SINT_SPEC,
+  UNSIGNED_SPEC,
+  SIGNED_SPEC,
   LONG_SPEC,
   SHORT_SPEC,
+  CHAR_SPEC,
 };
 
 struct TypeSpecList {

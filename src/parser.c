@@ -9,6 +9,7 @@
 #include "token.h"
 #include "token_array.h"
 #include "source_location.h"
+#include "slice.h"
 #include <sys/types.h>
 
 static struct Token * program;
@@ -257,10 +258,11 @@ struct Expr* parse_var(){
 // Invariants/Assumptions: Caller handles combinations of specifiers.
 enum TypeSpecifier parse_type_spec(){
   if (consume(INT_TOK)) return INT_SPEC;
-  if (consume(SIGNED_TOK)) return SINT_SPEC;
-  if (consume(UNSIGNED_TOK)) return UINT_SPEC;
+  if (consume(SIGNED_TOK)) return SIGNED_SPEC;
+  if (consume(UNSIGNED_TOK)) return UNSIGNED_SPEC;
   if (consume(LONG_TOK)) return LONG_SPEC;
   if (consume(SHORT_TOK)) return SHORT_SPEC;
+  if (consume(CHAR_TOK)) return CHAR_SPEC;
   else return 0;
 }
 
@@ -287,27 +289,28 @@ bool spec_list_contains(struct TypeSpecList* types, enum TypeSpecifier spec){
   else return spec_list_contains(types->next, spec);
 }
 
-// Purpose: Detect duplicate type specifiers in a list.
+// Purpose: Detect duplicate or contradictory type specifiers in a list.
 // Inputs: types is the list of parsed specifiers.
-// Outputs: Returns true if any specifier appears more than once.
+// Outputs: Returns true if the specifier list is valid.
 // Invariants/Assumptions: types is a well-formed linked list.
-bool spec_list_has_duplicates(struct TypeSpecList* types){
+bool spec_list_valid(struct TypeSpecList* types){
   unsigned num_ints = 0;
-  unsigned num_uints = 0;
-  unsigned num_sints = 0;
+  unsigned num_unsigneds = 0;
+  unsigned num_signeds = 0;
   unsigned num_longs = 0;
   unsigned num_shorts = 0;
+  unsigned num_chars = 0;
   struct TypeSpecList* cur = types;
   while (cur != NULL){
     switch (cur->spec){
       case INT_SPEC:
         num_ints++;
         break;
-      case UINT_SPEC:
-        num_uints++;
+      case UNSIGNED_SPEC:
+        num_unsigneds++;
         break;
-      case SINT_SPEC:
-        num_sints++;
+      case SIGNED_SPEC:
+        num_signeds++;
         break;
       case LONG_SPEC:
         num_longs++;
@@ -315,17 +318,80 @@ bool spec_list_has_duplicates(struct TypeSpecList* types){
       case SHORT_SPEC:
         num_shorts++;
         break;
+      case CHAR_SPEC:
+        num_chars++;
+        break;
       default:
         break;
     }
     cur = cur->next;
   }
-  if (num_ints > 1) return true;
-  if (num_uints > 1) return true;
-  if (num_sints > 1) return true;
-  if (num_longs > 1) return true;
-  if (num_shorts > 1) return true;
-  return false;
+  if (num_ints > 1) return false;
+  if (num_unsigneds > 1) return false;
+  if (num_signeds > 1) return false;
+  if (num_longs > 1) return false;
+  if (num_shorts > 1) return false;
+  if (num_chars > 1) return false;
+
+  if (num_signeds + num_unsigneds > 1) return false;
+  if (num_chars + num_shorts + num_longs > 1) return false;
+  if (num_chars + num_ints > 1) return false;
+
+  return true;
+}
+
+struct Type* type_spec_to_type(struct TypeSpecList* types){
+  if (types == NULL) return NULL;
+  else if (!spec_list_valid(types)) {
+    parse_error_at(parser_error_ptr(), "invalid type specifiers");
+    return NULL;
+  } if (spec_list_contains(types, UNSIGNED_SPEC) && spec_list_contains(types, SHORT_SPEC)){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = USHORT_TYPE;
+    return type;
+  } else if (spec_list_contains(types, SIGNED_SPEC) && spec_list_contains(types, SHORT_SPEC)){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = SHORT_TYPE;
+    return type;
+  } else if (spec_list_contains(types, UNSIGNED_SPEC) && spec_list_contains(types, LONG_SPEC)){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = ULONG_TYPE;
+    return type;
+  } else if (spec_list_contains(types, SIGNED_SPEC) && spec_list_contains(types, LONG_SPEC)){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = LONG_TYPE;
+    return type;
+  } else if (spec_list_contains(types, SIGNED_SPEC) && spec_list_contains(types, CHAR_SPEC)){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = SCHAR_TYPE;
+    return type;
+  } else if (spec_list_contains(types, UNSIGNED_SPEC) && spec_list_contains(types, CHAR_SPEC)){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = UCHAR_TYPE;
+    return type;
+  } else if (spec_list_contains(types, CHAR_SPEC)){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = CHAR_TYPE;
+    return type;
+  } else if (spec_list_contains(types, SHORT_SPEC)){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = SHORT_TYPE;
+    return type;
+  } else if (spec_list_contains(types, LONG_SPEC)){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = LONG_TYPE;
+    return type;
+  }
+  // at this point it must be an int type 
+  else if (spec_list_contains(types, UNSIGNED_SPEC)){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = UINT_TYPE;
+    return type;
+  } else {
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = INT_TYPE;
+    return type;
+  }
 }
 
 // Purpose: Parse a parameter type (base specifiers plus abstract declarator).
@@ -334,65 +400,8 @@ bool spec_list_has_duplicates(struct TypeSpecList* types){
 // Invariants/Assumptions: Handles pointer declarators via parse_abstract_declarator.
 struct Type* parse_param_type(){
   struct TypeSpecList* types = parse_type_specs();
-  if (types == NULL) return NULL;
-  else if (spec_list_has_duplicates(types)) {
-    parse_error_at(parser_error_ptr(), "duplicate type specifiers");
-    return NULL;
-  } else if (spec_list_contains(types, SINT_SPEC) &&
-             spec_list_contains(types, UINT_SPEC)){
-    parse_error_at(parser_error_ptr(), "invalid type specifiers");
-    return NULL;
-  } else if (spec_list_contains(types, UINT_SPEC) && spec_list_contains(types, SHORT_SPEC)){
-    // ignoring long types for now
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = USHORT_TYPE;
-    return type;
-  } else if (spec_list_contains(types, SINT_SPEC) && spec_list_contains(types, SHORT_SPEC)){
-    // ignoring long types for now
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = SHORT_TYPE;
-    return type;
-  } else if (spec_list_contains(types, SHORT_SPEC)){
-    // ignoring long types for now
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = SHORT_TYPE;
-    return type;
-  } else if (spec_list_contains(types, UINT_SPEC)){
-    // ignoring long types for now
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = UINT_TYPE;
-    return type;
-  } else {
-    // ignoring long types for now
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = INT_TYPE;
-    return type;
-  }
+  return type_spec_to_type(types);
 }
-
-/*
-parseAbstractDeclarator :: Parser Token AbstractDeclarator
-parseAbstractDeclarator = 
-  (char Asterisk *> (AbstractPointer <$> parseAbstractDeclarator)) <|>
-  parseDirectAbstractDeclarator <|>
-  pure AbstractBase
-
-parseDirectAbstractDeclarator :: Parser Token AbstractDeclarator
-parseDirectAbstractDeclarator = (do
-  _ <- char OpenP
-  d <- parseAbstractDeclarator
-  _ <- char CloseP
-  sizes <- many (intLitVal <$> (char OpenS *> satisfy isIntLit <* char CloseS))
-  return (makeAbstractArrayDeclarator d sizes)) <|> (do
-  sizes <- some (intLitVal <$> (char OpenS *> satisfy isIntLit <* char CloseS))
-  return (makeAbstractArrayDeclarator AbstractBase sizes))
-
-makeAbstractArrayDeclarator :: AbstractDeclarator -> [Int] -> AbstractDeclarator
-makeAbstractArrayDeclarator d sizes = 
-  case sizes of
-    n:ns -> AbstractArray (makeAbstractArrayDeclarator d ns) n
-    [] -> d
-*/
 
 // Purpose: Parse an integer literal token usable as an array bound.
 // Inputs: Consumes a single integer literal token.
@@ -733,11 +742,87 @@ struct LitExpr parse_lit_expr(void){
     struct LitExpr lit_expr = {ULONG_CONST, const_data};
 
     return lit_expr;
+  } else if ((data = consume_with_data(CHAR_LIT))){
+    union ConstVariant const_data = {.int_val = data->char_val};
+    struct LitExpr lit_expr = {INT_CONST, const_data};
+
+    return lit_expr;
   } else {
     union ConstVariant const_data;
     const_data.int_val = 0;
     struct LitExpr lit_expr = {-1, const_data};
     return lit_expr;
+  }
+}
+
+struct Expr* parse_string(void){
+  union TokenVariant* data;
+  if ((data = consume_with_data(STRING_LIT))){
+    const char* str_loc = (current - 1)->start;
+
+    char* escaped_str = arena_alloc(data->string_val->len + 1);
+    size_t esc_index = 0;
+    for (size_t i = 0; i < data->string_val->len; i++){
+      if (data->string_val->start[i] == '\\'){
+        i++;
+        switch (data->string_val->start[i]){
+          case '\'':
+            escaped_str[esc_index++] = '\'';
+            break;
+          case '\"':
+            escaped_str[esc_index++] = '\"';
+            break;
+          case '\?':
+            escaped_str[esc_index++] = '\?';
+            break;
+          case '\\':
+            escaped_str[esc_index++] = '\\';
+            break;
+          case 'a':
+            escaped_str[esc_index++] = '\a';
+            break;
+          case 'b':
+            escaped_str[esc_index++] = '\b';
+            break;
+          case 'f':
+            escaped_str[esc_index++] = '\f';
+            break;
+          case 'n':
+            escaped_str[esc_index++] = '\n';
+            break;
+          case 'r':
+            escaped_str[esc_index++] = '\r';
+            break;
+          case 't':
+            escaped_str[esc_index++] = '\t';
+            break;
+          case 'v':
+            escaped_str[esc_index++] = '\v';
+            break;
+          case '0':
+            escaped_str[esc_index++] = '\0';
+            break;
+          default:
+            parse_error_at(str_loc, "invalid escape sequence");
+            exit(1);
+        }
+      } else {
+        escaped_str[esc_index++] = data->string_val->start[i];
+      }
+    }
+    escaped_str[esc_index] = '\0';
+
+    struct Slice* escaped_slice = arena_alloc(sizeof(struct Slice));
+    escaped_slice->start = escaped_str;
+    escaped_slice->len = esc_index;
+
+    struct StringExpr string_expr = {escaped_slice};
+
+    struct Expr* expr = alloc_expr(STRING, str_loc);
+    expr->expr.string_expr = string_expr;
+    return expr;
+  } else {
+    return NULL;
   }
 }
 
@@ -805,6 +890,7 @@ struct Expr* parse_primary_expr(){
   if ((expr = parse_parens())) return expr;
   else if ((expr = parse_func_call())) return expr;
   else if ((expr = parse_var())) return expr;
+  else if ((expr = parse_string())) return expr;
   else return NULL;
 }
 
@@ -1258,6 +1344,22 @@ struct Statement* parse_do_while_stmt(){
   return result;
 }
 
+bool is_type_specifier(enum TokenType type){
+  switch (current->type) {
+    case INT_TOK:
+    case SIGNED_TOK:
+    case UNSIGNED_TOK:
+    case LONG_TOK:
+    case SHORT_TOK:
+    case CHAR_TOK:
+    case STATIC_TOK:
+    case EXTERN_TOK:
+      return true;
+    default:
+      return false;
+  }
+}
+
 // Purpose: Parse the declaration form of a for-loop initializer.
 // Inputs: Consumes a type/specifier sequence and declarator.
 // Outputs: Returns a VariableDclr or NULL if no declaration is found.
@@ -1267,16 +1369,8 @@ struct VariableDclr* parse_for_dclr(){
   if ((size_t)(current - program) >= prog_size) {
     return NULL;
   }
-  switch (current->type) {
-    case INT_TOK:
-    case SIGNED_TOK:
-    case UNSIGNED_TOK:
-    case LONG_TOK:
-    case STATIC_TOK:
-    case EXTERN_TOK:
-      break;
-    default:
-      return NULL;
+  if (!is_type_specifier(current->type)) {
+    return NULL;
   }
 
   struct Type* base_type = NULL;
@@ -1522,7 +1616,7 @@ struct Initializer* parse_var_init(struct Type* type){
 
   if (type->type != ARRAY_TYPE){
     // error, compound init only valid for arrays currently
-    parse_error_at((current - 1)->start, "Compound initializers are only supported for array types.");
+    parse_error_at(parser_error_ptr(), "Compound initializers are only supported for array types.");
     return NULL;
   }
 
@@ -1597,13 +1691,13 @@ struct DclrPrefix* parse_type_or_storage_class(){
   else if (consume(SIGNED_TOK)) {
     struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = TYPE_PREFIX;
-    dclr_prefix->prefix.type_spec = SINT_SPEC;
+    dclr_prefix->prefix.type_spec = SIGNED_SPEC;
     return dclr_prefix;
   }
   else if (consume(UNSIGNED_TOK)) {
     struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = TYPE_PREFIX;
-    dclr_prefix->prefix.type_spec = UINT_SPEC;
+    dclr_prefix->prefix.type_spec = UNSIGNED_SPEC;
     return dclr_prefix;
   }
   else if (consume(LONG_TOK)) {
@@ -1618,16 +1712,22 @@ struct DclrPrefix* parse_type_or_storage_class(){
     dclr_prefix->prefix.type_spec = SHORT_SPEC;
     return dclr_prefix;
   }
+  else if (consume(CHAR_TOK)) {
+    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
+    dclr_prefix->type = TYPE_PREFIX;
+    dclr_prefix->prefix.type_spec = CHAR_SPEC;
+    return dclr_prefix;
+  }
   else if (consume(STATIC_TOK)){
     struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = STORAGE_PREFIX;
-    dclr_prefix->prefix.type_spec = STATIC;
+    dclr_prefix->prefix.storage_class = STATIC;
     return dclr_prefix;
   }
   else if (consume(EXTERN_TOK)){
     struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = STORAGE_PREFIX;
-    dclr_prefix->prefix.type_spec = EXTERN;
+    dclr_prefix->prefix.storage_class = EXTERN;
     return dclr_prefix;
   }
   return NULL;
@@ -1648,7 +1748,8 @@ void parse_types_and_storage_classes(struct StorageClassList** storages_result, 
         next_storage->spec = prefix->prefix.storage_class;
         next_storage->next = NULL;
         if (prev_storages != NULL){
-          prev_storages->next = next_storage;
+          parse_error_at(parser_error_ptr(), "duplicate storage class specifier");
+          exit(1);
         } else {
           storages = next_storage;
         }
@@ -1676,67 +1777,10 @@ void parse_type_and_storage_class(struct Type** type, enum StorageClass* class){
   struct StorageClassList* storages = NULL;
   struct TypeSpecList* specs = NULL;
   parse_types_and_storage_classes(&storages, &specs);
-  enum StorageClass storage = (storages == NULL) ? NONE : storages->spec;
-  if (spec_list_has_duplicates(specs)){
-    parse_error_at(parser_error_ptr(), "duplicate type specifiers");
-    *type = NULL;
-    *class = NONE;
-    return;
-  } else if (specs == NULL){
-    parse_error_at(parser_error_ptr(), "missing type specifier");
-    *type = NULL;
-    *class = NONE;
-    return;
-  } else if (storages != NULL && storages->next != NULL){
-    parse_error_at(parser_error_ptr(), "invalid storage class");
-    *type = NULL;
-    *class = NONE;
-    return;
-  } else if (spec_list_contains(specs, SINT_SPEC) &&
-             spec_list_contains(specs, UINT_SPEC)){
-    parse_error_at(parser_error_ptr(), "invalid type specifiers");
-    *type = NULL;
-    *class = NONE;
-    return;
-  } else if (spec_list_contains(specs, SHORT_SPEC) &&
-             spec_list_contains(specs, LONG_SPEC)){
-    parse_error_at(parser_error_ptr(), "invalid type specifiers");
-    *type = NULL;
-    *class = NONE;
-    return;
-  } else if (spec_list_contains(specs, UINT_SPEC) &&
-             spec_list_contains(specs, LONG_SPEC)){
-    *type = arena_alloc(sizeof(struct Type));
-    (*type)->type = ULONG_TYPE;
-    *class = storage;
-    return;
-  } else if (spec_list_contains(specs, UINT_SPEC) &&
-             spec_list_contains(specs, SHORT_SPEC)){
-    *type = arena_alloc(sizeof(struct Type));
-    (*type)->type = USHORT_TYPE;
-    *class = storage;
-    return;
-  } else if (spec_list_contains(specs, UINT_SPEC)){
-    *type = arena_alloc(sizeof(struct Type));
-    (*type)->type = UINT_TYPE;
-    *class = storage;
-    return;
-  } else if (spec_list_contains(specs, SHORT_SPEC)){
-    *type = arena_alloc(sizeof(struct Type));
-    (*type)->type = SHORT_TYPE;
-    *class = storage;
-    return;
-  } else if (spec_list_contains(specs, LONG_SPEC)) {
-    *type = arena_alloc(sizeof(struct Type));
-    (*type)->type = LONG_TYPE;
-    *class = storage;
-    return;
-  } else {
-    *type = arena_alloc(sizeof(struct Type));
-    (*type)->type = INT_TYPE;
-    *class = storage;
-    return;
-  }
+
+  *class = (storages == NULL) ? NONE : storages->spec;
+  *type = type_spec_to_type(specs);
+  return;
 }
 
 // Parse a declarator (possibly pointer-qualified).
@@ -2107,18 +2151,7 @@ struct FunctionDclr* parse_function(struct Type* ret_type, enum StorageClass sto
 struct Declaration* parse_declaration(){
   struct Token* old_current = current;
   if ((size_t)(current - program) >= prog_size) return NULL;
-  switch (current->type){
-    case INT_TOK:
-    case SIGNED_TOK:
-    case UNSIGNED_TOK:
-    case LONG_TOK:
-    case SHORT_TOK:
-    case STATIC_TOK:
-    case EXTERN_TOK:
-      break;
-    default:
-      return NULL;
-  }
+  if (!is_type_specifier(current->type)) return NULL;
   
   struct Type* base_type = NULL;
   enum StorageClass storage = NONE;

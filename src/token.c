@@ -28,7 +28,7 @@ void print_token(struct Token token){
       printf("%d", (int)token.data.char_val);
       break;
     case STRING_LIT:
-      printf("\"%.*s\"", (int)token.data.string->len, token.data.string->start);
+      printf("\"%.*s\"", (int)token.data.string_val->len, token.data.string_val->start);
       break;
     case IDENT:
       print_slice(token.data.ident_name);

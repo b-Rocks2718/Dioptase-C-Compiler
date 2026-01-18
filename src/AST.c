@@ -37,6 +37,15 @@ void print_type(struct Type* type){
     case USHORT_TYPE:
       printf("ushort");
       break;
+    case CHAR_TYPE:
+      printf("char");
+      break;
+    case SCHAR_TYPE:
+      printf("schar");
+      break;
+    case UCHAR_TYPE:
+      printf("uchar");
+      break;
     case POINTER_TYPE:
       print_type(type->type_data.pointer_type.referenced_type);
       printf("*");
@@ -61,6 +70,9 @@ void print_type(struct Type* type){
            cur = cur->type_data.array_type.element_type) {
         printf("[%zu]", cur->type_data.array_type.size);
       }
+      break;
+    default:
+      printf("unknown_type");
       break;
   }
 }
@@ -116,6 +128,11 @@ void print_expr(struct Expr* expr){
       break;
     case SUBSCRIPT:
       print_subscript_expr(&expr->expr.subscript_expr);
+      break;
+    case STRING:
+      printf("String(");
+      print_slice_with_escapes(expr->expr.string_expr.string);
+      printf(")");
       break;
   }
   if (expr->value_type == NULL){
@@ -288,6 +305,9 @@ void print_lit_expr(struct LitExpr* lit_expr){
       break;
     case ULONG_CONST:
       printf("ulong, %lu", lit_expr->value.ulong_val);
+      break;
+    default:
+      printf("unknown_const");
       break;
   }
   printf(")");

@@ -1,0 +1,15 @@
+Program(
+    VarDclr(static, char, x, SingleInit(LitExpr(int, 1):untyped));
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int, a, SingleInit(LitExpr(int, 1):untyped));
+            VarDclr(none, schar, b, SingleInit(Var(a):untyped));
+            VarDclr(none, uchar, c, SingleInit(LitExpr(int, 92):untyped));
+            VarDclr(none, char, d, SingleInit(LitExpr(int, 65):untyped));
+            Return(Var(d):untyped);
+    );
+)

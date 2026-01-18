@@ -60,6 +60,55 @@ void print_slice(struct Slice* slice) {
   }
 }
 
+void print_slice_with_escapes(struct Slice* slice) {
+  for (size_t i = 0; i < slice->len; i++) {
+    char c = slice->start[i];
+    switch (c) {
+      case '\a':
+        printf("\\a");
+        break;
+      case '\b':
+        printf("\\b");
+        break;
+      case '\f':
+        printf("\\f");
+        break;
+      case '\n':
+        printf("\\n");
+        break;
+      case '\r':
+        printf("\\r");
+        break;
+      case '\t':
+        printf("\\t");
+        break;
+      case '\v':
+        printf("\\v");
+        break;
+      case '\\':
+        printf("\\\\");
+        break;
+      case '\"':
+        printf("\\\"");
+        break;
+      case '\'':
+        printf("\\'");
+        break;
+      case '\0':
+        printf("\\0");
+        break;
+      default:
+        if (isprint((unsigned char)c)) {
+          printf("%c", c);
+        } else {
+          // Print non-printable characters as octal escape sequences
+          printf("\\%03o", (unsigned char)c);
+        }
+        break;
+    }
+  }
+}
+
 size_t hash_slice(const struct Slice* key) {
   // djb2
   size_t out = 5381;
