@@ -79,7 +79,7 @@ enum StaticInitType {
 // Inputs: int_type selects the kind; value holds the normalized bits.
 // Outputs: Used by InitList to describe static data.
 // Invariants/Assumptions: value is normalized to the initializer type width.
-struct InitValue {
+struct StaticInit {
   enum StaticInitType int_type;
   uint64_t value;
 };
@@ -89,7 +89,7 @@ struct InitValue {
 // Outputs: Stored in IdentInit for static variable initialization.
 // Invariants/Assumptions: List order matches declaration order.
 struct InitList {
-  struct InitValue value;
+  struct StaticInit* value;
   struct InitList* next;
 };
 
@@ -138,9 +138,9 @@ bool typecheck_func(struct FunctionDclr* func_dclr);
 
 // Purpose: Typecheck and convert an initializer to a target type.
 // Inputs: init is the initializer expression pointer; type is the target type.
-// Outputs: Returns true on success; false on conversion/type errors.
+// Outputs: Returns true on success; false on any conversion/type errors.
 // Invariants/Assumptions: May rewrite *init with a cast expression.
-bool typecheck_init(struct Expr** init, struct Type* type);
+bool typecheck_init(struct Initializer* init, struct Type* type);
 
 // Purpose: Typecheck an expression subtree and assign value_type.
 // Inputs: expr is the expression node.
@@ -152,7 +152,7 @@ bool typecheck_expr(struct Expr* expr);
 // Inputs: expr is the expression node.
 // Outputs: Returns true on success; false on any type error.
 // Invariants/Assumptions: Currently delegates to typecheck_expr.
-bool typecheck_convert_expr(struct Expr* expr);
+bool typecheck_convert_expr(struct Expr** expr);
 
 // Purpose: Typecheck parameter declarations for a function.
 // Inputs: params is the parameter list.
@@ -253,10 +253,10 @@ void convert_expr_type(struct Expr** expr, struct Type* target_type);
 bool is_lvalue(struct Expr* expr);
 
 // Purpose: Compute the static initializer kind for a variable type.
-// Inputs: var_dclr is the variable declaration node.
+// Inputs: type of the variable declaration.
 // Outputs: Returns a StaticInitType enum value.
 // Invariants/Assumptions: Only integer-like types are supported.
-enum StaticInitType get_var_init(struct VariableDclr* var_dclr);
+enum StaticInitType get_var_init(struct Type* var_dclr);
 
 // Purpose: Compute the size of a type in bytes.
 // Inputs: type is the Type node.
@@ -307,5 +307,11 @@ void print_ident_attr(struct IdentAttr* attrs);
 // Outputs: Writes to stdout.
 // Invariants/Assumptions: Intended for debugging only.
 void print_ident_init(struct IdentInit* init);
+
+struct Initializer* make_zero_initializer(struct Type* type);
+
+bool eval_const(struct Expr* expr, uint64_t* out_value);
+
+struct InitList* is_init_const(struct Type* type, struct Initializer* init);
 
 #endif // TYPECHECKING_H

@@ -84,6 +84,24 @@ bool resolve_args(struct ArgList* args){
   return true;
 }
 
+bool resolve_var_init(struct Initializer* init){
+  switch (init->init_type) {
+    case SINGLE_INIT:
+      return resolve_expr(init->init.single_init);
+    case COMPOUND_INIT:
+      for (struct InitializerList* item = init->init.compound_init; item != NULL; item = item->next) {
+        if (!resolve_var_init(item->init)) {
+          ident_error_at(NULL, "failed to resolve initializer list item");
+          return false;
+        }
+      }
+      return true;
+    default:
+      ident_error_at(NULL, "unknown initializer type");
+      return false;
+  }
+}
+
 // Purpose: Resolve identifiers within an expression subtree.
 // Inputs: expr is the expression to resolve.
 // Outputs: Returns true on success; false on any unresolved identifier.
@@ -144,6 +162,9 @@ bool resolve_expr(struct Expr* expr) {
       return resolve_expr(expr->expr.addr_of_expr.expr);
     case DEREFERENCE:
       return resolve_expr(expr->expr.deref_expr.expr);
+    case SUBSCRIPT:
+      return resolve_expr(expr->expr.subscript_expr.array) &&
+             resolve_expr(expr->expr.subscript_expr.index);
     default:
       ident_error_at(expr->loc, "unknown expression type");
       return false;
@@ -186,7 +207,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
           unique_name, false);
       var_dclr->name = unique_name;
       if (var_dclr->init != NULL) {
-        return resolve_expr(var_dclr->init);
+        return resolve_var_init(var_dclr->init);
       }
       return true;
     }
@@ -198,7 +219,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
       unique_name, false);
   var_dclr->name = unique_name;
   if (var_dclr->init != NULL) {
-    return resolve_expr(var_dclr->init);
+    return resolve_var_init(var_dclr->init);
   }
   return true;
 }

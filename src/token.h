@@ -19,6 +19,8 @@ enum TokenType {
   CLOSE_P,
   OPEN_B,
   CLOSE_B,
+  OPEN_S,
+  CLOSE_S,
   SEMI,
   TILDE,
   INC_TOK,

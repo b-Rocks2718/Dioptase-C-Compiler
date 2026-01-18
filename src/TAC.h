@@ -13,8 +13,8 @@ struct TACProg {
 };
 
 enum TopLevelType {
-    FUNC,
-    STATIC_VAR
+  FUNC,
+  STATIC_VAR
 };
 
 struct TopLevel {
@@ -27,58 +27,58 @@ struct TopLevel {
   size_t num_params;    // for Func
   
   struct Type* var_type; // for StaticVar
-  struct IdentInit* init_values; // for StaticVar
+  struct InitList* init_values; // for StaticVar
   size_t num_inits; // for StaticVar
   
   struct TopLevel* next;
 };
 
 enum ValType {
-    CONSTANT,
-    VARIABLE
+  CONSTANT,
+  VARIABLE
 };
 
 union ValVariant {
-    uint64_t const_value; // stores raw constant bits for 32/64-bit integers
-    struct Slice* var_name;
+  uint64_t const_value; // stores raw constant bits for 32/64-bit integers
+  struct Slice* var_name;
 };
 
 struct Val {
-    enum ValType val_type;
-    union ValVariant val;
-    struct Type* type; // value type for width/sign normalization
+  enum ValType val_type;
+  union ValVariant val;
+  struct Type* type;
 };
 
 enum TACInstrType {
-    TACRETURN,
-    TACUNARY,
-    TACBINARY,
-    TACCOND_JUMP,
-    TACCMP,
-    TACJUMP,
-    TACLABEL,
-    TACCOPY,
-    TACCALL,
-    TACGET_ADDRESS,
-    TACLOAD,
-    TACSTORE,
-    TACCOPY_TO_OFFSET,
-    TACBOUNDARY,
-    TACTRUNC,
-    TACEXTEND,
+  TACRETURN,
+  TACUNARY,
+  TACBINARY,
+  TACCOND_JUMP,
+  TACCMP,
+  TACJUMP,
+  TACLABEL,
+  TACCOPY,
+  TACCALL,
+  TACGET_ADDRESS,
+  TACLOAD,
+  TACSTORE,
+  TACCOPY_TO_OFFSET,
+  TACBOUNDARY,
+  TACTRUNC,
+  TACEXTEND,
 };
 
 enum TACCondition {
-    CondE,
-    CondNE,
-    CondG,
-    CondGE,
-    CondL,
-    CondLE,
-    CondA,
-    CondAE,
-    CondB,
-    CondBE
+  CondE,
+  CondNE,
+  CondG,
+  CondGE,
+  CondL,
+  CondLE,
+  CondA,
+  CondAE,
+  CondB,
+  CondBE
 };
 
 struct TACReturn {
@@ -92,21 +92,21 @@ struct TACUnary {
 };
 
 enum ALUOp {
-    ALU_ADD,
-    ALU_SUB,
-    ALU_SMUL,
-    ALU_SDIV,
-    ALU_SMOD,
-    ALU_UMUL,
-    ALU_UDIV,
-    ALU_UMOD,
-    ALU_AND,
-    ALU_OR,
-    ALU_XOR,
-    ALU_LSL,
-    ALU_LSR,
-    ALU_ASL,
-    ALU_ASR,
+  ALU_ADD,
+  ALU_SUB,
+  ALU_SMUL,
+  ALU_SDIV,
+  ALU_SMOD,
+  ALU_UMUL,
+  ALU_UDIV,
+  ALU_UMOD,
+  ALU_AND,
+  ALU_OR,
+  ALU_XOR,
+  ALU_LSL,
+  ALU_LSR,
+  ALU_ASL,
+  ALU_ASR,
 };
 
 struct TACBinary {
@@ -289,6 +289,8 @@ static struct TACInstr* for_to_TAC(struct Slice* func_name,
 void concat_TAC_instrs(struct TACInstr** old_instrs, struct TACInstr* new_instrs);
 
 struct Val* make_temp(struct Slice* func_name, struct Type* type);
+
+void print_static_init(const struct InitList* init);
 
 void print_tac_prog(struct TACProg* prog);
 

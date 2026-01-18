@@ -5,7 +5,7 @@ Program(
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            VarDclr(none, int, i, LitExpr(int, 0):untyped);
+            VarDclr(none, int, i, SingleInit(LitExpr(int, 0):untyped));
             WhileStmt(
                 BoolLe(Var(i):untyped, LitExpr(int, 3):untyped):untyped,
                 CompoundStmt(

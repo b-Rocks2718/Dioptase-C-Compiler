@@ -41,7 +41,7 @@ Program(
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            VarDclr(none, int, x.1, LitExpr(int, 7):int);
+            VarDclr(none, int, x.1, SingleInit(LitExpr(int, 7):int));
             Return(FunCallExpr(deref, [AddrOf(Var(x.1):int):int*, ]):int, main);
     );
 )

@@ -1,8 +1,8 @@
 Key: value
-  Type: int
+  Type: uint
   Attributes:
     Attr Type: Static Variable
-    Init Type: Initial 3
+    Init Type: Initial [UINT: 3] 
     Is Defined: true
     Storage Class: None
 
@@ -14,15 +14,15 @@ Key: main
     Storage Class: None
 
 Program(
-    VarDclr(none, int, value);
-    VarDclr(none, int, value);
-    VarDclr(none, int, value, LitExpr(int, 3):int);
+    VarDclr(none, uint, value);
+    VarDclr(none, uint, value);
+    VarDclr(none, uint, value, SingleInit(Cast(uint, LitExpr(int, 3):int):uint));
     FunDclr(
         main,
         storage=none
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            Return(Var(value):int, main);
+            Return(Cast(int, Var(value):uint):int, main);
     );
 )

@@ -1,0 +1,42 @@
+Key: tentatize.2
+  Type: int[6][7]
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Tentative
+    Is Defined: false
+    Storage Class: Static
+
+Key: matrix.1
+  Type: int[2][3]
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: arr.0
+  Type: int[4]
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int[4], arr.0, CompoundInit(SingleInit(LitExpr(int, 1):int), SingleInit(LitExpr(int, 2):int), SingleInit(LitExpr(uint, 0):int), SingleInit(LitExpr(uint, 0):int)));
+            VarDclr(none, int[2][3], matrix.1, CompoundInit(CompoundInit(SingleInit(LitExpr(int, 1):int), SingleInit(LitExpr(int, 2):int), SingleInit(LitExpr(uint, 0):int)), CompoundInit(SingleInit(LitExpr(int, 3):int), SingleInit(LitExpr(uint, 0):int), SingleInit(LitExpr(uint, 0):int))));
+            VarDclr(static, int[6][7], tentatize.2);
+            Return(AddOp(Subscript(AddrOf(Var(arr.0):int[4]):int*, LitExpr(int, 3):int):int, Subscript(AddrOf(Subscript(AddrOf(Var(matrix.1):int[2][3]):int[3]*, LitExpr(int, 1):int):int[3]):int*, LitExpr(int, 2):int):int):int, main);
+    );
+)

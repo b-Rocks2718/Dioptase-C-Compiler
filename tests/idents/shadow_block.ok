@@ -5,10 +5,10 @@ Program(
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            VarDclr(none, int, x.0, LitExpr(int, 1):untyped);
+            VarDclr(none, int, x.0, SingleInit(LitExpr(int, 1):untyped));
             CompoundStmt(
-                VarDclr(none, int, x.1, LitExpr(int, 2):untyped);
-                VarDclr(none, int, y.2, Var(x.1):untyped);
+                VarDclr(none, int, x.1, SingleInit(LitExpr(int, 2):untyped));
+                VarDclr(none, int, y.2, SingleInit(Var(x.1):untyped));
             );
             Return(Var(x.0):untyped);
     );

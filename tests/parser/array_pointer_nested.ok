@@ -1,0 +1,12 @@
+Program(
+    VarDclr(none, int[2][3]*, grid);
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int[2][3], local);
+            Return(AddOp(Subscript(Subscript(Dereference(Var(grid):untyped):untyped, LitExpr(int, 1):untyped):untyped, LitExpr(int, 2):untyped):untyped, Subscript(Subscript(Var(local):untyped, LitExpr(int, 0):untyped):untyped, LitExpr(int, 1):untyped):untyped):untyped);
+    );
+)

@@ -155,45 +155,45 @@ static void print_tac_un_op(enum UnOp op) {
   }
 }
 
-// Purpose: Print a static initializer record for TAC output.
-// Inputs: init may be NULL; otherwise points to a static initializer descriptor.
-// Outputs: Writes initializer details to stdout.
-// Invariants/Assumptions: Only scalar initializers are represented.
-static void print_tac_init(const struct IdentInit* init) {
-  if (init == NULL) {
-    printf("init=<null>");
+void print_static_init(const struct InitList* init) {
+  const struct InitList* cur = init;
+  bool first = true;
+  if (cur == NULL) {
+    printf("<no inits>");
     return;
   }
-
-  switch (init->init_type) {
-    case NO_INIT:
-      printf("init=none");
-      break;
-    case TENTATIVE:
-      printf("init=tentative");
-      break;
-    case INITIAL: {
-      printf("init=[");
-      struct InitList* cur = init->init_list;
-      bool first = true;
-      while (cur != NULL) {
-        if (!first) {
-          printf(", ");
-        }
-        if (cur->value.int_type == INT_INIT || cur->value.int_type == LONG_INIT) {
-          printf("%" PRId64, (int64_t)cur->value.value);
-        } else {
-          printf("%" PRIu64, (uint64_t)cur->value.value);
-        }
-        first = false;
-        cur = cur->next;
-      }
-      printf("]");
-      break;
+  while (cur != NULL) {
+    if (!first) {
+      printf(", ");
     }
-    default:
-      printf("init=?");
-      break;
+    switch (cur->value->int_type){
+      case SHORT_INIT:
+        printf("SHORT: %d", (int16_t)cur->value->value);
+        break;
+      case USHORT_INIT:
+        printf("USHORT: %u", (uint16_t)cur->value->value);
+        break;
+      case INT_INIT:
+        printf("INT: %d", (int32_t)cur->value->value);
+        break;
+      case UINT_INIT:
+        printf("UINT: %u", (uint32_t)cur->value->value);
+        break;
+      case LONG_INIT:
+        printf("LONG: %ld", (int64_t)cur->value->value);
+        break;
+      case ULONG_INIT:
+        printf("ULONG: %lu", (uint64_t)cur->value->value);
+        break;
+      case ZERO_INIT:
+        printf("ZERO: %lu", (uint64_t)cur->value->value);
+        break;
+      default:
+        printf("Unknown Init Type");
+        break;
+    }
+    first = false;
+    cur = cur->next;
   }
 }
 
@@ -388,7 +388,7 @@ static void print_tac_top_level(const struct TopLevel* top, unsigned tabs) {
         printf("<null>");
       }
       printf(" ");
-      print_tac_init(top->init_values);
+      print_static_init(top->init_values);
       printf("\n");
       break;
     default:

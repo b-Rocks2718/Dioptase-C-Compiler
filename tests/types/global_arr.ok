@@ -1,0 +1,35 @@
+Key: matrix
+  Type: int[4][3]
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Initial [INT: 1] [INT: 2] [ZERO: 4] [INT: 4] [INT: 5] [INT: 6] [ZERO: 24] 
+    Is Defined: true
+    Storage Class: None
+
+Key: arr
+  Type: int[4]
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Initial [INT: 1] [INT: 2] [INT: 3] [INT: 4] 
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Program(
+    VarDclr(none, int[4], arr, CompoundInit(SingleInit(LitExpr(int, 1):int), SingleInit(LitExpr(int, 2):int), SingleInit(LitExpr(int, 3):int), SingleInit(LitExpr(int, 4):int)));
+    VarDclr(none, int[4][3], matrix, CompoundInit(CompoundInit(SingleInit(LitExpr(int, 1):int), SingleInit(LitExpr(int, 2):int), SingleInit(LitExpr(uint, 0):int)), CompoundInit(SingleInit(LitExpr(int, 4):int), SingleInit(LitExpr(int, 5):int), SingleInit(LitExpr(int, 6):int)), CompoundInit(SingleInit(LitExpr(uint, 0):int), SingleInit(LitExpr(uint, 0):int), SingleInit(LitExpr(uint, 0):int)), CompoundInit(SingleInit(LitExpr(uint, 0):int), SingleInit(LitExpr(uint, 0):int), SingleInit(LitExpr(uint, 0):int))));
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            Return(AddOp(Subscript(AddrOf(Var(arr):int[4]):int*, LitExpr(int, 2):int):int, Subscript(AddrOf(Subscript(AddrOf(Var(matrix):int[4][3]):int[3]*, LitExpr(int, 1):int):int[3]):int*, LitExpr(int, 0):int):int):int, main);
+    );
+)

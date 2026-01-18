@@ -4,6 +4,8 @@
 #include "AST.h"
 #include "token_array.h"
 
+#include <stdbool.h>
+
 struct Arena;
 
 // Purpose: Declare parser entry points for the C subset.
@@ -45,6 +47,8 @@ struct Expr* parse_bin_expr();
 // Inputs: Consumes the global parser token stream.
 // Outputs: Returns an Expr node or NULL on failure.
 // Invariants/Assumptions: Factors include literals, variables, calls, and parenthesized forms.
+struct Expr* parse_primary_expr();
+
 struct Expr* parse_factor();
 
 // Purpose: Parse a variable expression.
@@ -105,5 +109,7 @@ bool process_declarator(struct Declarator* decl, struct Type* base_type,
 // Invariants/Assumptions: Tokens are well-formed and include locations.
 
 void parse_type_and_storage_class(struct Type** type, enum StorageClass* class);
+
+struct LitExpr parse_lit_expr(void);
 
 #endif

@@ -17,6 +17,8 @@
 // Invariants/Assumptions: Only one typechecking pass runs at a time.
 struct SymbolTable* global_symbol_table = NULL;
 
+static struct Type kIntType = { .type = INT_TYPE };
+
 // Purpose: Identify compound assignment operators.
 // Inputs: op is the binary operator enum value.
 // Outputs: Returns true for +=, -=, etc.
@@ -89,27 +91,6 @@ static void type_error_at(const char* loc, const char* fmt, ...) {
   printf("\n");
 }
 
-// Purpose: Normalize a static initializer value to the target type width/sign.
-// Inputs: value holds raw bits; target is the destination type.
-// Outputs: Returns the normalized value for storage in InitValue.
-// Invariants/Assumptions: Uses two's-complement sign extension for signed types.
-static uint64_t normalize_static_init(uint64_t value, struct Type* target) {
-  size_t size = get_type_size(target);
-  if (size == 0) {
-    return value;
-  }
-  size_t bits = size * 8;
-  uint64_t mask = (bits >= 64) ? UINT64_MAX : ((UINT64_C(1) << bits) - 1);
-  uint64_t truncated = value & mask;
-  if (is_signed_type(target) && bits < 64) {
-    uint64_t sign_bit = UINT64_C(1) << (bits - 1);
-    if (truncated & sign_bit) {
-      truncated |= ~mask;
-    }
-  }
-  return truncated;
-}
-
 // Purpose: Merge storage classes across compatible declarations.
 // Inputs: existing is the prior storage; incoming is the new declaration storage.
 // Outputs: Returns the combined storage, preserving internal linkage if present.
@@ -123,40 +104,6 @@ static enum StorageClass merge_storage_class(enum StorageClass existing,
     return EXTERN;
   }
   return NONE;
-}
-
-// Purpose: Extract a literal value from an initializer expression.
-// Inputs: expr is the initializer expression (literal or cast of a literal).
-// Outputs: Returns true and writes out_value on success.
-// Invariants/Assumptions: Only literal initializers are supported here.
-static bool init_literal_value(struct Expr* expr, uint64_t* out_value) {
-  if (expr == NULL || out_value == NULL) {
-    return false;
-  }
-  struct Expr* cur = expr;
-  if (cur->type == CAST) {
-    cur = cur->expr.cast_expr.expr;
-  }
-  if (cur->type != LIT) {
-    return false;
-  }
-  struct LitExpr* lit = &cur->expr.lit_expr;
-  switch (lit->type) {
-    case INT_CONST:
-      *out_value = (uint64_t)(int64_t)lit->value.int_val;
-      return true;
-    case UINT_CONST:
-      *out_value = (uint64_t)lit->value.uint_val;
-      return true;
-    case LONG_CONST:
-      *out_value = (uint64_t)(int64_t)lit->value.long_val;
-      return true;
-    case ULONG_CONST:
-      *out_value = (uint64_t)lit->value.ulong_val;
-      return true;
-    default:
-      return false;
-  }
 }
 
 // ------------------------- Typechecking Functions ------------------------- //
@@ -211,8 +158,9 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
   }
 
   // if there is an initializer, typecheck it
+  struct InitList* init_list = NULL;
   if (var_dclr->init != NULL) {
-    if (var_dclr->init->type != LIT) {
+    if ((init_list = is_init_const(var_dclr->type, var_dclr->init)) == NULL) {
       // For simplicity, we only allow literal initializers for global variables
       type_error_at(var_dclr->init->loc,
                     "non-constant initializer for global variable %.*s",
@@ -222,7 +170,7 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
 
     if (var_dclr->type->type == POINTER_TYPE) {
       // For simplicity, we only allow null pointer constants as initializers for global pointer variables
-      struct LitExpr* lit_expr = &var_dclr->init->expr.lit_expr;
+      struct LitExpr* lit_expr = &var_dclr->init->init.single_init->expr.lit_expr;
       if (lit_expr->value.int_val != 0) {
         type_error_at(var_dclr->init->loc,
                       "invalid pointer initializer for global variable %.*s",
@@ -231,7 +179,7 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
       }
     }
 
-    if (!typecheck_init(&var_dclr->init, var_dclr->type)) {
+    if (!typecheck_init(var_dclr->init, var_dclr->type)) {
       return false;
     }
   }
@@ -284,21 +232,8 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
     if (init_type > entry->attrs->init.init_type) {
       // upgrade init type
       entry->attrs->init.init_type = init_type;
-      if (init_type == INITIAL) {
-        entry->attrs->init.init_list = arena_alloc(sizeof(struct InitList));
-        entry->attrs->init.init_list->value.int_type = get_var_init(var_dclr);
-        uint64_t init_value = 0;
-        if (!init_literal_value(var_dclr->init, &init_value)) {
-          type_error_at(var_dclr->init->loc,
-                        "non-constant initializer for global variable %.*s",
-                        (int)var_dclr->name->len, var_dclr->name->start);
-          return false;
-        }
-        entry->attrs->init.init_list->value.value =
-            normalize_static_init(init_value, var_dclr->type);
-        entry->attrs->is_defined = true;
-        entry->attrs->init.init_list->next = NULL;
-      }
+      entry->attrs->is_defined = (init_type == INITIAL);
+      entry->attrs->init.init_list = init_list;
     }
   } else {
     // new declaration, add to symbol table
@@ -307,21 +242,7 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
     attrs->is_defined = (init_type == INITIAL);
     attrs->storage = var_dclr->storage;
     attrs->init.init_type = init_type;
-    if (init_type == INITIAL) {
-      attrs->init.init_list = arena_alloc(sizeof(struct InitList));
-      attrs->init.init_list->value.int_type = get_var_init(var_dclr);
-      uint64_t init_value = 0;
-      if (!init_literal_value(var_dclr->init, &init_value)) {
-        type_error_at(var_dclr->init->loc,
-                      "non-constant initializer for global variable %.*s",
-                      (int)var_dclr->name->len, var_dclr->name->start);
-        return false;
-      }
-      attrs->init.init_list->value.value = normalize_static_init(init_value, var_dclr->type);
-      attrs->init.init_list->next = NULL;
-    } else {
-      attrs->init.init_list = NULL;
-    }
+    attrs->init.init_list = init_list;
 
     symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
   }
@@ -337,6 +258,29 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
   struct SymbolEntry* entry = symbol_table_get(global_symbol_table, func_dclr->name);
 
   if (entry == NULL) {
+    // ensure return type is not array
+    if (func_dclr->type->type == ARRAY_TYPE) {
+      type_error_at(func_dclr->name->start,
+                    "function %.*s cannot have array return type",
+                    (int)func_dclr->name->len, func_dclr->name->start);
+      return false;
+    }
+
+    // convert param types from array to pointer types
+    struct ParamList* param_cur = func_dclr->params;
+    while (param_cur != NULL) {
+      if (param_cur->param.type->type == ARRAY_TYPE) {
+        struct Type* array_type = param_cur->param.type;
+        struct Type* pointer_type = arena_alloc(sizeof(struct Type));
+        pointer_type->type = POINTER_TYPE;
+        struct PointerType* ptr_data = arena_alloc(sizeof(struct PointerType));
+        ptr_data->referenced_type = array_type->type_data.array_type.element_type;
+        pointer_type->type_data.pointer_type = *ptr_data;
+        param_cur->param.type = pointer_type;
+      }
+      param_cur = param_cur->next;
+    }
+
     // First declaration/definition of this function.
     struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
     attrs->attr_type = FUN_ATTR;
@@ -471,7 +415,7 @@ bool typecheck_stmt(struct Statement* stmt) {
   switch (stmt->type) {
     // Placeholder implementation
     case RETURN_STMT: {
-      if (!typecheck_convert_expr(stmt->statement.ret_stmt.expr)) {
+      if (!typecheck_convert_expr(&stmt->statement.ret_stmt.expr)) {
         return false;
       }
 
@@ -492,13 +436,13 @@ bool typecheck_stmt(struct Statement* stmt) {
       break;
     }
     case EXPR_STMT: {
-      if (!typecheck_convert_expr(stmt->statement.expr_stmt.expr)) {
+      if (!typecheck_convert_expr(&stmt->statement.expr_stmt.expr)) {
         return false;
       }
       break;
     }
     case IF_STMT: {
-      if (!typecheck_convert_expr(stmt->statement.if_stmt.condition)) {
+      if (!typecheck_convert_expr(&stmt->statement.if_stmt.condition)) {
         return false;
       }
 
@@ -530,7 +474,7 @@ bool typecheck_stmt(struct Statement* stmt) {
       break;
     }
     case WHILE_STMT: {
-      if (!typecheck_convert_expr(stmt->statement.while_stmt.condition)) {
+      if (!typecheck_convert_expr(&stmt->statement.while_stmt.condition)) {
         return false;
       }
 
@@ -550,7 +494,7 @@ bool typecheck_stmt(struct Statement* stmt) {
       if (!typecheck_stmt(stmt->statement.do_while_stmt.statement)) {
         return false;
       }
-      if (!typecheck_convert_expr(stmt->statement.do_while_stmt.condition)) {
+      if (!typecheck_convert_expr(&stmt->statement.do_while_stmt.condition)) {
         return false;
       }
 
@@ -569,12 +513,12 @@ bool typecheck_stmt(struct Statement* stmt) {
         return false;
       }
       if (stmt->statement.for_stmt.condition != NULL) {
-        if (!typecheck_convert_expr(stmt->statement.for_stmt.condition)) {
+        if (!typecheck_convert_expr(&stmt->statement.for_stmt.condition)) {
           return false;
         }
       }
       if (stmt->statement.for_stmt.end != NULL) {
-        if (!typecheck_convert_expr(stmt->statement.for_stmt.end)) {
+        if (!typecheck_convert_expr(&stmt->statement.for_stmt.end)) {
           return false;
         }
       }
@@ -584,7 +528,7 @@ bool typecheck_stmt(struct Statement* stmt) {
       break;
     }
     case SWITCH_STMT: {
-      if (!typecheck_convert_expr(stmt->statement.switch_stmt.condition)) {
+      if (!typecheck_convert_expr(&stmt->statement.switch_stmt.condition)) {
         return false;
       }
 
@@ -600,7 +544,7 @@ bool typecheck_stmt(struct Statement* stmt) {
       break;
     }
     case CASE_STMT: {
-      if (!typecheck_convert_expr(stmt->statement.case_stmt.expr)) {
+      if (!typecheck_convert_expr(&stmt->statement.case_stmt.expr)) {
         return false;
       }
       if (!typecheck_stmt(stmt->statement.case_stmt.statement)) {
@@ -659,7 +603,7 @@ bool typecheck_for_init(struct ForInit* init_) {
       return typecheck_local_var(init_->init.dclr_init);
     case EXPR_INIT:
       if (init_->init.expr_init != NULL) {
-        return typecheck_convert_expr(init_->init.expr_init);
+        return typecheck_convert_expr(&init_->init.expr_init);
       } else {
         return true; // Nothing to typecheck
       }
@@ -731,16 +675,18 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
 
     return true;
   } else if (var_dclr->storage == STATIC) {
+    struct InitList* init_list = NULL;
     // Local static behaves like a file-scope object with local visibility.
     if (var_dclr->init != NULL) {
-      if (var_dclr->init->type != LIT) {
+      if ((init_list = is_init_const(var_dclr->type, var_dclr->init)) == NULL) {
+        // For simplicity, we only allow literal initializers for global variables
         type_error_at(var_dclr->init->loc,
-                      "non-constant initializer for static local variable %.*s",
+                      "non-constant initializer for global variable %.*s",
                       (int)var_dclr->name->len, var_dclr->name->start);
         return false;
       }
       if (var_dclr->type->type == POINTER_TYPE) {
-        struct LitExpr* lit_expr = &var_dclr->init->expr.lit_expr;
+        struct LitExpr* lit_expr = &var_dclr->init->init.single_init->expr.lit_expr;
         if (lit_expr->value.int_val != 0) {
           type_error_at(var_dclr->init->loc,
                         "invalid pointer initializer for static local variable %.*s",
@@ -748,33 +694,20 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
           return false;
         }
       }
-      if (!typecheck_init(&var_dclr->init, var_dclr->type)) {
+      if (!typecheck_init(var_dclr->init, var_dclr->type)) {
         return false;
       }
     }
 
     struct SymbolEntry* entry = symbol_table_get(global_symbol_table, var_dclr->name);
     if (entry == NULL) {
+      // HERE!
       struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
       attrs->attr_type = STATIC_ATTR;
       attrs->is_defined = (var_dclr->init != NULL);
       attrs->storage = STATIC;
-      attrs->init.init_type = INITIAL;
-      attrs->init.init_list = arena_alloc(sizeof(struct InitList));
-      attrs->init.init_list->value.int_type = get_var_init(var_dclr);
-      uint64_t init_value = 0;
-      if (var_dclr->init != NULL) {
-        if (!init_literal_value(var_dclr->init, &init_value)) {
-          type_error_at(var_dclr->init->loc,
-                        "non-constant initializer for static local variable %.*s",
-                        (int)var_dclr->name->len, var_dclr->name->start);
-          return false;
-        }
-      } else {
-        init_value = 0;
-      }
-      attrs->init.init_list->value.value = normalize_static_init(init_value, var_dclr->type);
-      attrs->init.init_list->next = NULL;
+      attrs->init.init_type = (var_dclr->init != NULL) ? INITIAL : TENTATIVE;
+      attrs->init.init_list = init_list;
       symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
     } else {
       // ensure the existing entry is not a function
@@ -804,6 +737,8 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
       // update definition status
       if (var_dclr->init != NULL) {
         entry->attrs->is_defined = true;
+        entry->attrs->init.init_type = INITIAL;
+        entry->attrs->init.init_list = init_list;
       }
     }
 
@@ -827,7 +762,7 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
 
     if (var_dclr->init != NULL) {
       // Allow self-references in initializers (e.g., int a = a = 5).
-      if (!typecheck_init(&var_dclr->init, var_dclr->type)) {
+      if (!typecheck_init(var_dclr->init, var_dclr->type)) {
         return false;
       }
     }
@@ -836,33 +771,162 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
   return true;
 }
 
+struct Type* make_pointer_type(struct Type* type) {
+  struct Type* ptr_type = arena_alloc(sizeof(struct Type));
+  ptr_type->type = POINTER_TYPE;
+  ptr_type->type_data.pointer_type.referenced_type = type;
+  return ptr_type;
+}
+
 // Purpose: Typecheck an expression and apply conversion rules.
 // Inputs: expr is the expression node.
 // Outputs: Returns true on success; false on any type error.
 // Invariants/Assumptions: Currently delegates to typecheck_expr.
-bool typecheck_convert_expr(struct Expr* expr) {
-  // will do more once I implement arrays
-  return typecheck_expr(expr);
+bool typecheck_convert_expr(struct Expr** expr) {
+  if (!typecheck_expr(*expr)) {
+    return false;
+  }
+  if ((*expr)->value_type->type == ARRAY_TYPE) {
+    struct Expr* addr_expr = arena_alloc(sizeof(struct Expr));
+    addr_expr->type = ADDR_OF;
+    addr_expr->loc = (*expr)->loc;
+    addr_expr->expr.addr_of_expr.expr = *expr;
+    addr_expr->value_type = make_pointer_type((*expr)->value_type->type_data.array_type.element_type);
+    *expr = addr_expr;
+  }
+  return true;
 }
 
 // Purpose: Typecheck and convert an initializer expression.
 // Inputs: init is the initializer pointer; type is the target type.
 // Outputs: Returns true on success; false on any type error.
 // Invariants/Assumptions: May rewrite *init with a cast expression.
-bool typecheck_init(struct Expr** init, struct Type* type) {
-  if (*init == NULL) {
+bool typecheck_init(struct Initializer* init, struct Type* type) {
+  if (init == NULL) {
     return true; // Nothing to typecheck
   }
 
-  if (!typecheck_convert_expr(*init)) {
-    return false;
+  switch (init->init_type) {
+    case SINGLE_INIT: {
+      if (!typecheck_convert_expr(&init->init.single_init)) {
+        return false;
+      }
+
+      if (!convert_by_assignment(&init->init.single_init, type)) {
+        return false;
+      }
+
+      init->type = type;
+
+      return true;
+    }
+    case COMPOUND_INIT: {
+      if (type->type != ARRAY_TYPE) {
+        type_error_at(init->loc, "compound initializer requires array type");
+        return false;
+      }
+
+      struct InitializerList* cur_init = init->init.compound_init;
+      struct InitializerList* prev_init = NULL;
+      struct Type* element_type = type->type_data.array_type.element_type;
+      size_t expected_elements = type->type_data.array_type.size;
+
+      size_t count = 0;
+      while (cur_init != NULL) {
+        if (!typecheck_init(cur_init->init, element_type)) {
+          return false;
+        }
+        count++;
+        prev_init = cur_init;
+        cur_init = cur_init->next;
+      }
+
+      if (count > expected_elements) {
+        type_error_at(init->loc, "too many initializers, got %zu, expected %zu", count, expected_elements);
+        return false;
+      }
+
+      while (count < expected_elements) {
+        // pad with zero initializers
+        struct Initializer* zero_init = make_zero_initializer(element_type);
+        struct InitializerList* new_init = arena_alloc(sizeof(struct InitializerList));
+        new_init->init = zero_init;
+        new_init->next = NULL;
+        if (prev_init == NULL) {
+          prev_init = new_init;
+          init->init.compound_init = new_init;
+        } else {
+          prev_init->next = new_init;
+          prev_init = new_init;
+        }
+
+        count++;
+      }
+
+      init->type = type;
+
+      return true;
+    }
+    default:
+      type_error_at(NULL, "unknown initializer type in typecheck_init");
+      return false; // Unknown initializer type
+  }
+}
+
+struct Initializer* make_zero_initializer(struct Type* type) {
+  struct Initializer* init = arena_alloc(sizeof(struct Initializer));
+  init->loc = NULL;
+  
+  switch (type->type) {
+    case SHORT_TYPE:
+    case USHORT_TYPE:
+    case INT_TYPE:
+    case UINT_TYPE:
+    case POINTER_TYPE: {
+      struct Expr* lit_expr = arena_alloc(sizeof(struct Expr));
+      lit_expr->type = LIT;
+      lit_expr->loc = NULL;
+      lit_expr->expr.lit_expr.value.int_val = 0;
+      lit_expr->value_type = type;
+      lit_expr->expr.lit_expr.type = UINT_CONST;
+
+      init->init_type = SINGLE_INIT;
+      init->init.single_init = lit_expr;
+      init->type = type;
+      break;
+    }
+    case ARRAY_TYPE: {
+      init->init_type = COMPOUND_INIT;
+      init->init.compound_init = NULL;
+
+      size_t size = type->type_data.array_type.size;
+      struct Type* element_type = type->type_data.array_type.element_type;
+
+      struct InitializerList* prev_init = NULL;
+      for (size_t i = 0; i < size; i++) {
+        struct Initializer* elem_init = make_zero_initializer(element_type);
+        struct InitializerList* new_init = arena_alloc(sizeof(struct InitializerList));
+        new_init->init = elem_init;
+        new_init->next = NULL;
+
+        if (prev_init == NULL) {
+          init->init.compound_init = new_init;
+        } else {
+          prev_init->next = new_init;
+        }
+        prev_init = new_init;
+      }
+
+      init->type = type;
+      break;
+    }
+    default:
+      // Unsupported type for zero initializer
+      type_error_at(NULL, "unsupported type for zero initializer");
+      break;
   }
 
-  if (!convert_by_assignment(init, type)) {
-    return false;
-  }
-
-  return true;
+  return init;
 }
 
 // Purpose: Typecheck an expression subtree and set value_type.
@@ -873,10 +937,10 @@ bool typecheck_expr(struct Expr* expr) {
   switch (expr->type) {
     case BINARY: {
       struct BinaryExpr* bin_expr = &expr->expr.bin_expr;
-      if (!typecheck_convert_expr(bin_expr->left)) {
+      if (!typecheck_convert_expr(&bin_expr->left)) {
         return false;
       }
-      if (!typecheck_convert_expr(bin_expr->right)) {
+      if (!typecheck_convert_expr(&bin_expr->right)) {
         return false;
       }
 
@@ -919,7 +983,9 @@ bool typecheck_expr(struct Expr* expr) {
       }
 
       // Equality allows pointer comparisons; otherwise use arithmetic common type.
-      if (bin_expr->op == BOOL_EQ || bin_expr->op == BOOL_NEQ) {
+      if (bin_expr->op == BOOL_EQ || bin_expr->op == BOOL_NEQ || 
+          bin_expr->op == BOOL_LE || bin_expr->op == BOOL_LEQ ||
+          bin_expr->op == BOOL_GE || bin_expr->op == BOOL_GEQ) {
         struct Type* common_type = NULL;
         if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
           common_type = get_common_pointer_type(bin_expr->left, bin_expr->right);
@@ -1000,19 +1066,14 @@ bool typecheck_expr(struct Expr* expr) {
         }
         convert_expr_type(&bin_expr->left, common_type);
         convert_expr_type(&bin_expr->right, common_type);
-        expr->value_type = arena_alloc(sizeof(struct Type));
-        if (bin_expr->op == BOOL_LE || bin_expr->op == BOOL_LEQ ||
-            bin_expr->op == BOOL_GE || bin_expr->op == BOOL_GEQ) {
-          expr->value_type->type = INT_TYPE; // result type of relational operations is int
-        } else {
-          expr->value_type = common_type;
-        }
+        expr->value_type = common_type;
+        
         return true;
       }
     }
     case ASSIGN: {
       struct AssignExpr* assign_expr = &expr->expr.assign_expr;
-      if (!typecheck_convert_expr(assign_expr->left)) {
+      if (!typecheck_convert_expr(&assign_expr->left)) {
         return false;
       }
 
@@ -1021,7 +1082,7 @@ bool typecheck_expr(struct Expr* expr) {
         return false;
       }
 
-      if (!typecheck_convert_expr(assign_expr->right)) {
+      if (!typecheck_convert_expr(&assign_expr->right)) {
         return false;
       }
 
@@ -1035,7 +1096,7 @@ bool typecheck_expr(struct Expr* expr) {
     }
     case POST_ASSIGN: {
       struct PostAssignExpr* post_assign_expr = &expr->expr.post_assign_expr;
-      if (!typecheck_convert_expr(post_assign_expr->expr)) {
+      if (!typecheck_convert_expr(&post_assign_expr->expr)) {
         return false;
       }
 
@@ -1056,13 +1117,13 @@ bool typecheck_expr(struct Expr* expr) {
     }
     case CONDITIONAL: {
       struct ConditionalExpr* cond_expr = &expr->expr.conditional_expr;
-      if (!typecheck_convert_expr(cond_expr->condition)) {
+      if (!typecheck_convert_expr(&cond_expr->condition)) {
         return false;
       }
-      if (!typecheck_convert_expr(cond_expr->left)) {
+      if (!typecheck_convert_expr(&cond_expr->left)) {
         return false;
       }
-      if (!typecheck_convert_expr(cond_expr->right)) {
+      if (!typecheck_convert_expr(&cond_expr->right)) {
         return false;
       }
 
@@ -1132,7 +1193,7 @@ bool typecheck_expr(struct Expr* expr) {
     }
     case UNARY: {
       struct UnaryExpr* unary_expr = &expr->expr.un_expr;
-      if (!typecheck_convert_expr(unary_expr->expr)) {
+      if (!typecheck_convert_expr(&unary_expr->expr)) {
         return false;
       }
       struct Type* expr_type = unary_expr->expr->value_type;
@@ -1172,7 +1233,11 @@ bool typecheck_expr(struct Expr* expr) {
     }
     case CAST: {
       struct CastExpr* cast_expr = &expr->expr.cast_expr;
-      if (!typecheck_convert_expr(cast_expr->expr)) {
+      if (cast_expr->target->type == ARRAY_TYPE) {
+        type_error_at(expr->loc, "cannot cast to array type");
+        return false;
+      }
+      if (!typecheck_convert_expr(&cast_expr->expr)) {
         return false;
       }
       expr->value_type = cast_expr->target;
@@ -1180,7 +1245,7 @@ bool typecheck_expr(struct Expr* expr) {
     }
     case ADDR_OF: {
       struct AddrOfExpr* addr_of_expr = &expr->expr.addr_of_expr;
-      if (!typecheck_convert_expr(addr_of_expr->expr)) {
+      if (!typecheck_convert_expr(&addr_of_expr->expr)) {
         return false;
       }
       if (!is_lvalue(addr_of_expr->expr)) {
@@ -1195,7 +1260,7 @@ bool typecheck_expr(struct Expr* expr) {
     }
     case DEREFERENCE: {
       struct DereferenceExpr* deref_expr = &expr->expr.deref_expr;
-      if (!typecheck_convert_expr(deref_expr->expr)) {
+      if (!typecheck_convert_expr(&deref_expr->expr)) {
         return false;
       }
       struct Type* expr_type = deref_expr->expr->value_type;
@@ -1204,6 +1269,44 @@ bool typecheck_expr(struct Expr* expr) {
         return false;
       }
       expr->value_type = expr_type->type_data.pointer_type.referenced_type;
+      return true;
+    }
+    case SUBSCRIPT: {
+      struct SubscriptExpr* sub_expr = &expr->expr.subscript_expr;
+      if (!typecheck_convert_expr(&sub_expr->array)) {
+        return false;
+      }
+      if (!typecheck_convert_expr(&sub_expr->index)) {
+        return false;
+      }
+      struct Type* array_type = sub_expr->array->value_type;
+      struct Type* index_type = sub_expr->index->value_type;
+
+      struct Type* ptr_type = NULL;
+      if (is_pointer_type(array_type) && is_arithmetic_type(index_type)) {
+        // valid
+        ptr_type = array_type;
+        convert_expr_type(&sub_expr->index, &kIntType);
+      } else if (is_arithmetic_type(array_type) && is_pointer_type(index_type)) {
+        // valid
+        ptr_type = index_type;
+        convert_expr_type(&sub_expr->array, &kIntType);
+
+        // swap array and index
+        struct Expr* temp = sub_expr->array;
+        sub_expr->array = sub_expr->index;
+        sub_expr->index = temp;
+      } else {
+        type_error_at(expr->loc, "array subscript requires array/pointer and integer types");
+        return false;
+      }
+
+      if (!is_arithmetic_type(index_type)) {
+        type_error_at(expr->loc, "array subscript is not an integer type");
+        return false;
+      }
+
+      expr->value_type = ptr_type->type_data.pointer_type.referenced_type;
       return true;
     }
     default: {
@@ -1219,7 +1322,7 @@ bool typecheck_expr(struct Expr* expr) {
 // Invariants/Assumptions: Arguments are converted by assignment.
 bool typecheck_args(struct ArgList* args, struct ParamTypeList* types, struct Expr* call_site) {
   for (; args != NULL && types != NULL; args = args->next, types = types->next) {
-    if (!typecheck_convert_expr(args->arg)) {
+    if (!typecheck_convert_expr(&args->arg)) {
       return false;
     }
     if (!convert_by_assignment(&args->arg, types->type)) {
@@ -1322,7 +1425,11 @@ size_t get_type_size(struct Type* type) {
       return 8;
     case POINTER_TYPE:
       return 4; // 32-bit architecture
+    case ARRAY_TYPE:
+      return type->type_data.array_type.size *
+             get_type_size(type->type_data.array_type.element_type);
     default:
+      type_error_at(NULL, "unknown type size in get_type_size");
       return 0; // unknown type size
   }
 }
@@ -1361,6 +1468,8 @@ bool is_lvalue(struct Expr* expr) {
     case VAR:
       return true;
     case DEREFERENCE:
+      return true;
+    case SUBSCRIPT:
       return true;
     default:
       return false;
@@ -1429,8 +1538,8 @@ bool convert_by_assignment(struct Expr** expr, struct Type* target) {
 // Inputs: var_dclr is the variable declaration node.
 // Outputs: Returns a StaticInitType enum value.
 // Invariants/Assumptions: Only integer-like types are supported here.
-enum StaticInitType get_var_init(struct VariableDclr* var_dclr) {
-  switch (var_dclr->type->type) {
+enum StaticInitType get_var_init(struct Type* type) {
+  switch (type->type) {
     case SHORT_TYPE:
       return SHORT_INIT;
     case USHORT_TYPE:
@@ -1438,14 +1547,14 @@ enum StaticInitType get_var_init(struct VariableDclr* var_dclr) {
     case INT_TYPE:
       return INT_INIT;
     case UINT_TYPE:
+    case POINTER_TYPE:
       return UINT_INIT;
     case LONG_TYPE:
       return LONG_INIT;
     case ULONG_TYPE:
       return ULONG_INIT;
-    // will eventaully handle array zero init
     default:
-      printf("Warning: Unknown variable type for static initialization\n");
+      printf("Warning: Unsupported variable type for static initialization\n");
       return -1; // unknown init type
   }
 }
@@ -1607,16 +1716,294 @@ void print_ident_init(struct IdentInit* init){
       break;
     case INITIAL:
       printf("Initial ");
-      struct InitList* cur = init->init_list;
-      if (cur->value.int_type == INT_INIT || cur->value.int_type == LONG_INIT) {
-        printf("%" PRId64, (int64_t)cur->value.value);
-      } else {
-        printf("%" PRIu64, (uint64_t)cur->value.value);
+      for (struct InitList* cur = init->init_list; cur != NULL; cur = cur->next) {
+        printf("[");
+        switch (cur->value->int_type){
+          case SHORT_INIT:
+            printf("SHORT: %d", (int16_t)cur->value->value);
+            break;
+          case USHORT_INIT:
+            printf("USHORT: %u", (uint16_t)cur->value->value);
+            break;
+          case INT_INIT:
+            printf("INT: %d", (int32_t)cur->value->value);
+            break;
+          case UINT_INIT:
+            printf("UINT: %u", (uint32_t)cur->value->value);
+            break;
+          case LONG_INIT:
+            printf("LONG: %ld", (int64_t)cur->value->value);
+            break;
+          case ULONG_INIT:
+            printf("ULONG: %lu", (uint64_t)cur->value->value);
+            break;
+          case ZERO_INIT:
+            printf("ZERO: %lu", (uint64_t)cur->value->value);
+            break;
+          default:
+            printf("Unknown Init Type");
+            break;
+        }
+        printf("] ");
       }
       printf("\n");
       break;
     default:
       printf("Unknown Init Type\n");
       break;
+  }
+}
+
+bool eval_const(struct Expr* expr, uint64_t* out_value) {
+  switch (expr->type) {
+    case LIT: {
+      struct LitExpr* lit_expr = &expr->expr.lit_expr;
+      switch (lit_expr->type) {
+        case INT_CONST:
+          *out_value = (uint64_t)lit_expr->value.int_val;
+          return true;
+        case UINT_CONST:
+          *out_value = lit_expr->value.uint_val;
+          return true;
+        case LONG_CONST:
+          *out_value = (uint64_t)lit_expr->value.long_val;
+          return true;
+        case ULONG_CONST:
+          *out_value = lit_expr->value.ulong_val;
+          return true;
+        default:
+          return false; // Not a constant literal
+      }
+    }
+    case CAST: {
+      struct CastExpr* cast_expr = &expr->expr.cast_expr;
+      uint64_t inner_value;
+      if (!eval_const(cast_expr->expr, &inner_value)) {
+        return false;
+      }
+      // For simplicity, we assume casts do not change the value in this context.
+      *out_value = inner_value;
+      return true;
+    }
+    case BINARY: {
+      struct BinaryExpr* bin_expr = &expr->expr.bin_expr;
+      struct Type* expr_type = expr->value_type;
+      bool is_signed = is_signed_type(expr_type);
+      uint64_t left_value, right_value;
+      if (!eval_const(bin_expr->left, &left_value) ||
+          !eval_const(bin_expr->right, &right_value)) {
+        return false;
+      }
+      switch (bin_expr->op) {
+        case ADD_OP:
+          *out_value = left_value + right_value;
+          return true;
+        case SUB_OP:
+          *out_value = left_value - right_value;
+          return true;
+        case MUL_OP:
+          if (is_signed) {
+            *out_value = (uint64_t)((int64_t)left_value * (int64_t)right_value);
+          } else {
+            *out_value = left_value * right_value;
+          }
+          return true;
+        case DIV_OP:
+          if (right_value == 0) {
+            return false; // Division by zero
+          }
+          if (is_signed) {
+            *out_value = (uint64_t)((int64_t)left_value / (int64_t)right_value);
+          } else {
+            *out_value = left_value / right_value;
+          }
+          return true;
+        case MOD_OP:
+          if (right_value == 0) {
+            return false; // Modulo by zero
+          }
+          if (is_signed) {
+            *out_value = (uint64_t)((int64_t)left_value % (int64_t)right_value);
+          } else {
+            *out_value = left_value % right_value;
+          }
+          return true;
+        case BIT_AND:
+          *out_value = left_value & right_value;
+          return true;
+        case BIT_OR:
+          *out_value = left_value | right_value;
+          return true;
+        case BIT_XOR:
+          *out_value = left_value ^ right_value;
+          return true;
+        case BIT_SHL:
+          *out_value = left_value << right_value;
+          return true;
+        case BIT_SHR:
+          if (is_signed) {
+            *out_value = ((int64_t)left_value) >> right_value;
+          } else {
+            *out_value = left_value >> right_value;
+          }
+          return true;
+        case BOOL_AND:
+          *out_value = (left_value && right_value);
+          return true;
+        case BOOL_OR:
+          *out_value = (left_value || right_value);
+          return true;
+        case BOOL_EQ:
+          *out_value = (left_value == right_value);
+          return true;
+        case BOOL_NEQ:
+          *out_value = (left_value != right_value);
+          return true;
+        case BOOL_LE:
+          if (is_signed) {
+            *out_value = ((int64_t)left_value < (int64_t)right_value);
+          } else {
+            *out_value = (left_value < right_value);
+          }
+          return true;
+        case BOOL_GE:
+          if (is_signed) {
+            *out_value = ((int64_t)left_value > (int64_t)right_value);
+          } else {
+            *out_value = (left_value > right_value);
+          }
+          return true;
+        case BOOL_LEQ:
+          if (is_signed) {
+            *out_value = ((int64_t)left_value <= (int64_t)right_value);
+          } else {
+            *out_value = (left_value <= right_value);
+          }
+          return true;
+        case BOOL_GEQ:
+          if (is_signed) {
+            *out_value = ((int64_t)left_value >= (int64_t)right_value);
+          } else {
+            *out_value = (left_value >= right_value);
+          }
+          return true;
+        default:
+          return false; // Unsupported binary operation for constant evaluation
+      }
+    }
+    case UNARY: {
+      struct UnaryExpr* unary_expr = &expr->expr.un_expr;
+      uint64_t inner_value;
+      if (!eval_const(unary_expr->expr, &inner_value)) {
+        return false;
+      }
+      switch (unary_expr->op) {
+        case NEGATE:
+          if (is_signed_type(expr->value_type)) {
+            *out_value = (uint64_t)(-(int64_t)inner_value);
+          } else {
+            *out_value = (uint64_t)(~inner_value + 1); // Two's complement negation
+          }
+          return true;
+        case COMPLEMENT:
+          *out_value = ~inner_value;
+          return true;
+        case BOOL_NOT:
+          *out_value = (inner_value == 0);
+          return true;
+        default:
+          return false; // Unsupported unary operation for constant evaluation
+      }
+    }
+    case CONDITIONAL: {
+      struct ConditionalExpr* cond_expr = &expr->expr.conditional_expr;
+      uint64_t cond_value;
+      if (!eval_const(cond_expr->condition, &cond_value)) {
+        return false;
+      }
+      if (cond_value != 0) {
+        return eval_const(cond_expr->left, out_value);
+      } else {
+        return eval_const(cond_expr->right, out_value);
+      }
+    }
+    default:
+      return false; // Not a literal expression
+  }
+  return false; // Not a literal expression
+}
+
+struct InitList* is_init_const(struct Type* type, struct Initializer* init) {
+  switch (init->init_type){
+    case SINGLE_INIT: {
+      uint64_t const_val;
+      if (!eval_const(init->init.single_init, &const_val)) {
+        return NULL;
+      }
+
+      struct InitList* init_list = arena_alloc(sizeof(struct InitList));
+      init_list->next = NULL;
+      init_list->value = arena_alloc(sizeof(struct StaticInit));
+      init_list->value->int_type = get_var_init(type);
+      init_list->value->value = const_val;
+      return init_list;
+    }
+    case COMPOUND_INIT: {
+      if (type->type != ARRAY_TYPE) {
+        return NULL;
+      }
+
+      // ensure each element is constant
+      struct InitList* flattened = NULL;
+      struct InitList* flattened_tail = NULL;
+      size_t outer_count = 0;
+      for (struct InitializerList* cur = init->init.compound_init; cur != NULL; cur = cur->next) {
+        struct InitList* inner_init = is_init_const(type->type_data.array_type.element_type, cur->init);
+        if (inner_init == NULL) {
+          return NULL;
+        }
+
+        // append each element to flattened
+        for (struct InitList* inner_cur = inner_init; inner_cur != NULL; inner_cur = inner_cur->next) {
+          struct InitList* new_node = arena_alloc(sizeof(struct InitList));
+          new_node->value = arena_alloc(sizeof(struct StaticInit));
+          new_node->value->int_type = inner_cur->value->int_type;
+          new_node->value->value = inner_cur->value->value;
+          new_node->next = NULL;
+
+          if (flattened == NULL) {
+            flattened = new_node;
+            flattened_tail = new_node;
+          } else {
+            flattened_tail->next = new_node;
+            flattened_tail = new_node;
+          }
+        }
+        outer_count++;
+      }
+
+      // pad to array length
+      size_t array_len = type->type_data.array_type.size;
+      size_t element_size = get_type_size(type->type_data.array_type.element_type);
+      if (outer_count < array_len) {
+        // append a zero_init node
+        struct InitList* pad_node = arena_alloc(sizeof(struct InitList));
+        pad_node->value = arena_alloc(sizeof(struct StaticInit));
+        pad_node->value->int_type = ZERO_INIT;
+        pad_node->value->value = (array_len - outer_count) * element_size;
+        pad_node->next = NULL;
+        if (flattened == NULL) {
+          flattened = pad_node;
+          flattened_tail = pad_node;
+        } else {
+          flattened_tail->next = pad_node;
+          flattened_tail = pad_node;
+        }
+      }
+
+      return flattened;
+    }
+    default:
+      return NULL;
   }
 }

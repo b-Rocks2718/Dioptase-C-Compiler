@@ -24,7 +24,8 @@ enum TypeType {
   ULONG_TYPE,
   USHORT_TYPE,
   FUN_TYPE,
-  POINTER_TYPE
+  POINTER_TYPE,
+  ARRAY_TYPE,
 };
 
 struct FunType {
@@ -36,9 +37,15 @@ struct PointerType {
   struct Type* referenced_type;
 };
 
+struct ArrayType {
+  struct Type* element_type;
+  size_t size;
+};
+
 union TypeVariant {
   struct FunType fun_type;
   struct PointerType pointer_type;
+  struct ArrayType array_type;
   // no data for other types
 };
 
@@ -57,9 +64,31 @@ enum DclrType {
   FUN_DCLR
 };
 
+enum InitializerType {
+  SINGLE_INIT,
+  COMPOUND_INIT,
+};
+
+struct InitializerList {
+  struct Initializer* init;
+  struct InitializerList* next;
+};
+
+union InitializerVariant {
+  struct Expr* single_init;
+  struct InitializerList* compound_init;
+};
+
+struct Initializer {
+  enum InitializerType init_type;
+  union InitializerVariant init;
+  struct Type* type; // target type for this initializer
+  const char* loc; // location in source for error reporting
+};
+
 struct VariableDclr {
   struct Slice* name;
-  struct Expr* init;
+  struct Initializer* init;
   struct Type* type;
   enum StorageClass storage;
 };
@@ -103,7 +132,8 @@ enum ExprType {
   FUNCTION_CALL,
   CAST,
   ADDR_OF,
-  DEREFERENCE
+  DEREFERENCE,
+  SUBSCRIPT,
 };
 
 enum BinOp {
@@ -220,6 +250,11 @@ struct DereferenceExpr {
   struct Expr* expr;
 };
 
+struct SubscriptExpr {
+  struct Expr* array;
+  struct Expr* index;
+};
+
 union ExprVariant {
   struct BinaryExpr bin_expr;
   struct AssignExpr assign_expr;
@@ -232,6 +267,7 @@ union ExprVariant {
   struct CastExpr cast_expr;
   struct AddrOfExpr addr_of_expr;
   struct DereferenceExpr deref_expr;
+  struct SubscriptExpr subscript_expr;
 };
 
 struct Expr {
@@ -417,7 +453,8 @@ struct CaseList {
 enum DeclaratorType {
   IDENT_DEC,
   POINTER_DEC,
-  FUN_DEC
+  FUN_DEC,
+  ARRAY_DEC,
 };
 
 struct IdentDec {
@@ -433,10 +470,16 @@ struct FunDec {
   struct Declarator* decl;
 };
 
+struct ArrayDec {
+  struct Declarator* decl;
+  size_t size;
+};
+
 union DeclaratorVariant {
   struct IdentDec ident_dec;
   struct PointerDec pointer_dec;
   struct FunDec fun_dec;
+  struct ArrayDec array_dec;
 };
 
 struct Declarator {
@@ -454,16 +497,30 @@ struct ParamInfoList {
   struct ParamInfoList* next;
 };
 
-// yeah this is just the natural numbers right now, but it'll allow for
-// array declarators later
 enum AbstractDeclaratorType {
   ABSTRACT_POINTER,
-  ABSTRACT_BASE
+  ABSTRACT_ARRAY,
+  ABSTRACT_BASE,
+};
+
+struct AbstractPointer {
+  struct AbstractDeclarator* next;
+};
+
+struct AbstractArray {
+  struct AbstractDeclarator* next;
+  size_t size;
+};
+
+union AbstractDeclaratorVariant {
+  struct AbstractPointer* pointer_type;
+  struct AbstractArray* array_type;
+  // no data for AbstractBase
 };
 
 struct AbstractDeclarator {
   enum AbstractDeclaratorType type;
-  struct AbstractDeclarator* data;
+  union AbstractDeclaratorVariant data;
 };
 
 enum TypeSpecifier {
@@ -536,6 +593,10 @@ void print_declaration(struct Declaration* declaration, unsigned tabs);
 void print_var_dclr(struct VariableDclr* var_dclr);
 
 void print_prog(struct Program* prog);
+
+void print_initializer(struct Initializer* init);
+
+void print_subscript_expr(struct SubscriptExpr* expr);
 
 bool compare_types(struct Type* a, struct Type* b);
 

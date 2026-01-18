@@ -5,6 +5,7 @@
 #include "slice.h"
 #include "typechecking.h"
 #include "source_location.h"
+#include "TAC.h"
 
 // Purpose: Provide human-readable printing of ASM IR for debugging.
 // Inputs/Outputs: Functions emit text to stdout.
@@ -54,8 +55,8 @@ static void print_reg(enum Reg reg) {
   }
 }
 
-static void print_asm_type(enum AsmType type) {
-  switch (type) {
+static void print_asm_type(struct AsmType* type) {
+  switch (type->type) {
     case BYTE:
       printf("BYTE");
       break;
@@ -68,8 +69,11 @@ static void print_asm_type(enum AsmType type) {
     case LONG_WORD:
       printf("LONG_WORD");
       break;
+    case BYTE_ARRAY:
+      printf("BYTE_ARRAY(size=%zu, alignment=%zu)", type->byte_array.size, type->byte_array.alignment);
+      break;
     default:
-      printf("ASMType<%d>?", (int)type);
+      printf("ASMType<%d>?", (int)type->type);
       break;
   }
 }
@@ -234,59 +238,6 @@ static void print_asm_alu_op(enum ALUOp op) {
       break;
     default:
       printf("ALUOp?");
-      break;
-  }
-}
-
-// Purpose: Print a static initializer record for ASM output.
-// Inputs: init may be NULL; otherwise points to a static initializer descriptor.
-// Outputs: Writes initializer details to stdout.
-// Invariants/Assumptions: Only scalar initializers are represented.
-static void print_asm_init(const struct IdentInit* init) {
-  if (init == NULL) {
-    printf("init=<null>");
-    return;
-  }
-
-  switch (init->init_type) {
-    case NO_INIT:
-      printf("init=none");
-      break;
-    case TENTATIVE:
-      printf("init=tentative");
-      break;
-    case INITIAL: {
-      printf("init=[");
-      const struct InitList* cur = init->init_list;
-      bool first = true;
-      while (cur != NULL) {
-        if (!first) {
-          printf(", ");
-        }
-        switch (cur->value.int_type) {
-          case INT_INIT:
-          case LONG_INIT:
-            printf("%" PRId64, (int64_t)cur->value.value);
-            break;
-          case UINT_INIT:
-          case ULONG_INIT:
-            printf("%" PRIu64, (uint64_t)cur->value.value);
-            break;
-          case ZERO_INIT:
-            printf("0");
-            break;
-          default:
-            printf("?");
-            break;
-        }
-        first = false;
-        cur = cur->next;
-      }
-      printf("]");
-      break;
-    }
-    default:
-      printf("init=?");
       break;
   }
 }
@@ -473,12 +424,11 @@ static void print_asm_top_level(const struct AsmTopLevel* top, unsigned tabs) {
       }
       printf(top->global ? " global " : " local ");
       printf("align=%d ", top->alignment);
-      printf("inits=%zu ", top->num_inits);
-      print_asm_init(top->init_values);
+      print_static_init(top->init_values);
       printf("\n");
       break;
     case ASM_SECTION:
-      printf("Section ");;
+      printf("Section ");
       if (top->name != NULL) {
         print_slice(top->name);
       } else {

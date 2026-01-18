@@ -33,9 +33,9 @@ Program(
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            VarDclr(none, int, x.0, LitExpr(int, 1):int);
-            VarDclr(none, long, y.1, Cast(long, LitExpr(int, 2):int):long);
-            VarDclr(none, long, z.2, AddOp(Cast(long, Var(x.0):int):long, Var(y.1):long):long);
+            VarDclr(none, int, x.0, SingleInit(LitExpr(int, 1):int));
+            VarDclr(none, long, y.1, SingleInit(Cast(long, LitExpr(int, 2):int):long));
+            VarDclr(none, long, z.2, SingleInit(AddOp(Cast(long, Var(x.0):int):long, Var(y.1):long):long));
             Return(Cast(int, Var(z.2):long):int, main);
     );
 )

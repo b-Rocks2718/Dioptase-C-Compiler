@@ -1,4 +1,5 @@
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
@@ -12,14 +13,17 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-// Note: These tests intentionally rely on POSIX process APIs and a host C compiler
-// to compare emulator execution results against native execution.
+// Test code written by Codex
+
+// Note: These tests intentionally rely on POSIX process and directory APIs plus
+// a host C compiler to compare emulator execution results against native execution.
 
 // Purpose: Configure test runner paths and sizing limits.
 // Inputs/Outputs: Constants used by the emulator execution tests.
 // Invariants/Assumptions: Paths are relative to the compiler root.
 static const char* kEmuExecBuildDir = "build";
 static const char* kEmuExecOutDir = "build/emu_exec";
+static const char* kEmuExecTestsDir = "tests/exec";
 static const char* kEmuExecCompilerEnv = "TAC_TEST_CC";
 static const char* kEmuExecBccEnv = "DIOPTASE_BCC";
 static const char* kEmuExecEmulatorEnv = "DIOPTASE_EMULATOR_SIMPLE";
@@ -29,6 +33,10 @@ static const char* kEmuExecHostWarnFlag = "-w";
 static const size_t kEmuExecMaxPath = 512; // Supports test paths plus output suffixes.
 static const size_t kEmuExecMaxOutput = 256; // Enough for emulator output + newline.
 static const uint32_t kEmuExecEmuMaxCyclesDefault = 100000; // Bounds emulator runtime for stuck programs.
+static const size_t kEmuExecTestListInitialCapacity = 8; // Handles small suites with minimal reallocs.
+static const size_t kEmuExecTestListGrowthFactor = 2; // Doubling keeps append amortized constant time.
+static const char kEmuExecTestSuffix[] = ".c";
+static const size_t kEmuExecTestSuffixLen = sizeof(kEmuExecTestSuffix) - 1;
 
 enum { kEmuExecDefaultBccPathCount = 2 };
 static const char* const kEmuExecDefaultBccPaths[kEmuExecDefaultBccPathCount] = {
@@ -46,29 +54,203 @@ static const char* const kEmuExecDefaultEmulatorPaths[kEmuExecDefaultEmulatorPat
 // Inputs/Outputs: name identifies the test; path points to the C source.
 // Invariants/Assumptions: path is a NUL-terminated file system path.
 struct EmuExecTest {
-  const char* name;
-  const char* path;
+  char* name;
+  char* path;
 };
 
-static const struct EmuExecTest kEmuExecTests[] = {
-    {"arithmetic", "tests/exec/arithmetic.c"},
-    {"logical", "tests/exec/logical.c"},
-    {"loops", "tests/exec/loops.c"},
-    {"switch", "tests/exec/switch.c"},
-    {"goto", "tests/exec/goto.c"},
-    {"functions", "tests/exec/functions.c"},
-    {"pointers", "tests/exec/pointers.c"},
-    {"pointer_store", "tests/exec/pointer_store.c"},
-    {"short_casts", "tests/exec/short_casts.c"},
-    {"short_pointer_arithmetic", "tests/exec/short_pointer_arithmetic.c"},
-    {"align_locals", "tests/exec/align_locals.c"},
-    {"align_globals", "tests/exec/align_globals.c"},
-    {"align_params", "tests/exec/align_params.c"},
-    {"global_pointer_basic", "tests/exec/global_pointer_basic.c"},
-    {"global_pointer_cross", "tests/exec/global_pointer_cross.c"},
-    {"globals", "tests/exec/globals.c"},
-    {"conditional", "tests/exec/conditional.c"},
+// Purpose: Own a growable list of execution tests discovered on disk.
+// Inputs/Outputs: tests holds owned strings; count/capacity track usage.
+// Invariants/Assumptions: Each test name/path is heap allocated.
+struct EmuExecTestList {
+  struct EmuExecTest* tests;
+  size_t count;
+  size_t capacity;
 };
+
+// Purpose: Check whether a directory entry is "." or "..".
+// Inputs: name is the directory entry name.
+// Outputs: Returns true if the name is a dot entry.
+// Invariants/Assumptions: name is a NUL-terminated string.
+static bool emu_exec_is_dot_entry(const char* name) {
+  return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+}
+
+// Purpose: Check whether a name ends with a given suffix.
+// Inputs: name is the string to inspect; suffix is the expected suffix.
+// Outputs: Returns true when suffix matches the tail of name.
+// Invariants/Assumptions: suffix_len equals strlen(suffix).
+static bool emu_exec_has_suffix(const char* name, const char* suffix, size_t suffix_len) {
+  size_t name_len = strlen(name);
+  if (name_len < suffix_len) {
+    return false;
+  }
+  return memcmp(name + (name_len - suffix_len), suffix, suffix_len) == 0;
+}
+
+// Purpose: Ensure the test list has space for at least min_capacity entries.
+// Inputs: list is the list to grow; min_capacity is the required capacity.
+// Outputs: Returns true on success; list may be reallocated.
+// Invariants/Assumptions: list is initialized to zeroed memory.
+static bool emu_exec_ensure_test_capacity(struct EmuExecTestList* list, size_t min_capacity) {
+  if (list->capacity >= min_capacity) {
+    return true;
+  }
+  size_t new_capacity = list->capacity == 0 ? kEmuExecTestListInitialCapacity : list->capacity;
+  while (new_capacity < min_capacity) {
+    if (new_capacity > SIZE_MAX / kEmuExecTestListGrowthFactor) {
+      fprintf(stderr, "Emu exec tests: test list size overflow\n");
+      return false;
+    }
+    new_capacity *= kEmuExecTestListGrowthFactor;
+  }
+
+  struct EmuExecTest* resized =
+      (struct EmuExecTest*)realloc(list->tests, new_capacity * sizeof(*resized));
+  if (resized == NULL) {
+    fprintf(stderr, "Emu exec tests: out of memory while listing %s\n", kEmuExecTestsDir);
+    return false;
+  }
+  list->tests = resized;
+  list->capacity = new_capacity;
+  return true;
+}
+
+// Purpose: Append a test entry derived from a filename.
+// Inputs: list stores the test entries; filename is the leaf name.
+// Outputs: Returns true on success and appends to list.
+// Invariants/Assumptions: filename ends with kEmuExecTestSuffix.
+static bool emu_exec_append_test(struct EmuExecTestList* list, const char* filename) {
+  size_t filename_len = strlen(filename);
+  size_t name_len = filename_len - kEmuExecTestSuffixLen;
+  size_t dir_len = strlen(kEmuExecTestsDir);
+  size_t path_len = dir_len + 1 + filename_len;
+
+  if (!emu_exec_ensure_test_capacity(list, list->count + 1)) {
+    return false;
+  }
+
+  char* name = (char*)malloc(name_len + 1);
+  if (name == NULL) {
+    fprintf(stderr, "Emu exec tests: out of memory while naming %s\n", filename);
+    return false;
+  }
+  memcpy(name, filename, name_len);
+  name[name_len] = '\0';
+
+  char* path = (char*)malloc(path_len + 1);
+  if (path == NULL) {
+    fprintf(stderr, "Emu exec tests: out of memory while building path for %s\n", filename);
+    free(name);
+    return false;
+  }
+  int written = snprintf(path, path_len + 1, "%s/%s", kEmuExecTestsDir, filename);
+  if (written < 0 || (size_t)written != path_len) {
+    fprintf(stderr, "Emu exec tests: failed to format path for %s\n", filename);
+    free(path);
+    free(name);
+    return false;
+  }
+
+  struct stat st = {0};
+  if (stat(path, &st) != 0) {
+    fprintf(stderr, "Emu exec tests: unable to stat %s: %s\n", path, strerror(errno));
+    free(path);
+    free(name);
+    return false;
+  }
+  if (!S_ISREG(st.st_mode)) {
+    fprintf(stderr, "Emu exec tests: %s is not a regular file\n", path);
+    free(path);
+    free(name);
+    return false;
+  }
+
+  list->tests[list->count].name = name;
+  list->tests[list->count].path = path;
+  list->count++;
+  return true;
+}
+
+// Purpose: Sort test entries by name for stable output.
+// Inputs: lhs and rhs are EmuExecTest pointers cast from qsort.
+// Outputs: Returns <0, 0, >0 like strcmp.
+// Invariants/Assumptions: name fields are non-NULL.
+static int emu_exec_compare_tests(const void* lhs, const void* rhs) {
+  const struct EmuExecTest* left = (const struct EmuExecTest*)lhs;
+  const struct EmuExecTest* right = (const struct EmuExecTest*)rhs;
+  return strcmp(left->name, right->name);
+}
+
+// Purpose: Release memory allocated for a test list.
+// Inputs: list is the list to free.
+// Outputs: list is reset to an empty state.
+// Invariants/Assumptions: list entries own their name/path strings.
+static void emu_exec_free_test_list(struct EmuExecTestList* list) {
+  if (list == NULL) {
+    return;
+  }
+  for (size_t i = 0; i < list->count; i++) {
+    free(list->tests[i].name);
+    free(list->tests[i].path);
+  }
+  free(list->tests);
+  list->tests = NULL;
+  list->count = 0;
+  list->capacity = 0;
+}
+
+// Purpose: Populate a test list from the tests/exec directory.
+// Inputs: out_list receives the populated test list.
+// Outputs: Returns true on success; out_list owns the entries.
+// Invariants/Assumptions: tests/exec contains the desired .c sources.
+static bool emu_exec_collect_tests(struct EmuExecTestList* out_list) {
+  if (out_list == NULL) {
+    return false;
+  }
+  *out_list = (struct EmuExecTestList){0};
+
+  DIR* dir = opendir(kEmuExecTestsDir);
+  if (dir == NULL) {
+    fprintf(stderr, "Emu exec tests: unable to open %s: %s\n",
+            kEmuExecTestsDir, strerror(errno));
+    return false;
+  }
+
+  errno = 0;
+  struct dirent* entry = NULL;
+  while ((entry = readdir(dir)) != NULL) {
+    if (emu_exec_is_dot_entry(entry->d_name)) {
+      continue;
+    }
+    if (!emu_exec_has_suffix(entry->d_name, kEmuExecTestSuffix, kEmuExecTestSuffixLen)) {
+      continue;
+    }
+    if (!emu_exec_append_test(out_list, entry->d_name)) {
+      closedir(dir);
+      emu_exec_free_test_list(out_list);
+      return false;
+    }
+  }
+  if (errno != 0) {
+    fprintf(stderr, "Emu exec tests: failed while reading %s: %s\n",
+            kEmuExecTestsDir, strerror(errno));
+    closedir(dir);
+    emu_exec_free_test_list(out_list);
+    return false;
+  }
+  closedir(dir);
+
+  if (out_list->count == 0) {
+    fprintf(stderr, "Emu exec tests: no %s files found in %s\n",
+            kEmuExecTestSuffix, kEmuExecTestsDir);
+    emu_exec_free_test_list(out_list);
+    return false;
+  }
+
+  qsort(out_list->tests, out_list->count, sizeof(out_list->tests[0]),
+        emu_exec_compare_tests);
+  return true;
+}
 
 // Purpose: Print a formatted failure message for a test stage.
 // Inputs: test is the test name; stage is the pipeline stage; fmt is the detail.
@@ -468,13 +650,18 @@ int main(void) {
     return 1;
   }
 
-  size_t total = sizeof(kEmuExecTests) / sizeof(kEmuExecTests[0]);
+  struct EmuExecTestList tests = {0};
+  if (!emu_exec_collect_tests(&tests)) {
+    return 1;
+  }
+
+  size_t total = tests.count;
   size_t passed = 0;
 
   printf("Emulator execution results:\n");
   for (size_t i = 0; i < total; i++) {
-    printf("- emu_exec_%s\n", kEmuExecTests[i].name);
-    if (emu_exec_run_test(&kEmuExecTests[i])) {
+    printf("- emu_exec_%s\n", tests.tests[i].name);
+    if (emu_exec_run_test(&tests.tests[i])) {
       passed++;
     }
   }
@@ -482,9 +669,11 @@ int main(void) {
 
   if (passed == total) {
     printf("Emulator execution tests passed.\n");
+    emu_exec_free_test_list(&tests);
     return 0;
   }
 
   printf("Emulator execution tests failed: %zu / %zu passed.\n", passed, total);
+  emu_exec_free_test_list(&tests);
   return 1;
 }

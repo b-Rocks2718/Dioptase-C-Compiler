@@ -34,6 +34,8 @@ bool resolve_file_scope_dclr(struct Declaration* dclr);
 // Invariants/Assumptions: Locals may be renamed to unique slices.
 bool resolve_local_var_dclr(struct VariableDclr* var_dclr);
 
+bool resolve_var_init(struct Initializer* init);
+
 // Purpose: Resolve identifiers in a file-scope variable declaration.
 // Inputs: var_dclr is the variable declaration node.
 // Outputs: Returns true on success; false on invalid file-scope redeclarations.

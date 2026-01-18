@@ -130,7 +130,7 @@ static const int kSavedBpOffset = 0;
 static const int kSavedRaOffset = 4;
 static const int kEpilogueStackBytes = 8;
 
-static struct MachineInstr* make_data(struct IdentInit* init, enum AsmType type);
+static struct MachineInstr* make_data(struct InitList* init, struct AsmType* type);
 
 struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* instr){
   // Uses R9/R10 as scratch registers to avoid clobbering argument registers.
@@ -161,7 +161,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
       } else if (cur->dst->type == OPERAND_MEMORY && cur->src1->type == OPERAND_REG) {
         // Machine: Swa rSrc, [rBase, off]
         struct MachineInstr* store;
-        switch (cur->dst->asm_type) {
+        switch (cur->dst->asm_type->type) {
           case BYTE:
             // byte store
             store = alloc_machine_instr(MACHINE_SBA);
@@ -187,7 +187,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
       } else if (cur->dst->type == OPERAND_DATA && cur->src1->type == OPERAND_REG) {
         // Machine: Store rSrc, [label]
         struct MachineInstr* store;
-        switch (cur->dst->asm_type) {
+        switch (cur->dst->asm_type->type) {
           case BYTE:
             // byte store
             store = alloc_machine_instr(MACHINE_SB);
@@ -215,7 +215,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
       else if (cur->dst->type == OPERAND_REG && cur->src1->type == OPERAND_MEMORY) {
          // Machine: Lwa rDst, [rBase, off]
          struct MachineInstr* load;
-         switch (cur->src1->asm_type) {
+         switch (cur->src1->asm_type->type) {
            case BYTE:
              // byte load
              load = alloc_machine_instr(MACHINE_LBA);
@@ -242,7 +242,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
       else if (cur->dst->type == OPERAND_REG && cur->src1->type == OPERAND_DATA) {
         // Machine: Lw rDst, [label]
         struct MachineInstr* load;
-        switch (cur->src1->asm_type) {
+        switch (cur->src1->asm_type->type) {
           case BYTE:
             // byte load
             load = alloc_machine_instr(MACHINE_LB);
@@ -334,7 +334,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
         } else if (a->type == OPERAND_MEMORY) {
           // Machine: Lwa rScratchA, [rBase, off]
           struct MachineInstr* load;
-          switch (a->asm_type) {
+          switch (a->asm_type->type) {
             case BYTE:
               load = alloc_machine_instr(MACHINE_LBA);
               break;
@@ -362,7 +362,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
         } else if (a->type == OPERAND_DATA) {
           // Machine: Load rScratchA, [label]
           struct MachineInstr* load;
-          switch (a->asm_type) {
+          switch (a->asm_type->type) {
             case BYTE:
               load = alloc_machine_instr(MACHINE_LB);
               break;
@@ -397,7 +397,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
         } else if (b->type == OPERAND_MEMORY) {
           // Machine: Load rScratchB, [rBase, off]
           struct MachineInstr* load;
-          switch (b->asm_type) {
+          switch (b->asm_type->type) {
             case BYTE:
               load = alloc_machine_instr(MACHINE_LBA);
               break;
@@ -425,7 +425,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
         } else if (b->type == OPERAND_DATA) {
           // Machine: Load rScratchB, [label]
           struct MachineInstr* load;
-          switch (b->asm_type) {
+          switch (b->asm_type->type) {
             case BYTE:
               load = alloc_machine_instr(MACHINE_LB);
               break;
@@ -461,7 +461,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
         } else if (a->type == OPERAND_MEMORY) {
           // Machine: Lwa rScratchA, [rBase, off]
           struct MachineInstr* load;
-          switch (a->asm_type) {
+          switch (a->asm_type->type) {
             case BYTE:
               load = alloc_machine_instr(MACHINE_LBA);
               break;
@@ -489,7 +489,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
         } else if (a->type == OPERAND_DATA) {
           // Machine: Load rScratchA, [label]
           struct MachineInstr* load;
-          switch (a->asm_type) {
+          switch (a->asm_type->type) {
             case BYTE:
               load = alloc_machine_instr(MACHINE_LB);
               break;
@@ -737,7 +737,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
         case ASM_PUSH: {
           // Machine: Push rScratchA
           struct MachineInstr* push;
-          switch (cur->src1->asm_type) {
+          switch (cur->src1->asm_type->type) {
             case BYTE:
               push = alloc_machine_instr(MACHINE_PUSHB);
               break;
@@ -843,7 +843,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
           append_instr(&head, &tail, mov_ptr);
 
           struct MachineInstr* load;
-          switch (cur->dst->asm_type) {
+          switch (cur->dst->asm_type->type) {
             case BYTE:
               load = alloc_machine_instr(MACHINE_LBA);
               break;
@@ -866,7 +866,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
         }
         case ASM_STORE: {
           struct MachineInstr* store;
-          switch (cur->src1->asm_type) {
+          switch (cur->src1->asm_type->type) {
             case BYTE:
               store = alloc_machine_instr(MACHINE_SBA);
               break;
@@ -906,7 +906,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
         } else if (dst->type == OPERAND_MEMORY) {
           // Machine: Swa rScratchA, [rBase, off]
           struct MachineInstr* store;
-          switch (dst->asm_type) {
+          switch (dst->asm_type->type) {
             case BYTE:
               store = alloc_machine_instr(MACHINE_SBA);
               break;
@@ -928,7 +928,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
         } else if (dst->type == OPERAND_DATA) {
           // Machine: Sw rScratchA, [label]
           struct MachineInstr* store;
-          switch (dst->asm_type) {
+          switch (dst->asm_type->type) {
             case BYTE:
               store = alloc_machine_instr(MACHINE_SB);
               break;
@@ -1087,7 +1087,7 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
         (int)asm_top->name->len, asm_top->name->start);
       exit(1);
     }
-    enum AsmType type = sym_entry->type;
+    struct AsmType* type = sym_entry->type;
 
     // emit .align directive
     struct MachineInstr* align_instr = arena_alloc(sizeof(struct MachineInstr));
@@ -1108,7 +1108,7 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
     }
 
     // static variable
-    struct IdentInit* init = asm_top->init_values;
+    struct InitList* init = asm_top->init_values;
     // Machine: .space or .fill for static data
     struct MachineInstr* data_instr = make_data(init, type);
     data_instr->label = asm_top->name;
@@ -1135,12 +1135,12 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
   return machine_prog;
 }
 
-static struct MachineInstr* make_data(struct IdentInit* init, enum AsmType type){
+static struct MachineInstr* make_data(struct InitList* init, struct AsmType* type){
   struct MachineInstr* instr = arena_alloc(sizeof(struct MachineInstr));
   instr->imm = 0;
   instr->label = NULL;
 
-  switch (type) {
+  switch (type->type) {
     case BYTE:
       instr->type = MACHINE_FILB;
       break;
@@ -1151,13 +1151,13 @@ static struct MachineInstr* make_data(struct IdentInit* init, enum AsmType type)
       instr->type = MACHINE_FILL;
       break;
     default:
-      codegen_errorf(NULL, type,
-                     "unsupported LONG_WORD type for static data");
+      codegen_errorf(NULL, type->type,
+                     "unsupported asm type for static data");
       break;
   }
  
-  if (init->init_list != NULL){
-    instr->imm = init->init_list->value.value;
+  if (init != NULL){
+    instr->imm = init->value->value;
   } else {
     instr->imm = 0;
   }

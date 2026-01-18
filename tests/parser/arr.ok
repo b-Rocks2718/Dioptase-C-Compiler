@@ -1,0 +1,12 @@
+Program(
+    VarDclr(none, int[4], arr, CompoundInit(SingleInit(LitExpr(int, 1):untyped), SingleInit(LitExpr(int, 2):untyped), SingleInit(LitExpr(int, 3):untyped), SingleInit(LitExpr(int, 4):untyped)));
+    VarDclr(none, int[2][3], matrix, CompoundInit(CompoundInit(SingleInit(LitExpr(int, 1):untyped), SingleInit(LitExpr(int, 2):untyped), SingleInit(LitExpr(int, 3):untyped)), CompoundInit(SingleInit(LitExpr(int, 4):untyped), SingleInit(LitExpr(int, 5):untyped), SingleInit(LitExpr(int, 6):untyped))));
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            Return(AddOp(Subscript(Var(arr):untyped, LitExpr(int, 2):untyped):untyped, Subscript(Subscript(Var(matrix):untyped, LitExpr(int, 1):untyped):untyped, LitExpr(int, 0):untyped):untyped):untyped);
+    );
+)

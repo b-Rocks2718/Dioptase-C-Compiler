@@ -52,7 +52,7 @@ Flags can be combined to dump multiple stages. `-preprocess` exits early unless 
 
 Supported:
 
-- Types: `int`, `unsigned int`, and pointers to these types
+- Types: `int`, `unsigned int`, `short`, `unsigned short`, arrays, and pointers to these types
 - Storage classes: `static`, `extern`
 - Declarations: global and local variables, function declarations/definitions
 - Expressions:
@@ -67,8 +67,8 @@ Supported:
 
 Limitations:
 
-- No arrays, structs/unions, enums, `sizeof`, floating-point, `char`, or string literals
-- No `short` or `long` integers, no `void` or `void*`
+- No structs/unions, enums, `sizeof`, floating-point, `char`, or string literals
+- No `long` integers, no `void` or `void*`
 - No `typedef`, `const`, or `volatile`
 - No multiple declarators per declaration (e.g., `int a, b;`)
 - Global initializers must be integer literals (pointer globals may only use null pointer literals)

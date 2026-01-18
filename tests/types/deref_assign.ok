@@ -26,8 +26,8 @@ Program(
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            VarDclr(none, int, x.0, LitExpr(int, 1):int);
-            VarDclr(none, int*, p.1, AddrOf(Var(x.0):int):int*);
+            VarDclr(none, int, x.0, SingleInit(LitExpr(int, 1):int));
+            VarDclr(none, int*, p.1, SingleInit(AddrOf(Var(x.0):int):int*));
             ExprStmt(Assign(Dereference(Var(p.1):int*):int, LitExpr(int, 9):int):int);
             Return(Var(x.0):int, main);
     );

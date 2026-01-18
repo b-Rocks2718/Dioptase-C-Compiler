@@ -9,6 +9,7 @@
 #include "token_array.h"
 #include "typechecking.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -21,47 +22,230 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-// Note: These tests intentionally rely on POSIX process APIs and a host C compiler
-// to compare TAC execution results against native execution.
+// Test code written by Codex
+
+// Note: These tests intentionally rely on POSIX process and directory APIs plus
+// a host C compiler to compare TAC execution results against native execution.
 
 // Purpose: Configure test runner paths and sizing limits.
 // Inputs/Outputs: Constants used by the TAC execution tests.
 // Invariants/Assumptions: Paths are relative to the compiler root.
 static const char* kTacExecBuildDir = "build";
 static const char* kTacExecOutDir = "build/tac_exec";
+static const char* kTacExecTestsDir = "tests/exec";
 static const char* kTacExecCompilerEnv = "TAC_TEST_CC";
 static const char* kTacExecCStandard = "-std=c11";
 static const char* kTacExecHostWarnFlag = "-w";
 static const size_t kTacExecMaxPath = 512; // Supports test paths plus output suffixes.
 static const size_t kTacExecArenaBlockSize = 16384; // Mirrors main.c arena sizing.
+static const size_t kTacExecTestListInitialCapacity = 8; // Handles small suites with minimal reallocs.
+static const size_t kTacExecTestListGrowthFactor = 2; // Doubling keeps append amortized constant time.
+static const char kTacExecTestSuffix[] = ".c";
+static const size_t kTacExecTestSuffixLen = sizeof(kTacExecTestSuffix) - 1;
+static const int kTacExecChildPassExitCode = 0;
+static const int kTacExecChildFailExitCode = 1;
 
 // Purpose: Describe a TAC execution test case.
 // Inputs/Outputs: name identifies the test; path points to the C source.
 // Invariants/Assumptions: path is a NUL-terminated file system path.
 struct TacExecTest {
-  const char* name;
-  const char* path;
+  char* name;
+  char* path;
 };
 
-static const struct TacExecTest kTacExecTests[] = {
-    {"arithmetic", "tests/exec/arithmetic.c"},
-    {"logical", "tests/exec/logical.c"},
-    {"loops", "tests/exec/loops.c"},
-    {"switch", "tests/exec/switch.c"},
-    {"goto", "tests/exec/goto.c"},
-    {"functions", "tests/exec/functions.c"},
-    {"pointers", "tests/exec/pointers.c"},
-    {"pointer_store", "tests/exec/pointer_store.c"},
-    {"short_casts", "tests/exec/short_casts.c"},
-    {"short_pointer_arithmetic", "tests/exec/short_pointer_arithmetic.c"},
-    {"align_locals", "tests/exec/align_locals.c"},
-    {"align_globals", "tests/exec/align_globals.c"},
-    {"align_params", "tests/exec/align_params.c"},
-    {"global_pointer_basic", "tests/exec/global_pointer_basic.c"},
-    {"global_pointer_cross", "tests/exec/global_pointer_cross.c"},
-    {"globals", "tests/exec/globals.c"},
-    {"conditional", "tests/exec/conditional.c"},
+// Purpose: Own a growable list of execution tests discovered on disk.
+// Inputs/Outputs: tests holds owned strings; count/capacity track usage.
+// Invariants/Assumptions: Each test name/path is heap allocated.
+struct TacExecTestList {
+  struct TacExecTest* tests;
+  size_t count;
+  size_t capacity;
 };
+
+// Purpose: Check whether a directory entry is "." or "..".
+// Inputs: name is the directory entry name.
+// Outputs: Returns true if the name is a dot entry.
+// Invariants/Assumptions: name is a NUL-terminated string.
+static bool tac_exec_is_dot_entry(const char* name) {
+  return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
+}
+
+// Purpose: Check whether a name ends with a given suffix.
+// Inputs: name is the string to inspect; suffix is the expected suffix.
+// Outputs: Returns true when suffix matches the tail of name.
+// Invariants/Assumptions: suffix_len equals strlen(suffix).
+static bool tac_exec_has_suffix(const char* name, const char* suffix, size_t suffix_len) {
+  size_t name_len = strlen(name);
+  if (name_len < suffix_len) {
+    return false;
+  }
+  return memcmp(name + (name_len - suffix_len), suffix, suffix_len) == 0;
+}
+
+// Purpose: Ensure the test list has space for at least min_capacity entries.
+// Inputs: list is the list to grow; min_capacity is the required capacity.
+// Outputs: Returns true on success; list may be reallocated.
+// Invariants/Assumptions: list is initialized to zeroed memory.
+static bool tac_exec_ensure_test_capacity(struct TacExecTestList* list, size_t min_capacity) {
+  if (list->capacity >= min_capacity) {
+    return true;
+  }
+  size_t new_capacity = list->capacity == 0 ? kTacExecTestListInitialCapacity : list->capacity;
+  while (new_capacity < min_capacity) {
+    if (new_capacity > SIZE_MAX / kTacExecTestListGrowthFactor) {
+      fprintf(stderr, "TAC exec tests: test list size overflow\n");
+      return false;
+    }
+    new_capacity *= kTacExecTestListGrowthFactor;
+  }
+
+  struct TacExecTest* resized =
+      (struct TacExecTest*)realloc(list->tests, new_capacity * sizeof(*resized));
+  if (resized == NULL) {
+    fprintf(stderr, "TAC exec tests: out of memory while listing %s\n", kTacExecTestsDir);
+    return false;
+  }
+  list->tests = resized;
+  list->capacity = new_capacity;
+  return true;
+}
+
+// Purpose: Append a test entry derived from a filename.
+// Inputs: list stores the test entries; filename is the leaf name.
+// Outputs: Returns true on success and appends to list.
+// Invariants/Assumptions: filename ends with kTacExecTestSuffix.
+static bool tac_exec_append_test(struct TacExecTestList* list, const char* filename) {
+  size_t filename_len = strlen(filename);
+  size_t name_len = filename_len - kTacExecTestSuffixLen;
+  size_t dir_len = strlen(kTacExecTestsDir);
+  size_t path_len = dir_len + 1 + filename_len;
+
+  if (!tac_exec_ensure_test_capacity(list, list->count + 1)) {
+    return false;
+  }
+
+  char* name = (char*)malloc(name_len + 1);
+  if (name == NULL) {
+    fprintf(stderr, "TAC exec tests: out of memory while naming %s\n", filename);
+    return false;
+  }
+  memcpy(name, filename, name_len);
+  name[name_len] = '\0';
+
+  char* path = (char*)malloc(path_len + 1);
+  if (path == NULL) {
+    fprintf(stderr, "TAC exec tests: out of memory while building path for %s\n", filename);
+    free(name);
+    return false;
+  }
+  int written = snprintf(path, path_len + 1, "%s/%s", kTacExecTestsDir, filename);
+  if (written < 0 || (size_t)written != path_len) {
+    fprintf(stderr, "TAC exec tests: failed to format path for %s\n", filename);
+    free(path);
+    free(name);
+    return false;
+  }
+
+  struct stat st = {0};
+  if (stat(path, &st) != 0) {
+    fprintf(stderr, "TAC exec tests: unable to stat %s: %s\n", path, strerror(errno));
+    free(path);
+    free(name);
+    return false;
+  }
+  if (!S_ISREG(st.st_mode)) {
+    fprintf(stderr, "TAC exec tests: %s is not a regular file\n", path);
+    free(path);
+    free(name);
+    return false;
+  }
+
+  list->tests[list->count].name = name;
+  list->tests[list->count].path = path;
+  list->count++;
+  return true;
+}
+
+// Purpose: Sort test entries by name for stable output.
+// Inputs: lhs and rhs are TacExecTest pointers cast from qsort.
+// Outputs: Returns <0, 0, >0 like strcmp.
+// Invariants/Assumptions: name fields are non-NULL.
+static int tac_exec_compare_tests(const void* lhs, const void* rhs) {
+  const struct TacExecTest* left = (const struct TacExecTest*)lhs;
+  const struct TacExecTest* right = (const struct TacExecTest*)rhs;
+  return strcmp(left->name, right->name);
+}
+
+// Purpose: Release memory allocated for a test list.
+// Inputs: list is the list to free.
+// Outputs: list is reset to an empty state.
+// Invariants/Assumptions: list entries own their name/path strings.
+static void tac_exec_free_test_list(struct TacExecTestList* list) {
+  if (list == NULL) {
+    return;
+  }
+  for (size_t i = 0; i < list->count; i++) {
+    free(list->tests[i].name);
+    free(list->tests[i].path);
+  }
+  free(list->tests);
+  list->tests = NULL;
+  list->count = 0;
+  list->capacity = 0;
+}
+
+// Purpose: Populate a test list from the tests/exec directory.
+// Inputs: out_list receives the populated test list.
+// Outputs: Returns true on success; out_list owns the entries.
+// Invariants/Assumptions: tests/exec contains the desired .c sources.
+static bool tac_exec_collect_tests(struct TacExecTestList* out_list) {
+  if (out_list == NULL) {
+    return false;
+  }
+  *out_list = (struct TacExecTestList){0};
+
+  DIR* dir = opendir(kTacExecTestsDir);
+  if (dir == NULL) {
+    fprintf(stderr, "TAC exec tests: unable to open %s: %s\n",
+            kTacExecTestsDir, strerror(errno));
+    return false;
+  }
+
+  errno = 0;
+  struct dirent* entry = NULL;
+  while ((entry = readdir(dir)) != NULL) {
+    if (tac_exec_is_dot_entry(entry->d_name)) {
+      continue;
+    }
+    if (!tac_exec_has_suffix(entry->d_name, kTacExecTestSuffix, kTacExecTestSuffixLen)) {
+      continue;
+    }
+    if (!tac_exec_append_test(out_list, entry->d_name)) {
+      closedir(dir);
+      tac_exec_free_test_list(out_list);
+      return false;
+    }
+  }
+  if (errno != 0) {
+    fprintf(stderr, "TAC exec tests: failed while reading %s: %s\n",
+            kTacExecTestsDir, strerror(errno));
+    closedir(dir);
+    tac_exec_free_test_list(out_list);
+    return false;
+  }
+  closedir(dir);
+
+  if (out_list->count == 0) {
+    fprintf(stderr, "TAC exec tests: no %s files found in %s\n",
+            kTacExecTestSuffix, kTacExecTestsDir);
+    tac_exec_free_test_list(out_list);
+    return false;
+  }
+
+  qsort(out_list->tests, out_list->count, sizeof(out_list->tests[0]),
+        tac_exec_compare_tests);
+  return true;
+}
 
 // Purpose: Print a formatted failure message for a test stage.
 // Inputs: test is the test name; stage is the pipeline stage; fmt is the detail.
@@ -295,7 +479,7 @@ cleanup:
 // Inputs: test is the test descriptor to run.
 // Outputs: Returns true if TAC and host results match.
 // Invariants/Assumptions: The host compiler result matches main()'s return value.
-static bool tac_exec_run_test(const struct TacExecTest* test) {
+static bool tac_exec_run_test_internal(const struct TacExecTest* test) {
   int tac_result = 0;
   if (!tac_exec_run_tac(test, &tac_result)) {
     return false;
@@ -332,18 +516,63 @@ static bool tac_exec_run_test(const struct TacExecTest* test) {
   return true;
 }
 
+// Purpose: Run one TAC execution test in a child process to isolate fatal errors.
+// Inputs: test is the test descriptor to run.
+// Outputs: Returns true if the child process reports a passing result.
+// Invariants/Assumptions: Uses POSIX fork/wait to allow the suite to continue.
+static bool tac_exec_run_test(const struct TacExecTest* test) {
+  fflush(NULL);
+  pid_t pid = fork();
+  if (pid < 0) {
+    tac_exec_error(test->name, "fork", "fork failed: %s", strerror(errno));
+    return false;
+  }
+  if (pid == 0) {
+    bool ok = tac_exec_run_test_internal(test);
+    fflush(NULL);
+    _exit(ok ? kTacExecChildPassExitCode : kTacExecChildFailExitCode);
+  }
+
+  int status = 0;
+  if (waitpid(pid, &status, 0) < 0) {
+    tac_exec_error(test->name, "waitpid", "waitpid failed: %s", strerror(errno));
+    return false;
+  }
+  if (WIFEXITED(status)) {
+    int exit_code = WEXITSTATUS(status);
+    if (exit_code == kTacExecChildPassExitCode) {
+      return true;
+    }
+    if (exit_code != kTacExecChildFailExitCode) {
+      tac_exec_error(test->name, "process", "exited with status %d", exit_code);
+    }
+    return false;
+  }
+  if (WIFSIGNALED(status)) {
+    tac_exec_error(test->name, "process", "terminated by signal %d", WTERMSIG(status));
+  } else {
+    tac_exec_error(test->name, "process", "terminated unexpectedly");
+  }
+  return false;
+}
+
 int main(void) {
   if (!tac_exec_ensure_dir(kTacExecBuildDir) || !tac_exec_ensure_dir(kTacExecOutDir)) {
     fprintf(stderr, "TAC exec tests: failed to create %s\n", kTacExecOutDir);
     return 1;
   }
 
-  size_t total = sizeof(kTacExecTests) / sizeof(kTacExecTests[0]);
+  struct TacExecTestList tests = {0};
+  if (!tac_exec_collect_tests(&tests)) {
+    return 1;
+  }
+
+  size_t total = tests.count;
   size_t passed = 0;
   printf("TAC execution results:\n");
   for (size_t i = 0; i < total; i++) {
-    printf("- tac_exec_%s\n", kTacExecTests[i].name);
-    if (tac_exec_run_test(&kTacExecTests[i])) {
+    printf("- tac_exec_%s\n", tests.tests[i].name);
+    if (tac_exec_run_test(&tests.tests[i])) {
       passed++;
     }
   }
@@ -351,9 +580,11 @@ int main(void) {
 
   if (passed == total) {
     printf("TAC execution tests passed.\n");
+    tac_exec_free_test_list(&tests);
     return 0;
   }
 
   printf("TAC execution tests failed: %zu / %zu passed.\n", passed, total);
+  tac_exec_free_test_list(&tests);
   return 1;
 }

@@ -1,6 +1,6 @@
-int value;
-int value;
-int value = 3;
+unsigned value;
+unsigned value;
+unsigned value = 3;
 
 int main(void) {
   return value;

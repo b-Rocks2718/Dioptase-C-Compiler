@@ -284,13 +284,14 @@ static struct TacBinding* tac_bindings_find(struct TacBindings* bindings, const 
   return NULL;
 }
 
-// Purpose: Create or return a binding for a name.
+// Purpose: Create or return a binding with a specific slot allocation.
 // Inputs: bindings is the binding list; mem is the shared memory allocator; name is the identifier.
 // Outputs: Returns the binding for the identifier, allocating storage if missing.
-// Invariants/Assumptions: Newly created bindings allocate one word slot.
-static struct TacBinding* tac_bindings_get_or_add(struct TacBindings* bindings,
-                                                  struct TacMemory* mem,
-                                                  struct Slice* name) {
+// Invariants/Assumptions: slots must be non-zero.
+static struct TacBinding* tac_bindings_get_or_add_range(struct TacBindings* bindings,
+                                                        struct TacMemory* mem,
+                                                        struct Slice* name,
+                                                        size_t slots) {
   struct TacBinding* found = tac_bindings_find(bindings, name);
   if (found != NULL) {
     return found;
@@ -298,8 +299,18 @@ static struct TacBinding* tac_bindings_get_or_add(struct TacBindings* bindings,
   tac_bindings_reserve(bindings);
   struct TacBinding* binding = &bindings->bindings[bindings->count++];
   binding->name = name;
-  binding->address = tac_memory_alloc_range(mem, kTacInterpSingleSlot);
+  binding->address = tac_memory_alloc_range(mem, slots);
   return binding;
+}
+
+// Purpose: Create or return a binding for a name.
+// Inputs: bindings is the binding list; mem is the shared memory allocator; name is the identifier.
+// Outputs: Returns the binding for the identifier, allocating storage if missing.
+// Invariants/Assumptions: Newly created bindings allocate one word slot.
+static struct TacBinding* tac_bindings_get_or_add(struct TacBindings* bindings,
+                                                  struct TacMemory* mem,
+                                                  struct Slice* name) {
+  return tac_bindings_get_or_add_range(bindings, mem, name, kTacInterpSingleSlot);
 }
 
 // Purpose: Select the binding list that should store a variable.
@@ -345,13 +356,67 @@ static void tac_write_var(struct TacInterpreter* interp,
   tac_memory_store(&interp->memory, binding->address, value);
 }
 
+// Purpose: Determine the base element size for a type (flattening arrays).
+// Inputs: type is the declared variable type.
+// Outputs: Returns the size in bytes of the innermost element type.
+// Invariants/Assumptions: Only scalar/array types are expected here.
+static size_t tac_base_element_size(const struct Type* type) {
+  const struct Type* cur = type;
+  while (cur != NULL && cur->type == ARRAY_TYPE) {
+    cur = cur->type_data.array_type.element_type;
+  }
+  if (cur == NULL) {
+    return 0;
+  }
+  return get_type_size((struct Type*)cur);
+}
+
+// Purpose: Map a static initializer kind to its byte size.
+// Inputs: init_type is the static initializer kind.
+// Outputs: Returns the size in bytes for one initializer entry.
+// Invariants/Assumptions: ZERO_INIT is handled separately.
+static size_t tac_static_init_size(enum StaticInitType init_type) {
+  switch (init_type) {
+    case SHORT_INIT:
+    case USHORT_INIT:
+      return 2;
+    case INT_INIT:
+    case UINT_INIT:
+      return 4;
+    case LONG_INIT:
+    case ULONG_INIT:
+      return 8;
+    case ZERO_INIT:
+      return 0;
+    default:
+      return 0;
+  }
+}
+
+// Purpose: Determine the slot count needed for an addressable type.
+// Inputs: type is the TAC value type for the address-of source.
+// Outputs: Returns the number of word slots to reserve.
+// Invariants/Assumptions: Array sizes are rounded up to word slots.
+static size_t tac_slots_for_type(const struct Type* type) {
+  if (type == NULL || type->type != ARRAY_TYPE) {
+    return kTacInterpSingleSlot;
+  }
+  size_t bytes = get_type_size((struct Type*)type);
+  size_t slots = (bytes + (size_t)kTacInterpWordBytes - 1) / (size_t)kTacInterpWordBytes;
+  return (slots > 0) ? slots : kTacInterpSingleSlot;
+}
+
 // Purpose: Resolve the address associated with a variable name.
 // Inputs: interp is the interpreter state; frame is the current frame; name is the variable name.
 // Outputs: Returns the address for the variable, allocating if needed.
 // Invariants/Assumptions: Unknown globals are treated as locals.
-static int tac_address_of(struct TacInterpreter* interp, struct TacFrame* frame, struct Slice* name) {
+static int tac_address_of(struct TacInterpreter* interp,
+                          struct TacFrame* frame,
+                          struct Slice* name,
+                          size_t slots) {
   struct TacBindings* bindings = tac_select_bindings(interp, frame, name);
-  struct TacBinding* binding = tac_bindings_get_or_add(bindings, &interp->memory, name);
+  struct TacBinding* binding =
+      tac_bindings_get_or_add_range(bindings, &interp->memory, name, slots);
   return binding->address;
 }
 
@@ -750,7 +815,8 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
         if (src == NULL || src->val_type != VARIABLE) {
           tac_interp_error("get-address requires a variable source");
         }
-        int addr = tac_address_of(interp, &frame, src->val.var_name);
+        size_t slots = tac_slots_for_type(src->type);
+        int addr = tac_address_of(interp, &frame, src->val.var_name, slots);
         tac_assign_val(interp, &frame, pc->instr.tac_get_address.dst, (uint64_t)addr);
         break;
       }
@@ -820,32 +886,50 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
     if (cur->type != STATIC_VAR) {
       continue;
     }
-    size_t slots = cur->num_inits > 0 ? cur->num_inits : kTacInterpSingleSlot;
+    size_t total_bytes = get_type_size(cur->var_type);
+    if (total_bytes == 0) {
+      tac_interp_error("zero-sized static allocation for %.*s",
+                       (int)cur->name->len, cur->name->start);
+    }
+    size_t slots =
+        (total_bytes + (size_t)kTacInterpWordBytes - 1) / (size_t)kTacInterpWordBytes;
+    if (slots == 0) {
+      slots = kTacInterpSingleSlot;
+    }
     int base_addr = tac_memory_alloc_range(&interp->memory, slots);
     tac_bindings_reserve(&interp->globals);
     struct TacBinding* binding = &interp->globals.bindings[interp->globals.count++];
     binding->name = cur->name;
     binding->address = base_addr;
 
-    if (cur->init_values == NULL ||
-        cur->init_values->init_type == NO_INIT ||
-        cur->init_values->init_type == TENTATIVE) {
-      tac_memory_store(&interp->memory,
-                       base_addr,
-                       0);
-      continue;
+    size_t elem_size = tac_base_element_size(cur->var_type);
+    if (elem_size == 0) {
+      tac_interp_error("unknown static element size for %.*s",
+                       (int)cur->name->len, cur->name->start);
     }
 
-    struct InitList* init = cur->init_values->init_list;
-    size_t idx = 0;
+    // Zero-fill the full allocation first to handle implicit zero init.
+    for (size_t offset = 0; offset < total_bytes; offset += elem_size) {
+      tac_memory_store(&interp->memory, base_addr + (int)offset, 0);
+    }
+
+    struct InitList* init = cur->init_values;
+    size_t offset = 0;
     while (init != NULL) {
-      int addr = base_addr + (int)(idx * kTacInterpWordBytes);
-      uint64_t init_value = init->value.value;
-      tac_memory_store(&interp->memory,
-                       addr,
-                       init_value);
+      if (init->value->int_type == ZERO_INIT) {
+        size_t zero_bytes = (size_t)init->value->value;
+        for (size_t z = 0; z < zero_bytes; z += elem_size) {
+          tac_memory_store(&interp->memory, base_addr + (int)(offset + z), 0);
+        }
+        offset += zero_bytes;
+        init = init->next;
+        continue;
+      }
+
+      size_t init_size = tac_static_init_size(init->value->int_type);
+      tac_memory_store(&interp->memory, base_addr + (int)offset, init->value->value);
+      offset += init_size;
       init = init->next;
-      idx++;
     }
   }
 }

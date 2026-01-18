@@ -5,9 +5,9 @@ Program(
         params=[VarDclr(none, int, x.0), ]
         type=func(ret_type=int, param_types=[int, ]),
         body=
-            VarDclr(none, int, y.1, Var(x.0):untyped);
+            VarDclr(none, int, y.1, SingleInit(Var(x.0):untyped));
             CompoundStmt(
-                VarDclr(none, int, x.2, LitExpr(int, 3):untyped);
+                VarDclr(none, int, x.2, SingleInit(LitExpr(int, 3):untyped));
                 ExprStmt(Assign(Var(y.1):untyped, Var(x.2):untyped):untyped);
             );
             Return(Var(y.1):untyped);

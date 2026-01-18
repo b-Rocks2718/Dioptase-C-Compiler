@@ -210,6 +210,12 @@ void print_token(struct Token token){
     case SHORT_TOK:
       printf("short");
       break;
+    case OPEN_S:
+      printf("[");
+      break;
+    case CLOSE_S:
+      printf("]");
+      break;
     default:
       printf("Token?");
       break;

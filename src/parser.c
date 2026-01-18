@@ -9,6 +9,7 @@
 #include "token.h"
 #include "token_array.h"
 #include "source_location.h"
+#include <sys/types.h>
 
 static struct Token * program;
 static size_t prog_size;
@@ -369,18 +370,108 @@ struct Type* parse_param_type(){
   }
 }
 
+/*
+parseAbstractDeclarator :: Parser Token AbstractDeclarator
+parseAbstractDeclarator = 
+  (char Asterisk *> (AbstractPointer <$> parseAbstractDeclarator)) <|>
+  parseDirectAbstractDeclarator <|>
+  pure AbstractBase
+
+parseDirectAbstractDeclarator :: Parser Token AbstractDeclarator
+parseDirectAbstractDeclarator = (do
+  _ <- char OpenP
+  d <- parseAbstractDeclarator
+  _ <- char CloseP
+  sizes <- many (intLitVal <$> (char OpenS *> satisfy isIntLit <* char CloseS))
+  return (makeAbstractArrayDeclarator d sizes)) <|> (do
+  sizes <- some (intLitVal <$> (char OpenS *> satisfy isIntLit <* char CloseS))
+  return (makeAbstractArrayDeclarator AbstractBase sizes))
+
+makeAbstractArrayDeclarator :: AbstractDeclarator -> [Int] -> AbstractDeclarator
+makeAbstractArrayDeclarator d sizes = 
+  case sizes of
+    n:ns -> AbstractArray (makeAbstractArrayDeclarator d ns) n
+    [] -> d
+*/
+
+// Purpose: Parse an integer literal token usable as an array bound.
+// Inputs: Consumes a single integer literal token.
+// Outputs: Returns true and writes the size on success; false otherwise.
+// Invariants/Assumptions: Only integer literal tokens are accepted.
+static bool parse_array_size_literal(size_t* size_out){
+  union TokenVariant* data = consume_with_data(INT_LIT);
+  if (data != NULL){
+    *size_out = (size_t)data->int_val;
+    return true;
+  }
+  data = consume_with_data(U_INT_LIT);
+  if (data != NULL){
+    *size_out = (size_t)data->uint_val;
+    return true;
+  }
+  data = consume_with_data(LONG_LIT);
+  if (data != NULL){
+    *size_out = (size_t)data->long_val;
+    return true;
+  }
+  data = consume_with_data(U_LONG_LIT);
+  if (data != NULL){
+    *size_out = (size_t)data->ulong_val;
+    return true;
+  }
+  return false;
+}
+
 // Purpose: Parse a direct abstract declarator (base or parenthesized).
 // Inputs: Consumes tokens from the current cursor.
 // Outputs: Returns an AbstractDeclarator or NULL if absent.
 // Invariants/Assumptions: Only pointer/identifier-free declarators are allowed.
 struct AbstractDeclarator* parse_direct_abstract_declarator(){
   struct Token* old_current = current;
-  if (!consume(OPEN_P)) return NULL;
+  if (!consume(OPEN_P)) {
+    goto only_dimensions;
+  }
   struct AbstractDeclarator* declarator = parse_abstract_declarator();
   if (declarator == NULL || !consume(CLOSE_P)){
     current = old_current;
-    return NULL;
+    goto only_dimensions;
   }
+  // Parse array sizes
+  while (consume(OPEN_S)){
+    size_t size = 0;
+    if (!parse_array_size_literal(&size) || !consume(CLOSE_S)){
+      current = old_current;
+      goto only_dimensions;
+    }
+    struct AbstractDeclarator* array_decl = arena_alloc(sizeof(struct AbstractDeclarator));
+    array_decl->type = ABSTRACT_ARRAY;
+    struct AbstractArray* array_data = arena_alloc(sizeof(struct AbstractArray));
+    array_data->next = declarator;
+    array_data->size = size;
+    array_decl->data.array_type = array_data;
+    declarator = array_decl;
+  }
+
+  return declarator;
+
+  only_dimensions:
+  declarator = arena_alloc(sizeof(struct AbstractDeclarator));
+  declarator->type = ABSTRACT_BASE;
+  while (consume(OPEN_S)){
+    size_t size = 0;
+    if (!parse_array_size_literal(&size) || !consume(CLOSE_S)){
+      current = old_current;
+      return NULL;
+    }
+    struct AbstractDeclarator* array_decl = arena_alloc(sizeof(struct AbstractDeclarator));
+    array_decl->type = ABSTRACT_ARRAY;
+    struct AbstractArray* array_data = arena_alloc(sizeof(struct AbstractArray));
+    array_data->next = declarator;
+    array_data->size = size;
+    array_decl->data.array_type = array_data;
+    declarator = array_decl;
+  }
+
   return declarator;
 }
 
@@ -398,7 +489,9 @@ struct AbstractDeclarator* parse_abstract_declarator(){
     }
     struct AbstractDeclarator* result = arena_alloc(sizeof(struct AbstractDeclarator));
     result->type = ABSTRACT_POINTER;
-    result->data = declarator;
+    struct AbstractPointer* pointer_data = arena_alloc(sizeof(struct AbstractPointer));
+    pointer_data->next = declarator;
+    result->data.pointer_type = pointer_data;
     return result;
   }
   struct AbstractDeclarator* declarator = parse_direct_abstract_declarator();
@@ -423,7 +516,14 @@ struct Type* process_abstract_declarator(
       struct Type* ptr_type = arena_alloc(sizeof(struct Type));
       ptr_type->type = POINTER_TYPE;
       ptr_type->type_data.pointer_type.referenced_type = base_type;
-      result = process_abstract_declarator(declarator->data, ptr_type);
+      result = process_abstract_declarator(declarator->data.pointer_type->next, ptr_type);
+      break;
+    case ABSTRACT_ARRAY:
+      struct Type* arr_type = arena_alloc(sizeof(struct Type));
+      arr_type->type = ARRAY_TYPE;
+      arr_type->type_data.array_type.size = declarator->data.array_type->size;
+      arr_type->type_data.array_type.element_type = base_type;
+      result = process_abstract_declarator(declarator->data.array_type->next, arr_type);
       break;
     default:
       result = NULL; // should never happen
@@ -611,51 +711,87 @@ struct Expr* parse_unary(){
   return NULL;
 }
 
+struct LitExpr parse_lit_expr(void){
+  union TokenVariant* data;
+  if ((data = consume_with_data(INT_LIT))){
+    union ConstVariant const_data = {.int_val = data->int_val};
+    struct LitExpr lit_expr = {INT_CONST, const_data};
+
+    return lit_expr;
+  } else if ((data = consume_with_data(U_INT_LIT))){
+    union ConstVariant const_data = {.uint_val = data->uint_val};
+    struct LitExpr lit_expr = {UINT_CONST, const_data};
+
+    return lit_expr;
+  } else if ((data = consume_with_data(LONG_LIT))){
+    union ConstVariant const_data  = {.long_val = data->long_val};
+    struct LitExpr lit_expr = {LONG_CONST, const_data};
+
+    return lit_expr;
+  } else if ((data = consume_with_data(U_LONG_LIT))){
+    union ConstVariant const_data = {.ulong_val = data->ulong_val};
+    struct LitExpr lit_expr = {ULONG_CONST, const_data};
+
+    return lit_expr;
+  } else {
+    union ConstVariant const_data;
+    const_data.int_val = 0;
+    struct LitExpr lit_expr = {-1, const_data};
+    return lit_expr;
+  }
+}
+
+struct Expr* parse_postfix() {
+  struct Token* old_current = current;
+  struct Expr* expr = parse_primary_expr();
+  if (expr == NULL) return NULL;
+
+  while (true){
+    if (consume(OPEN_S)){
+      struct Expr* index = parse_expr();
+      if (index == NULL || !consume(CLOSE_S)){
+        current = old_current;
+        return NULL;
+      }
+      struct SubscriptExpr subscript_expr = {expr, index};
+      struct Expr* new_expr = alloc_expr(SUBSCRIPT, (current - 1)->start);
+      new_expr->expr.subscript_expr = subscript_expr;
+      expr = new_expr;
+    } else {
+      break;
+    }
+  }
+
+  return expr;
+}
+
+struct Expr* parse_factor(){
+  struct Expr* expr = NULL;
+  if ((expr = parse_unary())) return expr;
+  else if ((expr = parse_post_op())) return expr;
+  else if ((expr = parse_cast())) return expr;
+  else if ((expr = parse_postfix())) return expr;
+  else return NULL;
+}
+
 // Purpose: Parse a primary expression or literal.
 // Inputs: Consumes literals, casts, unary ops, calls, or variables.
 // Outputs: Returns an expression node or NULL if parsing fails.
 // Invariants/Assumptions: This is the base case for the Pratt parser.
-struct Expr* parse_factor(){
-  union TokenVariant* data;
-  if ((data = consume_with_data(INT_LIT))){
-    const char* lit_loc = (current - 1)->start;
-    union ConstVariant const_data = {.int_val = data->int_val};
-    struct LitExpr lit_expr = {INT_CONST, const_data};
-
-    struct Expr* expr = alloc_expr(LIT, lit_loc);
-    expr->expr.lit_expr = lit_expr;
-    return expr;
-  } else if ((data = consume_with_data(U_INT_LIT))){
-    const char* lit_loc = (current - 1)->start;
-    union ConstVariant const_data = {.uint_val = data->uint_val};
-    struct LitExpr lit_expr = {UINT_CONST, const_data};
-
-    struct Expr* expr = alloc_expr(LIT, lit_loc);
-    expr->expr.lit_expr = lit_expr;
-    return expr;
-  } else if ((data = consume_with_data(LONG_LIT))){
-    const char* lit_loc = (current - 1)->start;
-    union ConstVariant const_data  = {.long_val = data->long_val};
-    struct LitExpr lit_expr = {LONG_CONST, const_data};
-
-    struct Expr* expr = alloc_expr(LIT, lit_loc);
-    expr->expr.lit_expr = lit_expr;
-    return expr;
-  } else if ((data = consume_with_data(U_LONG_LIT))){
-    const char* lit_loc = (current - 1)->start;
-    union ConstVariant const_data = {.ulong_val = data->ulong_val};
-    struct LitExpr lit_expr = {ULONG_CONST, const_data};
-
-    struct Expr* expr = alloc_expr(LIT, lit_loc);
+struct Expr* parse_primary_expr(){
+  
+  struct LitExpr lit_expr = parse_lit_expr();
+  if (lit_expr.type != -1){
+    struct Expr* expr = alloc_expr(LIT, (current - 1)->start);
     expr->expr.lit_expr = lit_expr;
     return expr;
   }
   
   struct Expr* expr;
-  if ((expr = parse_cast())) return expr;
-  else if ((expr = parse_unary())) return expr;
-  else if ((expr = parse_post_op())) return expr;
-  else if ((expr = parse_parens())) return expr;
+  //if ((expr = parse_cast())) return expr;
+  //else if ((expr = parse_unary())) return expr;
+  //else if ((expr = parse_post_op())) return expr;
+  if ((expr = parse_parens())) return expr;
   else if ((expr = parse_func_call())) return expr;
   else if ((expr = parse_var())) return expr;
   else return NULL;
@@ -1352,22 +1488,79 @@ struct Statement* parse_statement(){
   else return NULL;
 }
 
+struct Initializer* parse_var_init(struct Type* type){
+  struct Token* old_current = current;
+
+  // attempt to parse single init
+  struct Expr* expr = parse_expr();
+  if (expr != NULL){
+    struct Initializer* init = arena_alloc(sizeof(struct Initializer));
+    init->init_type = SINGLE_INIT;
+    init->init.single_init = expr;
+    init->loc = expr->loc;
+    init->type = type;
+    return init;
+  }
+  current = old_current;
+
+  // attempt to parse compound init
+  if (!consume(OPEN_B)){
+    current = old_current;
+    return NULL;
+  }
+
+  if (type->type != ARRAY_TYPE){
+    // error, compound init only valid for arrays currently
+    parse_error_at((current - 1)->start, "Compound initializers are only supported for array types.");
+    return NULL;
+  }
+
+  const char* init_loc = (current - 1)->start;
+  struct InitializerList* init_list = NULL;
+  struct InitializerList* prev_init = NULL;
+  struct Initializer* init = NULL;
+  while ((init = parse_var_init(type->type_data.array_type.element_type))){
+    struct InitializerList* next_init = arena_alloc(sizeof(struct InitializerList));
+    next_init->init = init;
+    next_init->next = NULL;
+    if (init_list == NULL){
+      init_list = next_init;
+    } else {
+      prev_init->next = next_init;
+    }
+    prev_init = next_init;
+    if (!consume(COMMA)) break;
+  }
+  if (!consume(CLOSE_B)){
+    current = old_current;
+    return NULL;
+  }
+
+  struct Initializer* compound_init = arena_alloc(sizeof(struct Initializer));
+  compound_init->init_type = COMPOUND_INIT;
+  compound_init->init.compound_init = init_list;
+  compound_init->loc = init_loc;
+  compound_init->type = type;
+
+  return compound_init;
+}
+
 // Purpose: Parse a variable declarator with optional initializer.
 // Inputs: type/storage/name come from earlier declarator parsing.
 // Outputs: Returns a VariableDclr node or NULL on failure.
 // Invariants/Assumptions: name is a valid identifier slice.
 struct VariableDclr* parse_var_dclr(struct Type* type, enum StorageClass storage, struct Slice* name){
   struct Token* old_current = current;
-  struct Expr* expr = NULL;
+  struct Initializer* init = NULL;
   if (consume(EQUALS)) {
-    expr = parse_expr();
-    if (expr == NULL){
+    init = parse_var_init(type);
+    if (init == NULL){
       current = old_current;
       return NULL;
     }
   }
   struct VariableDclr* var_dclr = arena_alloc(sizeof(struct VariableDclr));
-  var_dclr->init = expr;
+  var_dclr->init = init;
   var_dclr->name = name;
   var_dclr->type = type;
   var_dclr->storage = storage;
@@ -1645,15 +1838,58 @@ struct ParamInfoList* parse_params(){
 // Outputs: Returns a Declarator node or NULL on failure.
 // Invariants/Assumptions: Nested declarators use parentheses.
 struct Declarator* parse_direct_declarator(){
+  struct Token* old_current = current;
+
   struct Declarator* decl = parse_simple_declarator();
   if (decl == NULL) return NULL;
   struct ParamInfoList* params = parse_params();
-  if (params == NULL) return decl;
-  struct FunDec fun_dec = {params, decl};
-  struct Declarator* result = arena_alloc(sizeof(struct Declarator));
-  result->type = FUN_DEC;
-  result->declarator.fun_dec = fun_dec;
-  return result;
+  if (params != NULL) {
+    // function declarator
+    struct FunDec fun_dec = {params, decl};
+    struct Declarator* result = arena_alloc(sizeof(struct Declarator));
+    result->type = FUN_DEC;
+    result->declarator.fun_dec = fun_dec;
+    return result;
+  }
+
+  bool is_array = false;
+  size_t* array_sizes = NULL;
+  size_t num_array_sizes = 0;
+  size_t array_sizes_capacity = 16;
+  while (consume(OPEN_S)) {
+    is_array = true;
+    if (array_sizes == NULL) {
+      array_sizes = malloc(sizeof(size_t) * array_sizes_capacity); // initial capacity
+    }
+    // array declarator
+    struct LitExpr size_expr = parse_lit_expr();
+    if (size_expr.type == -1 || !consume(CLOSE_S)) {
+      current = old_current;
+      return NULL;
+    }
+    array_sizes[num_array_sizes++] = size_expr.value.uint_val;
+    if (num_array_sizes >= array_sizes_capacity) {
+      array_sizes_capacity *= 2;
+      size_t* new_array = realloc(array_sizes, sizeof(size_t) * array_sizes_capacity);
+      array_sizes = new_array;
+    }
+  }
+
+  if (is_array) {
+    // Build array declarators in source order so outer dimensions wrap last.
+    for (size_t i = 0; i < num_array_sizes; i++) {
+      struct ArrayDec array_dec = {decl, array_sizes[i]};
+      struct Declarator* new_decl = arena_alloc(sizeof(struct Declarator));
+      new_decl->type = ARRAY_DEC;
+      new_decl->declarator.array_dec = array_dec;
+      decl = new_decl;
+    }
+    free(array_sizes);
+    return decl;
+  }
+
+  // simple declarator
+  return decl;
 }
 
 struct ParamTypeList* params_to_types(struct ParamList* params){
@@ -1768,6 +2004,16 @@ bool process_declarator(struct Declarator* decl, struct Type* base_type,
       *derived_type_out = fun_type;
       *params_out = params;
       return true;
+    }
+    case ARRAY_DEC: {
+      // Build an array type and recurse inward for further derivations
+
+      struct Type* array_type = arena_alloc(sizeof(struct Type));
+      array_type->type = ARRAY_TYPE;
+      array_type->type_data.array_type.element_type = base_type;
+      array_type->type_data.array_type.size = decl->declarator.array_dec.size;
+      return process_declarator(decl->declarator.array_dec.decl, array_type,
+                                name_out, derived_type_out, params_out);
     }
   }
   return false;

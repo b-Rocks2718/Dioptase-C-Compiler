@@ -6,7 +6,7 @@ Program(
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            VarDclr(none, int, value.0, LitExpr(int, 5):untyped);
+            VarDclr(none, int, value.0, SingleInit(LitExpr(int, 5):untyped));
             Return(Var(value.0):untyped);
     );
 )

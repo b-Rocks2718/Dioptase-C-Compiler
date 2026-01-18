@@ -2,7 +2,7 @@ Key: counter
   Type: int
   Attributes:
     Attr Type: Static Variable
-    Init Type: Initial 1
+    Init Type: Initial [INT: 1] 
     Is Defined: true
     Storage Class: Static
 
@@ -16,7 +16,7 @@ Key: main
 Program(
     VarDclr(static, int, counter);
     VarDclr(static, int, counter);
-    VarDclr(static, int, counter, LitExpr(int, 1):int);
+    VarDclr(static, int, counter, SingleInit(LitExpr(int, 1):int));
     FunDclr(
         main,
         storage=none

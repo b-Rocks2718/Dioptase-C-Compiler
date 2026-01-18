@@ -33,9 +33,9 @@ Program(
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            VarDclr(none, uint, u.0, Cast(uint, LitExpr(int, 1):int):uint);
-            VarDclr(none, ulong, ul.1, Cast(ulong, LitExpr(int, 2):int):ulong);
-            VarDclr(none, ulong, sum.2, AddOp(Cast(ulong, Var(u.0):uint):ulong, Var(ul.1):ulong):ulong);
+            VarDclr(none, uint, u.0, SingleInit(Cast(uint, LitExpr(int, 1):int):uint));
+            VarDclr(none, ulong, ul.1, SingleInit(Cast(ulong, LitExpr(int, 2):int):ulong));
+            VarDclr(none, ulong, sum.2, SingleInit(AddOp(Cast(ulong, Var(u.0):uint):ulong, Var(ul.1):ulong):ulong));
             Return(Cast(int, Var(sum.2):ulong):int, main);
     );
 )

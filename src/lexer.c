@@ -306,6 +306,8 @@ static struct Token* consume_any(){
   if (consume(")")) return finish_simple_token(token, CLOSE_P);
   if (consume("{")) return finish_simple_token(token, OPEN_B);
   if (consume("}")) return finish_simple_token(token, CLOSE_B);
+  if (consume("[")) return finish_simple_token(token, OPEN_S);
+  if (consume("]")) return finish_simple_token(token, CLOSE_S);
   if (consume("~")) return finish_simple_token(token, TILDE);
   if (consume("++")) return finish_simple_token(token, INC_TOK);
   if (consume("--")) return finish_simple_token(token, DEC_TOK);

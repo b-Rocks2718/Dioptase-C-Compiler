@@ -50,6 +50,18 @@ void print_type(struct Type* type){
       printf("]");
       printf(")");
       break;
+    case ARRAY_TYPE:
+      // Print array dimensions in declaration order (outermost to innermost).
+      struct Type* element_type = type->type_data.array_type.element_type;
+      while (element_type->type == ARRAY_TYPE) {
+        element_type = element_type->type_data.array_type.element_type;
+      }
+      print_type(element_type);
+      for (struct Type* cur = type; cur->type == ARRAY_TYPE;
+           cur = cur->type_data.array_type.element_type) {
+        printf("[%zu]", cur->type_data.array_type.size);
+      }
+      break;
   }
 }
 
@@ -101,6 +113,9 @@ void print_expr(struct Expr* expr){
       break;
     case DEREFERENCE:
       print_dereference_expr(&expr->expr.deref_expr);
+      break;
+    case SUBSCRIPT:
+      print_subscript_expr(&expr->expr.subscript_expr);
       break;
   }
   if (expr->value_type == NULL){
@@ -319,6 +334,14 @@ void print_dereference_expr(struct DereferenceExpr* expr){
   printf(")");
 }
 
+void print_subscript_expr(struct SubscriptExpr* expr){
+  printf("Subscript(");
+  print_expr(expr->array);
+  printf(", ");
+  print_expr(expr->index);
+  printf(")");
+}
+
 void print_block_item(struct BlockItem* item, unsigned tabs){
   switch (item->type){
     case DCLR_ITEM:
@@ -534,13 +557,33 @@ void print_stmt(struct Statement* stmt, unsigned tabs){
   }
 }
 
+void print_initializer(struct Initializer* init){
+  switch (init->init_type){
+    case SINGLE_INIT:
+      printf("SingleInit(");
+      print_expr(init->init.single_init);
+      printf(")");
+      break;
+    case COMPOUND_INIT:
+      printf("CompoundInit(");
+      struct InitializerList* cur = init->init.compound_init;
+      while (cur != NULL){
+        print_initializer(cur->init);
+        if (cur->next != NULL) printf(", ");
+        cur = cur->next;
+      }
+      printf(")");
+      break;
+  }
+}
+
 void print_var_dclr(struct VariableDclr* var_dclr){
   printf("VarDclr(");
   print_storage_class(var_dclr->storage); printf(", ");
   print_type(var_dclr->type); printf(", ");
   print_slice(var_dclr->name);
   if (var_dclr->init != NULL) {
-    printf(", "); print_expr(var_dclr->init);
+    printf(", "); print_initializer(var_dclr->init);
   }
   printf(")");
 }

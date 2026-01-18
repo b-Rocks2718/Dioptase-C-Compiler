@@ -1,5 +1,5 @@
 Program(
-    VarDclr(static, int, g, LitExpr(int, 1):untyped);
+    VarDclr(static, int, g, SingleInit(LitExpr(int, 1):untyped));
     VarDclr(extern, int, h);
     FunDclr(
         main,

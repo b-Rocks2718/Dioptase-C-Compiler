@@ -1,0 +1,11 @@
+Program(
+    VarDclr(none, int[3]*, p);
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            Return(Subscript(Subscript(Cast(int[3]*, Var(p):untyped):untyped, LitExpr(int, 1):untyped):untyped, LitExpr(int, 2):untyped):untyped);
+    );
+)
