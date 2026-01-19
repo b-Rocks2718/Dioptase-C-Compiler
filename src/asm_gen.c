@@ -18,12 +18,17 @@ static const size_t kTempMarkerLen = sizeof(kTempMarker) - 1;
 
 struct AsmSymbolTable* asm_symbol_table = NULL;
 
+static struct AsmType kByteType = { .type = BYTE };
 static struct AsmType kDoubleType = { .type = DOUBLE };
 static struct AsmType kWordType = { .type = WORD };
 static struct AsmType kLongWordType = { .type = LONG_WORD };
 
 struct AsmType* type_to_asm_type(struct Type* type){
   switch (type->type){
+    case CHAR_TYPE:
+    case SCHAR_TYPE:
+    case UCHAR_TYPE:
+      return &kByteType;
     case SHORT_TYPE:
     case USHORT_TYPE:
       return &kDoubleType;
@@ -57,7 +62,9 @@ struct AsmSymbolTable* convert_symbol_table(struct SymbolTable* symbols){
     struct SymbolEntry* cur = symbols->arr[i];
     while (cur != NULL){
       struct AsmType* asm_type = type_to_asm_type(cur->type);
-      bool is_static = cur->attrs != NULL && cur->attrs->attr_type == STATIC_ATTR;
+      bool is_static = cur->attrs != NULL &&
+                       (cur->attrs->attr_type == STATIC_ATTR ||
+                        cur->attrs->attr_type == CONST_ATTR);
       bool is_defined = cur->attrs != NULL && cur->attrs->is_defined;
       
       asm_symbol_table_insert(asm_table, cur->key, asm_type, is_static, is_defined);
@@ -402,9 +409,18 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
     asm_top->init_values = tac_top->init_values;
 
     return asm_top;
+  } else if (tac_top->type == STATIC_CONST) {
+    asm_top->type = ASM_STATIC_CONST;
+    asm_top->name = tac_top->name;
+    asm_top->global = tac_top->global;
+
+    asm_top->alignment = type_alignment(tac_top->var_type, tac_top->name);
+    asm_top->init_values = tac_top->init_values;
+
+    return asm_top;
   } else {
     asm_gen_error("top-level", tac_top->name,
-                  "unsupported top-level type %d", (int)tac_top->type);
+                  "unknown top-level type %d", (int)tac_top->type);
     return NULL;
   }
 }
@@ -637,7 +653,11 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
         push_instr->src1 = tac_val_to_asm(&args[idx]);
         push_instr->src2 = NULL;
 
-        struct AsmType* type = asm_symbol_table_get(asm_symbol_table, args[idx].val.var_name)->type;
+        struct AsmType* type = push_instr->src1->asm_type;
+        if (type == NULL) {
+          asm_gen_error("call-args", func_name,
+                        "missing asm type for stack arg %zu", idx);
+        }
         size_t type_size = asm_type_size(type);
 
         push_instr->dst = NULL;
@@ -1008,7 +1028,11 @@ bool is_static_symbol_operand(const struct Operand* opr) {
     return false;
   }
   struct SymbolEntry* entry = symbol_table_get(global_symbol_table, opr->pseudo);
-  return entry != NULL && entry->attrs != NULL && entry->attrs->attr_type == STATIC_ATTR;
+  if (entry == NULL || entry->attrs == NULL) {
+    return false;
+  }
+  return entry->attrs->attr_type == STATIC_ATTR ||
+         entry->attrs->attr_type == CONST_ATTR;
 }
 
 int allocate_stack_slot(struct Operand* opr, size_t* stack_bytes) {
@@ -1121,6 +1145,10 @@ size_t type_alignment(struct Type* type, const struct Slice* symbol_name) {
     asm_gen_error("type-alignment", symbol_name, "NULL type for static symbol");
   }
   switch (type->type) {
+    case CHAR_TYPE:
+    case SCHAR_TYPE:
+    case UCHAR_TYPE:
+      return 1;
     case SHORT_TYPE:
     case USHORT_TYPE:
       return 2;
@@ -1144,6 +1172,8 @@ size_t asm_type_alignment(struct AsmType* type){
     asm_gen_error("asm-type-alignment", NULL, "NULL asm type");
   }
   switch (type->type) {
+    case BYTE:
+      return 1;
     case DOUBLE:
       return 2;
     case WORD:

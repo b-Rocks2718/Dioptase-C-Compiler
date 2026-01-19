@@ -8,6 +8,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+bool is_null_pointer_constant(struct Expr* expr);
+
 // Purpose: Implement typechecking and symbol table utilities.
 // Inputs: Operates on AST nodes produced by parsing and resolution.
 // Outputs: Annotates expressions with types and validates declarations.
@@ -690,8 +692,8 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
         return false;
       }
       if (var_dclr->type->type == POINTER_TYPE) {
-        struct LitExpr* lit_expr = &var_dclr->init->init.single_init->expr.lit_expr;
-        if (lit_expr->value.int_val != 0) {
+        struct Expr* init_expr = var_dclr->init->init.single_init;
+        if (!is_null_pointer_constant(init_expr) && init_expr->type != STRING) {
           type_error_at(var_dclr->init->loc,
                         "invalid pointer initializer for static local variable %.*s",
                         (int)var_dclr->name->len, var_dclr->name->start);
@@ -1052,7 +1054,6 @@ bool typecheck_expr(struct Expr* expr) {
           return true;
         } else if ((is_arithmetic_type(left_type) && is_pointer_type(right_type)) ||
                    (is_pointer_type(left_type) && is_arithmetic_type(right_type))) {
-          // Pointer arithmetic yields a pointer.
           expr->value_type = is_pointer_type(left_type) ? left_type : right_type;
           return true;
         } else {
@@ -1559,7 +1560,8 @@ bool is_assignable(struct Expr* expr) {
 bool is_null_pointer_constant(struct Expr* expr) {
   if (expr->type == LIT) {
     struct LitExpr* lit_expr = &expr->expr.lit_expr;
-    if (lit_expr->type == INT_CONST && lit_expr->value.int_val == 0) {
+    if (lit_expr->type == INT_CONST &&
+        lit_expr->value.int_val == 0) {
       return true;
     }
   }
@@ -2060,6 +2062,17 @@ struct InitList* is_init_const(struct Type* type, struct Initializer* init) {
           const_attr->is_defined = true;
           const_attr->storage = STATIC;
           const_attr->init.init_type = INITIAL;
+          // Pad string literals with an explicit zero init to include the null terminator.
+          size_t array_size = arr_type->type_data.array_type.size;
+          size_t element_size = get_type_size(arr_type->type_data.array_type.element_type);
+          if (str_expr->string->len < array_size) {
+            struct InitList* pad_node = arena_alloc(sizeof(struct InitList));
+            pad_node->value = arena_alloc(sizeof(struct StaticInit));
+            pad_node->value->int_type = ZERO_INIT;
+            pad_node->value->value.num = (array_size - str_expr->string->len) * element_size;
+            pad_node->next = NULL;
+            init_list->next = pad_node;
+          }
           const_attr->init.init_list = init_list;
 
           // add string label to symbol table
@@ -2073,8 +2086,9 @@ struct InitList* is_init_const(struct Type* type, struct Initializer* init) {
           pointer_init->value->value.pointer = string_label;
 
           return pointer_init;
-        } else if (type->type == ARRAY_TYPE && type->type_data.array_type.element_type->type == CHAR_TYPE) {
-          // array of char
+        } else if (type->type == ARRAY_TYPE &&
+                   is_char_type(type->type_data.array_type.element_type)) {
+          // array of char-like elements
 
           // ensure array is large enough
           size_t array_size = type->type_data.array_type.size;

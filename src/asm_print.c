@@ -427,6 +427,18 @@ static void print_asm_top_level(const struct AsmTopLevel* top, unsigned tabs) {
       print_static_init(top->init_values);
       printf("\n");
       break;
+    case ASM_STATIC_CONST:
+      printf("StaticConst ");
+      if (top->name != NULL) {
+        print_slice(top->name);
+      } else {
+        printf("<null>");
+      }
+      printf(" ");
+      printf("align=%d ", top->alignment);
+      print_static_init(top->init_values);
+      printf("\n");
+      break;
     case ASM_SECTION:
       printf("Section ");
       if (top->name != NULL) {

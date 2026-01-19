@@ -169,34 +169,20 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       fputc('\n', out);
       return true;
     case MACHINE_FILL:
-      if (instr->label != NULL) {
-        write_slice(out, instr->label);
-        fputs(":\n", out);
-      }
       write_tab(out);
-      fprintf(out, ".fill %d\n", instr->imm);
+      fputs(".fill ", out);
+      write_label_or_imm(out, instr->label, instr->imm);
+      fputc('\n', out);
       return true;
     case MACHINE_FILD:
-      if (instr->label != NULL) {
-        write_slice(out, instr->label);
-        fputs(":\n", out);
-      }
       write_tab(out);
       fprintf(out, ".fild %d\n", instr->imm);
       return true;
     case MACHINE_FILB:
-      if (instr->label != NULL) {
-        write_slice(out, instr->label);
-        fputs(":\n", out);
-      }
       write_tab(out);
       fprintf(out, ".filb %d\n", instr->imm);
       return true;
     case MACHINE_SPACE:
-      if (instr->label != NULL) {
-        write_slice(out, instr->label);
-        fputs(":\n", out);
-      }
       write_tab(out);
       fprintf(out, ".space %d\n", instr->imm);
       return true;
@@ -428,7 +414,17 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       fputs("sd ", out);
       write_reg(out, instr->ra);
       fputs(", ", out);
-      write_mem_operand(out, instr->rb, instr->imm);
+      if (instr->label != NULL) {
+        if (instr->rb == R0 && instr->imm == 0) {
+          fputc('[', out);
+          write_label_or_imm(out, instr->label, instr->imm);
+          fputc(']', out);
+        } else {
+          write_mem_operand_label(out, instr->rb, instr->label, instr->imm);
+        }
+      } else {
+        write_mem_operand(out, instr->rb, instr->imm);
+      }
       fputc('\n', out);
       return true;
     case MACHINE_LD:
@@ -436,7 +432,17 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       fputs("ld ", out);
       write_reg(out, instr->ra);
       fputs(", ", out);
-      write_mem_operand(out, instr->rb, instr->imm);
+      if (instr->label != NULL) {
+        if (instr->rb == R0 && instr->imm == 0) {
+          fputc('[', out);
+          write_label_or_imm(out, instr->label, instr->imm);
+          fputc(']', out);
+        } else {
+          write_mem_operand_label(out, instr->rb, instr->label, instr->imm);
+        }
+      } else {
+        write_mem_operand(out, instr->rb, instr->imm);
+      }
       fputc('\n', out);
       return true;
     case MACHINE_SBA:
@@ -460,7 +466,17 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       fputs("sb ", out);
       write_reg(out, instr->ra);
       fputs(", ", out);
-      write_mem_operand(out, instr->rb, instr->imm);
+      if (instr->label != NULL) {
+        if (instr->rb == R0 && instr->imm == 0) {
+          fputc('[', out);
+          write_label_or_imm(out, instr->label, instr->imm);
+          fputc(']', out);
+        } else {
+          write_mem_operand_label(out, instr->rb, instr->label, instr->imm);
+        }
+      } else {
+        write_mem_operand(out, instr->rb, instr->imm);
+      }
       fputc('\n', out);
       return true;
     case MACHINE_LB:
@@ -468,7 +484,17 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       fputs("lb ", out);
       write_reg(out, instr->ra);
       fputs(", ", out);
-      write_mem_operand(out, instr->rb, instr->imm);
+      if (instr->label != NULL) {
+        if (instr->rb == R0 && instr->imm == 0) {
+          fputc('[', out);
+          write_label_or_imm(out, instr->label, instr->imm);
+          fputc(']', out);
+        } else {
+          write_mem_operand_label(out, instr->rb, instr->label, instr->imm);
+        }
+      } else {
+        write_mem_operand(out, instr->rb, instr->imm);
+      }
       fputc('\n', out);
       return true;
     case MACHINE_BR:

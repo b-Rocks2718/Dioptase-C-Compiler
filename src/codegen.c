@@ -1080,7 +1080,7 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
     machine_prog->tail->next = body_instrs->head;
     machine_prog->tail = body_instrs->tail;
 
-  } else if (asm_top->type == ASM_STATIC_VAR){
+  } else if (asm_top->type == ASM_STATIC_VAR || asm_top->type == ASM_STATIC_CONST){
     struct AsmSymbolEntry* sym_entry = asm_symbol_table_get(asm_symbol_table, asm_top->name);
     if (sym_entry == NULL) {
       printf("Compiler Error: Undefined symbol '%.*s' in codegen\n", 
@@ -1109,9 +1109,13 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
 
     // static variable
     struct InitList* init = asm_top->init_values;
+    struct MachineInstr* data_label = alloc_machine_instr(MACHINE_LABEL);
+    data_label->label = asm_top->name;
+    machine_prog->tail->next = data_label;
+    machine_prog->tail = data_label;
+
     // Machine: .space or .fill for static data
     struct MachineInstr* data_instr = make_data(init, type);
-    data_instr->label = asm_top->name;
 
     // append data instructions to machine_prog
     struct MachineInstr* data_tail = data_instr;
@@ -1151,7 +1155,13 @@ static struct MachineInstr* make_data(struct InitList* init, struct AsmType* typ
   for (struct InitList* cur = init; cur != NULL; cur = cur->next){
     struct MachineInstr* cur_instr = alloc_machine_instr(MACHINE_FILL);
 
+    bool was_string = false;
+
     switch (cur->value->int_type) {
+      case CHAR_INIT:
+      case UCHAR_INIT:
+        cur_instr->type = MACHINE_FILB;
+        break;
       case SHORT_INIT:
       case USHORT_INIT:
         cur_instr->type = MACHINE_FILD;
@@ -1159,6 +1169,10 @@ static struct MachineInstr* make_data(struct InitList* init, struct AsmType* typ
       case INT_INIT:
       case UINT_INIT:
         cur_instr->type = MACHINE_FILL;
+        break;
+      case POINTER_INIT:
+        cur_instr->type = MACHINE_FILL;
+        cur_instr->label = cur->value->value.pointer;
         break;
       case LONG_INIT:
       case ULONG_INIT:
@@ -1168,19 +1182,41 @@ static struct MachineInstr* make_data(struct InitList* init, struct AsmType* typ
       case ZERO_INIT:
         cur_instr->type = MACHINE_SPACE;
         break;
+      case STRING_INIT:
+        was_string = true;
+        // emit sequence of FILB instructions for each character in the string
+        // padding/null bytes are emitted explicitly via ZERO_INIT nodes
+        for (size_t i = 0; i < cur->value->value.string->len; i++) {
+          struct MachineInstr* char_instr = alloc_machine_instr(MACHINE_FILB);
+          char_instr->imm = (int)(unsigned char)cur->value->value.string->start[i];
+          if (instr == NULL){
+            instr = char_instr;
+            tail = char_instr;
+          } else {
+            tail->next = char_instr;
+            tail = char_instr;
+          }
+        }
+
+        break;
       default:
         codegen_errorf(NULL, 0,
                        "unsupported static initializer type %d", (int)cur->value->int_type);
     }
 
-    cur_instr->imm = (int)cur->value->value.num;
+    if (!was_string){
+      // set value and append to list (string does this on its own)
+      if (cur_instr->label == NULL) {
+        cur_instr->imm = (int)cur->value->value.num;
+      }
 
-    if (instr == NULL){
-      instr = cur_instr;
-      tail = cur_instr;
-    } else {
-      tail->next = cur_instr;
-      tail = cur_instr;
+      if (instr == NULL){
+        instr = cur_instr;
+        tail = cur_instr;
+      } else {
+        tail->next = cur_instr;
+        tail = cur_instr;
+      }
     }
   }
 

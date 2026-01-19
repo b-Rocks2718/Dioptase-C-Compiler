@@ -154,7 +154,8 @@ static bool consume_identifier(struct Token* token) {
 // Purpose: Consume a decimal or hex integer literal token.
 // Inputs: token is the destination Token to populate.
 // Outputs: Returns true on success and advances current past the literal.
-// Invariants/Assumptions: Supports optional u/U and l/L suffixes.
+// Invariants/Assumptions: Supports optional u/U and l/L suffixes; accepts .0
+// fractional forms as integer literals for integer-only parsing.
 // Purpose: Convert a hex digit character into its numeric value.
 // Inputs: ch is an ASCII hex digit.
 // Outputs: Returns the digit value or -1 for non-hex characters.
@@ -194,6 +195,21 @@ static bool consume_literal(struct Token* token) {
         v = 10*v + (uint64_t)((*current) - '0');
         current += 1;
       } while (isdigit((unsigned char)*current));
+    }
+
+    if (!is_hex && *current == '.' && isdigit((unsigned char)current[1])) {
+      current++;
+      bool non_zero = false;
+      while (isdigit((unsigned char)*current)) {
+        if (*current != '0') {
+          non_zero = true;
+        }
+        current += 1;
+      }
+      if (non_zero) {
+        print_error();
+        exit(1);
+      }
     }
 
     bool saw_u = false;
@@ -261,6 +277,11 @@ static bool consume_literal(struct Token* token) {
     // char literal
     consume("\'");
 
+    if (*current == '\0' || *current == '\n') {
+      print_error();
+      exit(1);
+    }
+
     // detect escape characters
     if (*current == '\\'){
       switch (*(current + 1)){
@@ -307,6 +328,10 @@ static bool consume_literal(struct Token* token) {
 
       current += 2;
     } else {
+      if (*current == '\'') {
+        print_error();
+        exit(1);
+      }
       token->data.char_val = *current;
       current += 1;
     }
@@ -327,6 +352,10 @@ static bool consume_literal(struct Token* token) {
     current += 1;
     bool escaped = false;
     while ((*current != '\"' || *(current - 1) == '\\') && *current != '\0') {
+      if (*current == '\n') {
+        print_error();
+        exit(1);
+      }
       if (escaped){
         switch (*current){
           case '\'':

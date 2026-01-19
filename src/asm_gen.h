@@ -61,6 +61,7 @@ struct DebugLocal {
 enum AsmTopLevelType {
   ASM_FUNC,
   ASM_STATIC_VAR,
+  ASM_STATIC_CONST,
   ASM_SECTION,
 };
 

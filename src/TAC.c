@@ -776,6 +776,11 @@ struct TACInstr* var_dclr_to_TAC(struct Slice* func_name, struct Declaration* dc
 // Inputs: base_ptr holds the base address; inits lists element initializers.
 // Outputs: Returns a TAC instruction list for the array initializer.
 // Invariants/Assumptions: type is ARRAY_TYPE; offsets are byte offsets.
+static struct TACInstr* string_init_to_TAC_with_base(struct Slice* func_name,
+                                                     struct Val* base_ptr,
+                                                     size_t base_offset,
+                                                     struct StringExpr* str_expr,
+                                                     struct Type* type);
 static struct TACInstr* array_init_to_TAC_with_base(struct Slice* func_name,
                                                     struct Val* base_ptr,
                                                     struct InitializerList* inits,
@@ -802,6 +807,16 @@ static struct TACInstr* array_init_to_TAC_with_base(struct Slice* func_name,
 
     switch (cur->init->init_type) {
       case SINGLE_INIT: {
+        if (cur->init->init.single_init->type == STRING &&
+            element_type->type == ARRAY_TYPE &&
+            is_char_type(element_type->type_data.array_type.element_type)) {
+          struct TACInstr* string_instrs =
+              string_init_to_TAC_with_base(func_name, base_ptr, cur_offset,
+                                           &cur->init->init.single_init->expr.string_expr,
+                                           element_type);
+          concat_TAC_instrs(&instrs, string_instrs);
+          break;
+        }
         struct Val* src = (struct Val*)arena_alloc(sizeof(struct Val));
         struct TACInstr* expr_instrs =
             expr_to_TAC_convert(func_name, cur->init->init.single_init, src);
@@ -844,42 +859,51 @@ static struct TACInstr* array_init_to_TAC_with_base(struct Slice* func_name,
   return instrs;
 }
 
-// Purpose: Lower a string literal initializer for a local char array into TAC stores.
-// Inputs: func_name is the owning function; var_name is the array name; str_expr is the literal.
-// Outputs: Returns TAC instructions that write the string bytes into the array storage.
-// Invariants/Assumptions: type is ARRAY_TYPE with a char-like element type.
-static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
-                                           struct StringExpr* str_expr, struct Type* type) {
+// Purpose: Lower a string literal initializer into TAC stores at a base address plus offset.
+// Inputs: func_name is the owning function; base_ptr is the base address; base_offset is the byte offset.
+// Outputs: Returns TAC instructions that write the string bytes into the target storage.
+// Invariants/Assumptions: type is ARRAY_TYPE with a char-like element type; base_ptr holds a byte address.
+static struct TACInstr* string_init_to_TAC_with_base(struct Slice* func_name,
+                                                     struct Val* base_ptr,
+                                                     size_t base_offset,
+                                                     struct StringExpr* str_expr,
+                                                     struct Type* type) {
   if (type == NULL || type->type != ARRAY_TYPE) {
-    tac_error_at(var_name ? var_name->start : NULL, "string init requires array type");
+    tac_error_at(NULL, "string init requires array type");
     return NULL;
   }
   if (str_expr == NULL || str_expr->string == NULL) {
-    tac_error_at(var_name ? var_name->start : NULL, "missing string literal in array init");
+    tac_error_at(NULL, "missing string literal in array init");
     return NULL;
   }
 
   struct Type* element_type = type->type_data.array_type.element_type;
   if (!is_char_type(element_type)) {
-    tac_error_at(var_name ? var_name->start : NULL, "string init requires char array element type");
+    tac_error_at(NULL, "string init requires char array element type");
     return NULL;
   }
 
   size_t array_len = type->type_data.array_type.size;
   size_t str_len = str_expr->string->len;
   if (str_len > array_len) {
-    tac_error_at(var_name ? var_name->start : NULL, "string initializer too long for array");
+    tac_error_at(NULL, "string initializer too long for array");
     return NULL;
   }
 
-  size_t element_size = get_type_size(element_type);
-  struct Val* base_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
-  struct Val* array_val = tac_make_var(var_name, type);
-  struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
-  addr_instr->instr.tac_get_address.dst = base_ptr;
-  addr_instr->instr.tac_get_address.src = array_val;
+  struct TACInstr* instrs = NULL;
+  struct Val* elem_base = base_ptr;
+  if (base_offset != 0) {
+    elem_base = make_temp(func_name, base_ptr->type);
+    struct TACInstr* add_instr = tac_instr_create(TACBINARY);
+    add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, base_ptr->type);
+    add_instr->instr.tac_binary.dst = elem_base;
+    add_instr->instr.tac_binary.src1 = base_ptr;
+    add_instr->instr.tac_binary.src2 =
+        tac_make_const((uint64_t)base_offset, base_ptr->type);
+    instrs = add_instr;
+  }
 
-  struct TACInstr* instrs = addr_instr;
+  size_t element_size = get_type_size(element_type);
   for (size_t i = 0; i < array_len; i++) {
     uint64_t byte = 0;
     if (i < str_len) {
@@ -888,14 +912,14 @@ static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice
 
     struct Val* src = tac_make_const(byte, element_type);
     size_t byte_offset = i * element_size;
-    struct Val* addr = base_ptr;
+    struct Val* addr = elem_base;
     struct TACInstr* store_chain = NULL;
     if (byte_offset != 0) {
       addr = make_temp(func_name, base_ptr->type);
       struct TACInstr* add_instr = tac_instr_create(TACBINARY);
       add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, base_ptr->type);
       add_instr->instr.tac_binary.dst = addr;
-      add_instr->instr.tac_binary.src1 = base_ptr;
+      add_instr->instr.tac_binary.src1 = elem_base;
       add_instr->instr.tac_binary.src2 =
           tac_make_const((uint64_t)byte_offset, base_ptr->type);
       store_chain = add_instr;
@@ -913,6 +937,29 @@ static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice
   }
 
   return instrs;
+}
+
+// Purpose: Lower a string literal initializer for a local char array into TAC stores.
+// Inputs: func_name is the owning function; var_name is the array name; str_expr is the literal.
+// Outputs: Returns TAC instructions that write the string bytes into the array storage.
+// Invariants/Assumptions: type is ARRAY_TYPE with a char-like element type.
+static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
+                                           struct StringExpr* str_expr, struct Type* type) {
+  if (type == NULL || type->type != ARRAY_TYPE) {
+    tac_error_at(var_name ? var_name->start : NULL, "string init requires array type");
+    return NULL;
+  }
+
+  struct Val* base_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
+  struct Val* array_val = tac_make_var(var_name, type);
+  struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
+  addr_instr->instr.tac_get_address.dst = base_ptr;
+  addr_instr->instr.tac_get_address.src = array_val;
+
+  struct TACInstr* store_instrs =
+      string_init_to_TAC_with_base(func_name, base_ptr, 0, str_expr, type);
+  concat_TAC_instrs(&addr_instr, store_instrs);
+  return addr_instr;
 }
 
 // Purpose: Lower a compound array initializer into TAC CopyToOffset instructions.
@@ -2524,11 +2571,6 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
       struct StringExpr* str_expr = &expr->expr.string_expr;
       struct Val* str_label = make_str_label(str_expr);
 
-      struct Type* arr_type = arena_alloc(sizeof(struct Type));
-      arr_type->type = ARRAY_TYPE;
-      arr_type->type_data.array_type.size = str_expr->string->len + 1; // include null terminator
-      arr_type->type_data.array_type.element_type = &kCharType;
-
       struct IdentAttr* const_attr = arena_alloc(sizeof(struct IdentAttr));
       const_attr->attr_type = CONST_ATTR;
       const_attr->is_defined = true;
@@ -2539,6 +2581,17 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
       const_attr->init.init_list->value = arena_alloc(sizeof(struct StaticInit));
       const_attr->init.init_list->value->int_type = STRING_INIT;
       const_attr->init.init_list->value->value.string = str_expr->string;
+      // Ensure the emitted data includes the null terminator via explicit padding.
+      size_t array_size = str_expr->string->len + 1;
+      size_t element_size = get_type_size(&kCharType);
+      if (str_expr->string->len < array_size) {
+        struct InitList* pad_node = arena_alloc(sizeof(struct InitList));
+        pad_node->value = arena_alloc(sizeof(struct StaticInit));
+        pad_node->value->int_type = ZERO_INIT;
+        pad_node->value->value.num = (array_size - str_expr->string->len) * element_size;
+        pad_node->next = NULL;
+        const_attr->init.init_list->next = pad_node;
+      }
 
       symbol_table_insert(global_symbol_table, str_label->val.var_name, 
         expr->value_type, const_attr);

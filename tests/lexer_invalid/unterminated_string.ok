@@ -1,1 +1,6 @@
-Lexer error at tests/lexer_invalid/unterminated_string.c:3:11: unexpected end of input
+Lexer error at tests/lexer_invalid/unterminated_string.c:1:20: unexpected character '
+'
+
+
+int x = 2;
+

@@ -755,60 +755,85 @@ struct LitExpr parse_lit_expr(void){
   }
 }
 
+// Purpose: Append a raw string literal slice into an output buffer, honoring escapes.
+// Inputs: out is the destination buffer; out_index is the current write offset; raw is the source slice.
+// Outputs: Returns the updated out_index after appending the escaped characters.
+// Invariants/Assumptions: out has enough capacity for raw->len characters.
+static size_t append_escaped_string(char* out, size_t out_index,
+                                    const struct Slice* raw, const char* loc) {
+  for (size_t i = 0; i < raw->len; i++) {
+    if (raw->start[i] == '\\') {
+      i++;
+      switch (raw->start[i]) {
+        case '\'':
+          out[out_index++] = '\'';
+          break;
+        case '\"':
+          out[out_index++] = '\"';
+          break;
+        case '\?':
+          out[out_index++] = '\?';
+          break;
+        case '\\':
+          out[out_index++] = '\\';
+          break;
+        case 'a':
+          out[out_index++] = '\a';
+          break;
+        case 'b':
+          out[out_index++] = '\b';
+          break;
+        case 'f':
+          out[out_index++] = '\f';
+          break;
+        case 'n':
+          out[out_index++] = '\n';
+          break;
+        case 'r':
+          out[out_index++] = '\r';
+          break;
+        case 't':
+          out[out_index++] = '\t';
+          break;
+        case 'v':
+          out[out_index++] = '\v';
+          break;
+        case '0':
+          out[out_index++] = '\0';
+          break;
+        default:
+          parse_error_at(loc, "invalid escape sequence");
+          exit(1);
+      }
+    } else {
+      out[out_index++] = raw->start[i];
+    }
+  }
+  return out_index;
+}
+
 struct Expr* parse_string(void){
   union TokenVariant* data;
   if ((data = consume_with_data(STRING_LIT))){
     const char* str_loc = (current - 1)->start;
 
-    char* escaped_str = arena_alloc(data->string_val->len + 1);
+    size_t total_raw_len = data->string_val->len;
+    struct Token* lookahead = current;
+    while ((size_t)(lookahead - program) < prog_size &&
+           lookahead->type == STRING_LIT) {
+      total_raw_len += lookahead->data.string_val->len;
+      lookahead++;
+    }
+
+    char* escaped_str = arena_alloc(total_raw_len + 1);
     size_t esc_index = 0;
-    for (size_t i = 0; i < data->string_val->len; i++){
-      if (data->string_val->start[i] == '\\'){
-        i++;
-        switch (data->string_val->start[i]){
-          case '\'':
-            escaped_str[esc_index++] = '\'';
-            break;
-          case '\"':
-            escaped_str[esc_index++] = '\"';
-            break;
-          case '\?':
-            escaped_str[esc_index++] = '\?';
-            break;
-          case '\\':
-            escaped_str[esc_index++] = '\\';
-            break;
-          case 'a':
-            escaped_str[esc_index++] = '\a';
-            break;
-          case 'b':
-            escaped_str[esc_index++] = '\b';
-            break;
-          case 'f':
-            escaped_str[esc_index++] = '\f';
-            break;
-          case 'n':
-            escaped_str[esc_index++] = '\n';
-            break;
-          case 'r':
-            escaped_str[esc_index++] = '\r';
-            break;
-          case 't':
-            escaped_str[esc_index++] = '\t';
-            break;
-          case 'v':
-            escaped_str[esc_index++] = '\v';
-            break;
-          case '0':
-            escaped_str[esc_index++] = '\0';
-            break;
-          default:
-            parse_error_at(str_loc, "invalid escape sequence");
-            exit(1);
-        }
-      } else {
-        escaped_str[esc_index++] = data->string_val->start[i];
-      }
+    esc_index = append_escaped_string(escaped_str, esc_index, data->string_val, str_loc);
+
+    while ((size_t)(current - program) < prog_size &&
+           current->type == STRING_LIT) {
+      const char* next_loc = current->start;
+      union TokenVariant* next_data = consume_with_data(STRING_LIT);
+      esc_index = append_escaped_string(escaped_str, esc_index, next_data->string_val, next_loc);
     }
     escaped_str[esc_index] = '\0';
 

@@ -2,7 +2,7 @@ Key: string.label.0
   Type: char[6]
   Attributes:
     Attr Type: Constant
-    Init Type: Initial [STRING: hello] 
+    Init Type: Initial [STRING: hello] [ZERO: 1] 
     Is Defined: true
     Storage Class: Static
 
