@@ -448,6 +448,9 @@ static void print_asm_top_level(const struct AsmTopLevel* top, unsigned tabs) {
       }
       printf("\n");
       break;
+    case ASM_ALIGN:
+      printf("Align %d\n", top->alignment);
+      break;
     default:
       printf("TopLevel?\n");
       break;

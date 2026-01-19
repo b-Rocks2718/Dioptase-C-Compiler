@@ -1133,6 +1133,15 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
     // append data_instr to machine_prog
     machine_prog->head = dir_instr;
     machine_prog->tail = dir_instr;
+  } else if (asm_top->type == ASM_ALIGN) {
+    // directive
+    struct MachineInstr* align_instr = arena_alloc(sizeof(struct MachineInstr));
+    align_instr->type = MACHINE_ALIGN;
+    align_instr->imm = asm_top->alignment;
+
+    // append data_instr to machine_prog
+    machine_prog->head = align_instr;
+    machine_prog->tail = align_instr;
   } else {
     // Error
     printf("Compiler Error: Unknown AsmTopLevelType in codegen\n");

@@ -63,6 +63,7 @@ enum AsmTopLevelType {
   ASM_STATIC_VAR,
   ASM_STATIC_CONST,
   ASM_SECTION,
+  ASM_ALIGN,
 };
 
 struct AsmTopLevel {

@@ -288,6 +288,12 @@ struct AsmProg* prog_to_asm(struct TACProg* tac_prog, bool emit_sections) {
     data_directive->num_locals = 0;
     data_directive->next = NULL;
     append_asm_top_level(asm_prog, data_directive);
+  } else {
+    struct AsmTopLevel* align_directive = arena_alloc(sizeof(struct AsmTopLevel));
+    align_directive->type = ASM_ALIGN;
+    align_directive->alignment = 4; // word-align functions
+    align_directive->next = NULL;
+    append_asm_top_level(asm_prog, align_directive);
   }
 
   for (struct TopLevel* tac_top = tac_prog->statics; tac_top != NULL; tac_top = tac_top->next) {
@@ -307,6 +313,12 @@ struct AsmProg* prog_to_asm(struct TACProg* tac_prog, bool emit_sections) {
     text_directive->num_locals = 0;
     text_directive->next = NULL;
     append_asm_top_level(asm_prog, text_directive);
+  } else {
+    struct AsmTopLevel* align_directive = arena_alloc(sizeof(struct AsmTopLevel));
+    align_directive->type = ASM_ALIGN;
+    align_directive->alignment = 4; // word-align functions
+    align_directive->next = NULL;
+    append_asm_top_level(asm_prog, align_directive);
   }
 
   for (struct TopLevel* tac_top = tac_prog->head; tac_top != NULL; tac_top = tac_top->next) {
