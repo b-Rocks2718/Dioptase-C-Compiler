@@ -236,6 +236,9 @@ static void print_asm_alu_op(enum ALUOp op) {
     case ALU_ASR:
       printf("AsrOp");
       break;
+    case ALU_MOV:
+      printf("MovOp");
+      break;
     default:
       printf("ALUOp?");
       break;

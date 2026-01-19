@@ -107,6 +107,7 @@ enum ALUOp {
   ALU_LSR,
   ALU_ASL,
   ALU_ASR,
+  ALU_MOV, // ignore first arg, copy second arg to dst
 };
 
 struct TACBinary {

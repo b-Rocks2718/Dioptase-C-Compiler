@@ -8,8 +8,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-bool is_null_pointer_constant(struct Expr* expr);
-
 // Purpose: Implement typechecking and symbol table utilities.
 // Inputs: Operates on AST nodes produced by parsing and resolution.
 // Outputs: Annotates expressions with types and validates declarations.
@@ -1090,6 +1088,10 @@ bool typecheck_expr(struct Expr* expr) {
         convert_expr_type(&bin_expr->right, left_type);
         expr->value_type = left_type;
         return true;
+      } else if (bin_expr->op == COMMA_OP){
+        // The result type of the comma operator is the type of the right operand.
+        expr->value_type = right_type;
+        return true;
       } else {
         if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
           type_error_at(expr->loc, "invalid pointer arithmetic in binary operation");
@@ -1986,6 +1988,9 @@ bool eval_const(struct Expr* expr, uint64_t* out_value) {
           } else {
             *out_value = (left_value >= right_value);
           }
+          return true;
+        case COMMA_OP:
+          *out_value = right_value;
           return true;
         default:
           return false; // Unsupported binary operation for constant evaluation

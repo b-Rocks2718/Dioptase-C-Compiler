@@ -591,6 +591,9 @@ static uint64_t tac_apply_binary(enum ALUOp op,
       result = (uint64_t)(((int64_t)left) >> shift);
       break;
     }
+    case ALU_MOV:
+      result = right;
+      break;
     default:
       tac_interp_error("unsupported binary operator %d", (int)op);
       return 0;

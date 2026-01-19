@@ -197,20 +197,20 @@ static bool consume_literal(struct Token* token) {
       } while (isdigit((unsigned char)*current));
     }
 
-    if (!is_hex && *current == '.' && isdigit((unsigned char)current[1])) {
-      current++;
-      bool non_zero = false;
-      while (isdigit((unsigned char)*current)) {
-        if (*current != '0') {
-          non_zero = true;
-        }
-        current += 1;
-      }
-      if (non_zero) {
-        print_error();
-        exit(1);
-      }
-    }
+    //if (!is_hex && *current == '.' && isdigit((unsigned char)current[1])) {
+    //  current++;
+    //  bool non_zero = false;
+    //  while (isdigit((unsigned char)*current)) {
+    //    if (*current != '0') {
+    //      non_zero = true;
+    //    }
+    //    current += 1;
+    //  }
+    //  if (non_zero) {
+    //    print_error();
+    //    exit(1);
+    //  }
+    //}
 
     bool saw_u = false;
     bool saw_l = false;

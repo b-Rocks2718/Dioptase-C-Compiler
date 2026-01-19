@@ -25,11 +25,17 @@ struct Program* parse_prog(struct TokenArray* tokens);
 // Invariants/Assumptions: The parser cursor is positioned at a statement start.
 struct Statement* parse_statement();
 
-// Purpose: Parse an expression with full precedence handling.
+// Purpose: Parse an expression with full precedence handling, including comma operator
 // Inputs: Consumes the global parser token stream.
 // Outputs: Returns an Expr node or NULL on failure.
 // Invariants/Assumptions: Cursor points to the first token of an expression.
 struct Expr* parse_expr();
+
+// Purpose: Parse an assignment expression (no comma operator).
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns an Expr node or NULL on failure.
+// Invariants/Assumptions: Cursor points to the first token of an expression.
+struct Expr* parse_assignment_expr();
 
 // Purpose: Parse unary expressions including prefix operators and casts.
 // Inputs: Consumes the global parser token stream.

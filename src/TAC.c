@@ -324,6 +324,8 @@ static enum TACCondition binop_to_aluop(enum BinOp op, struct Type* type) {
       return is_signed ? ALU_ASL : ALU_LSL;
     case BIT_SHR:
       return is_signed ? ALU_ASR : ALU_LSR;
+    case COMMA_OP:
+      return ALU_MOV;
     default:
       tac_error_at(NULL, "invalid binary operator in binop_to_aluop");
       return -1;

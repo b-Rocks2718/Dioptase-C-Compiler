@@ -168,6 +168,7 @@ static enum BinOp consume_binary_op(){
   if (consume(SHL_EQ)) return SHL_EQ_OP;
   if (consume(SHR_EQ)) return SHR_EQ_OP;
   if (consume(QUESTION)) return TERNARY_OP;
+  if (consume(COMMA)) return COMMA_OP;
   return 0;
 }
 
@@ -626,7 +627,7 @@ struct Expr* parse_parens(){
 struct ArgList* parse_args(){
   struct Expr* arg;
   struct Token* old_current = current;
-  if ((arg = parse_expr())){
+  if ((arg = parse_assignment_expr())){
     struct ArgList* args = arena_alloc(sizeof(struct ArgList));
     args->arg = arg;
     if (consume(COMMA)) args->next = parse_args();
@@ -928,33 +929,33 @@ static unsigned get_prec(enum BinOp op){
     case DIV_OP:
     case MUL_OP:
     case MOD_OP:
-      return 50;
+      return 60;
     case ADD_OP:
     case SUB_OP:
-      return 45;
+      return 55;
     case BIT_SHL:
     case BIT_SHR:
-      return 40;
+      return 50;
     case BOOL_LE:
     case BOOL_GE:
     case BOOL_LEQ:
     case BOOL_GEQ:
-      return 35;
+      return 45;
     case BOOL_EQ:
     case BOOL_NEQ:
-      return 30;
+      return 40;
     case BIT_AND:
-      return 25;
+      return 35;
     case BIT_XOR:
-      return 20;
+      return 30;
     case BIT_OR:
-      return 15;
+      return 25;
     case BOOL_AND:
-      return 10;
+      return 20;
     case BOOL_OR:
-      return 5;
+      return 15;
     case TERNARY_OP:
-      return 3;
+      return 10;
     case ASSIGN_OP:
     case PLUS_EQ_OP:
     case MINUS_EQ_OP:
@@ -966,7 +967,9 @@ static unsigned get_prec(enum BinOp op){
     case XOR_EQ_OP:
     case SHL_EQ_OP:
     case SHR_EQ_OP:
-      return 1;
+      return 5;
+    case COMMA_OP:
+      return 3;
   }
   return 0;
 }
@@ -1041,12 +1044,20 @@ struct Expr* parse_bin_expr(unsigned min_prec){
   return lhs;
 }
 
-// Purpose: Parse a full expression.
+// Purpose: Parse a full expression, including comma operators.
+// Inputs: Consumes tokens from the current cursor.
+// Outputs: Returns an expression tree or NULL on failure.
+// Invariants/Assumptions: Delegates precedence handling to parse_assignment_expr.
+struct Expr* parse_expr(){
+  return parse_bin_expr(0);
+}
+
+// Purpose: Parse an expression but treats commas as separators.
 // Inputs: Consumes tokens from the current cursor.
 // Outputs: Returns an expression tree or NULL on failure.
 // Invariants/Assumptions: Delegates precedence handling to parse_bin_expr.
-struct Expr* parse_expr(){
-  return parse_bin_expr(0);
+struct Expr* parse_assignment_expr(){
+  return parse_bin_expr(4); // comma has precedence 3
 }
 
 
@@ -1622,7 +1633,7 @@ struct Initializer* parse_var_init(struct Type* type){
   struct Token* old_current = current;
 
   // attempt to parse single init
-  struct Expr* expr = parse_expr();
+  struct Expr* expr = parse_assignment_expr();
   if (expr != NULL){
     struct Initializer* init = arena_alloc(sizeof(struct Initializer));
     init->init_type = SINGLE_INIT;

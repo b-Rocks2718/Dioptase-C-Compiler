@@ -170,7 +170,8 @@ enum BinOp {
   XOR_EQ_OP,
   SHL_EQ_OP,
   SHR_EQ_OP,
-  TERNARY_OP
+  TERNARY_OP,
+  COMMA_OP,
 };
 
 enum UnOp {

@@ -236,6 +236,12 @@ bool is_unsigned_type(struct Type* type);
 // Invariants/Assumptions: Does not inspect referenced type.
 bool is_pointer_type(struct Type* type);
 
+// Purpose: Check whether an expression is a null pointer constant.
+// Inputs: expr is the expression node.
+// Outputs: Returns true if expr is a null pointer constant.
+// Invariants/Assumptions: Only integer literal 0 counts as null pointer constant.
+bool is_null_pointer_constant(struct Expr* expr);
+
 // Purpose: Apply assignment conversions to an expression.
 // Inputs: expr is the expression pointer; target_type is the desired type.
 // Outputs: Returns true on success; false on invalid conversions.

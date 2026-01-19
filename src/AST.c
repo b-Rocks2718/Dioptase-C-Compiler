@@ -235,6 +235,9 @@ void print_bin_expr(struct BinaryExpr* bin_expr){
     case TERNARY_OP:
       printf("TernaryOp(");
       break;
+    case COMMA_OP:
+      printf("CommaOp(");
+      break;
   }
   print_expr(bin_expr->left);
   printf(", ");

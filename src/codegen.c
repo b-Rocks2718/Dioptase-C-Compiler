@@ -644,6 +644,14 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
               append_builtin_call(&head, &tail, &kBuiltinSRightShift);
               break;
             }
+            case ALU_MOV: {
+              // Mov rB to rA
+              struct MachineInstr* mov = alloc_machine_instr(MACHINE_MOV);
+              mov->ra = kScratchRegA;
+              mov->rb = kScratchRegB;
+              append_instr(&head, &tail, mov);
+              break;
+            }
             default:
               codegen_errorf(func_name, cur->type,
                              "unknown ALU op %d; expected a defined ALU_* variant",
