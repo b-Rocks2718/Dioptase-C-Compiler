@@ -20,7 +20,7 @@
 struct SymbolTable* global_symbol_table = NULL;
 
 static struct Type kIntType = { .type = INT_TYPE };
-static struct Type kCharType = { .type = CHAR_TYPE };
+struct Type kCharType = { .type = CHAR_TYPE };
 
 // Purpose: Identify compound assignment operators.
 // Inputs: op is the binary operator enum value.
@@ -164,22 +164,11 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
   struct InitList* init_list = NULL;
   if (var_dclr->init != NULL) {
     if ((init_list = is_init_const(var_dclr->type, var_dclr->init)) == NULL) {
-      // For simplicity, we only allow literal initializers for global variables
+      // global variable initializers must be constant
       type_error_at(var_dclr->init->loc,
                     "non-constant initializer for global variable %.*s",
                     (int)var_dclr->name->len, var_dclr->name->start);
       return false;
-    }
-
-    if (var_dclr->type->type == POINTER_TYPE) {
-      // For simplicity, we only allow null pointer constants as initializers for global pointer variables
-      struct LitExpr* lit_expr = &var_dclr->init->init.single_init->expr.lit_expr;
-      if (lit_expr->value.int_val != 0) {
-        type_error_at(var_dclr->init->loc,
-                      "invalid pointer initializer for global variable %.*s",
-                      (int)var_dclr->name->len, var_dclr->name->start);
-        return false;
-      }
     }
 
     if (!typecheck_init(var_dclr->init, var_dclr->type)) {
@@ -829,6 +818,7 @@ bool typecheck_init(struct Initializer* init, struct Type* type) {
           type_error_at(init->loc, "string initializer requires char array type");
           return false;
         }
+        init->init.single_init->value_type = type;
         if (init->init.single_init->expr.string_expr.string->len >
             type->type_data.array_type.size) {
           type_error_at(init->loc, "string initializer too long for array");

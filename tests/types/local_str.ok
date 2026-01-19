@@ -27,7 +27,7 @@ Program(
         type=func(ret_type=int, param_types=[]),
         body=
             VarDclr(none, char*, str.0, SingleInit(AddrOf(String(hello):char[6]):char*));
-            VarDclr(none, char[3], str2.1, SingleInit(String(\tb\n):untyped));
+            VarDclr(none, char[3], str2.1, SingleInit(String(\tb\n):char[3]));
             Return(AddOp(Cast(int, Subscript(Var(str.0):char*, LitExpr(int, 0):int):char):int, Cast(int, Subscript(AddrOf(Var(str2.1):char[3]):char*, LitExpr(int, 0):int):char):int):int, main);
     );
 )

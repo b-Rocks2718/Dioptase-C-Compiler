@@ -24,5 +24,5 @@ Key: str
 
 Program(
     VarDclr(none, char*, str, SingleInit(AddrOf(String(hello):char[6]):char*));
-    VarDclr(none, char[3], str2, SingleInit(String(\tb\n):untyped));
+    VarDclr(none, char[3], str2, SingleInit(String(\tb\n):char[3]));
 )

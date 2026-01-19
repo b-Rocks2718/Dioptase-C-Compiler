@@ -167,6 +167,12 @@ void print_static_init(const struct InitList* init) {
       printf(", ");
     }
     switch (cur->value->int_type){
+      case CHAR_INIT:
+        printf("CHAR: %d", (int8_t)cur->value->value.num);
+        break;
+      case UCHAR_INIT:
+        printf("UCHAR: %u", (uint8_t)cur->value->value.num);
+        break;
       case SHORT_INIT:
         printf("SHORT: %d", (int16_t)cur->value->value.num);
         break;
@@ -388,6 +394,20 @@ static void print_tac_top_level(const struct TopLevel* top, unsigned tabs) {
       printf("StaticVar ");
       print_slice(top->name);
       printf(top->global ? " global " : " local ");
+      printf("type=");
+      if (top->var_type != NULL) {
+        print_type(top->var_type);
+      } else {
+        printf("<null>");
+      }
+      printf(" ");
+      print_static_init(top->init_values);
+      printf("\n");
+      break;
+    case STATIC_CONST:
+      printf("StaticConst ");
+      print_slice(top->name);
+      printf(" ");
       printf("type=");
       if (top->var_type != NULL) {
         print_type(top->var_type);

@@ -14,7 +14,8 @@ struct TACProg {
 
 enum TopLevelType {
   FUNC,
-  STATIC_VAR
+  STATIC_VAR,
+  STATIC_CONST,
 };
 
 struct TopLevel {
@@ -26,9 +27,8 @@ struct TopLevel {
   struct Slice** params; // for Func
   size_t num_params;    // for Func
   
-  struct Type* var_type; // for StaticVar
-  struct InitList* init_values; // for StaticVar
-  size_t num_inits; // for StaticVar
+  struct Type* var_type; // for StaticVar and StaticConst
+  struct InitList* init_values; // for StaticVar and StaticConst
   
   struct TopLevel* next;
 };

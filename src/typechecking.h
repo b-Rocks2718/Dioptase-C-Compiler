@@ -120,6 +120,7 @@ struct IdentAttr {
 // Outputs: Used for symbol lookup across the translation unit.
 // Invariants/Assumptions: Only one typechecking pass runs at a time.
 extern struct SymbolTable* global_symbol_table;
+extern struct Type kCharType;
 
 // ------------------------- Typechecking Functions ------------------------- //
 

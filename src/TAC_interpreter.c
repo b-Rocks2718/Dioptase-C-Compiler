@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+// TAC interpreter written by Codex
+
 // Purpose: Provide a small TAC interpreter for validating TAC lowering output.
 // Inputs: Consumes a TACProg with functions and static variables.
 // Outputs: Returns the integer result of main() or exits on interpreter errors.
@@ -377,6 +379,9 @@ static size_t tac_base_element_size(const struct Type* type) {
 // Invariants/Assumptions: ZERO_INIT is handled separately.
 static size_t tac_static_init_size(enum StaticInitType init_type) {
   switch (init_type) {
+    case CHAR_INIT:
+    case UCHAR_INIT:
+      return 1;
     case SHORT_INIT:
     case USHORT_INIT:
       return 2;
@@ -386,6 +391,8 @@ static size_t tac_static_init_size(enum StaticInitType init_type) {
     case LONG_INIT:
     case ULONG_INIT:
       return 8;
+    case POINTER_INIT:
+      return (size_t)kTacInterpWordBytes;
     case ZERO_INIT:
       return 0;
     default:
@@ -883,25 +890,28 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
 static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg* prog) {
   const struct TopLevel* cur = (prog->statics != NULL) ? prog->statics : prog->head;
   for (; cur != NULL; cur = cur->next) {
-    if (cur->type != STATIC_VAR) {
+    if (cur->type != STATIC_VAR && cur->type != STATIC_CONST) {
       continue;
     }
+    size_t slots = tac_slots_for_type(cur->var_type);
+    (void)tac_bindings_get_or_add_range(&interp->globals, &interp->memory, cur->name, slots);
+  }
+
+  for (cur = (prog->statics != NULL) ? prog->statics : prog->head; cur != NULL; cur = cur->next) {
+    if (cur->type != STATIC_VAR && cur->type != STATIC_CONST) {
+      continue;
+    }
+    struct TacBinding* binding = tac_bindings_find(&interp->globals, cur->name);
+    if (binding == NULL) {
+      tac_interp_error("missing static binding for %.*s",
+                       (int)cur->name->len, cur->name->start);
+    }
+    int base_addr = binding->address;
     size_t total_bytes = get_type_size(cur->var_type);
     if (total_bytes == 0) {
       tac_interp_error("zero-sized static allocation for %.*s",
                        (int)cur->name->len, cur->name->start);
     }
-    size_t slots =
-        (total_bytes + (size_t)kTacInterpWordBytes - 1) / (size_t)kTacInterpWordBytes;
-    if (slots == 0) {
-      slots = kTacInterpSingleSlot;
-    }
-    int base_addr = tac_memory_alloc_range(&interp->memory, slots);
-    tac_bindings_reserve(&interp->globals);
-    struct TacBinding* binding = &interp->globals.bindings[interp->globals.count++];
-    binding->name = cur->name;
-    binding->address = base_addr;
-
     size_t elem_size = tac_base_element_size(cur->var_type);
     if (elem_size == 0) {
       tac_interp_error("unknown static element size for %.*s",
@@ -916,8 +926,14 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
     struct InitList* init = cur->init_values;
     size_t offset = 0;
     while (init != NULL) {
-      if (init->value->int_type == ZERO_INIT) {
-        size_t zero_bytes = (size_t)init->value->value.num;
+      struct StaticInit* init_value = init->value;
+      if (init_value == NULL) {
+        tac_interp_error("null static initializer for %.*s",
+                         (int)cur->name->len, cur->name->start);
+      }
+
+      if (init_value->int_type == ZERO_INIT) {
+        size_t zero_bytes = (size_t)init_value->value.num;
         for (size_t z = 0; z < zero_bytes; z += elem_size) {
           tac_memory_store(&interp->memory, base_addr + (int)(offset + z), 0);
         }
@@ -926,8 +942,46 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
         continue;
       }
 
-      size_t init_size = tac_static_init_size(init->value->int_type);
-      tac_memory_store(&interp->memory, base_addr + (int)offset, init->value->value.num);
+      if (init_value->int_type == STRING_INIT) {
+        const struct Slice* str = init_value->value.string;
+        if (str == NULL) {
+          tac_interp_error("null string initializer for %.*s",
+                           (int)cur->name->len, cur->name->start);
+        }
+        for (size_t i = 0; i < str->len; i++) {
+          unsigned char byte = (unsigned char)str->start[i];
+          tac_memory_store(&interp->memory, base_addr + (int)(offset + i), (uint64_t)byte);
+        }
+        offset += str->len;
+        init = init->next;
+        continue;
+      }
+
+      if (init_value->int_type == POINTER_INIT) {
+        struct Slice* target = init_value->value.pointer;
+        if (target == NULL) {
+          tac_interp_error("null pointer initializer for %.*s",
+                           (int)cur->name->len, cur->name->start);
+        }
+        struct TacBinding* target_binding = tac_bindings_find(&interp->globals, target);
+        if (target_binding == NULL) {
+          tac_interp_error("unknown static pointer target %.*s",
+                           (int)target->len, target->start);
+        }
+        tac_memory_store(&interp->memory, base_addr + (int)offset,
+                         (uint64_t)target_binding->address);
+        offset += (size_t)kTacInterpWordBytes;
+        init = init->next;
+        continue;
+      }
+
+      size_t init_size = tac_static_init_size(init_value->int_type);
+      if (init_size == 0) {
+        tac_interp_error("unsupported static init type %d for %.*s",
+                         (int)init_value->int_type,
+                         (int)cur->name->len, cur->name->start);
+      }
+      tac_memory_store(&interp->memory, base_addr + (int)offset, init_value->value.num);
       offset += init_size;
       init = init->next;
     }

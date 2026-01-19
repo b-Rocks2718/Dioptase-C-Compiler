@@ -22,6 +22,8 @@ struct IdentAttr kLocalAttrs = {LOCAL_ATTR, true, NONE, {NO_INIT, NULL}};
 // Invariants/Assumptions: type is ARRAY_TYPE and inits is size-padded.
 static struct TACInstr* array_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
     struct InitializerList* inits, struct Type* type, size_t offset);
+static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
+    struct StringExpr* str_expr, struct Type* type);
 
 // Purpose: Choose a source location pointer for a declaration.
 // Inputs: dclr is the declaration to describe (may be NULL).
@@ -95,46 +97,36 @@ static struct TACInstr* tac_find_last(struct TACInstr* instr) {
 // Outputs: Returns a stable Type pointer for the requested kind.
 // Invariants/Assumptions: Only basic scalar types are cached here.
 static struct Type* tac_builtin_type(enum TypeType kind) {
-  static struct Type* short_type = NULL;
-  static struct Type* ushort_type = NULL;
-  static struct Type* int_type = NULL;
-  static struct Type* uint_type = NULL;
-  static struct Type* long_type = NULL;
-  static struct Type* ulong_type = NULL;
-  static struct Type* pointer_type = NULL;
+  static struct Type char_type = {CHAR_TYPE};
+  static struct Type short_type = {SHORT_TYPE};
+  static struct Type ushort_type = {USHORT_TYPE};
+  static struct Type int_type = {INT_TYPE};
+  static struct Type uint_type = {UINT_TYPE};
+  static struct Type long_type = {LONG_TYPE};
+  static struct Type ulong_type = {ULONG_TYPE};
+  static struct Type pointer_type = {POINTER_TYPE};
 
-  struct Type** slot = NULL;
   switch (kind) {
+    case CHAR_TYPE:
+      return &char_type;
     case SHORT_TYPE:
-      slot = &short_type;
-      break;
+      return &short_type;
     case USHORT_TYPE:
-      slot = &ushort_type;
-      break;
+      return &ushort_type;
     case INT_TYPE:
-      slot = &int_type;
-      break;
+      return &int_type;
     case POINTER_TYPE:
-      slot = &pointer_type;
-      break;
+      return &pointer_type;
     case UINT_TYPE:
-      slot = &uint_type;
-      break;
+      return &uint_type;
     case LONG_TYPE:
-      slot = &long_type;
-      break;
+      return &long_type;
     case ULONG_TYPE:
-      slot = &ulong_type;
-      break;
+      return &ulong_type;
     default:
-      return NULL;
+      tac_error_at(NULL, "unsupported builtin type kind in tac_builtin_type");
+      exit(1);
   }
-
-  if (*slot == NULL) {
-    *slot = arena_alloc(sizeof(struct Type));
-    (*slot)->type = kind;
-  }
-  return *slot;
 }
 
 // Purpose: Allocate a constant TAC value.
@@ -479,6 +471,19 @@ struct Val* make_temp(struct Slice* func_name, struct Type* type) {
   return val;
 }
 
+struct Val* make_str_label(struct StringExpr* str_expr){
+  struct Slice name_slice = {"string.label", 12};
+  struct Slice* string_label = make_unique(&name_slice);
+
+  struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
+  val->val_type = VARIABLE;
+  val->val.var_name = string_label;
+  val->type = arena_alloc(sizeof(struct Type));
+  val->type->type = POINTER_TYPE;
+  val->type->type_data.pointer_type.referenced_type = tac_builtin_type(CHAR_TYPE);
+  return val;
+}
+
 // Purpose: Lower a full program into a TAC program containing top-level items.
 // Inputs: program is a fully labeled and typechecked AST.
 // Outputs: Returns a TAC program with a linked list of TopLevel entries.
@@ -569,7 +574,6 @@ struct TopLevel* symbol_to_TAC(struct SymbolEntry* symbol) {
 
       top_level->var_type = symbol->type;
       top_level->init_values = symbol->attrs->init.init_list;
-      top_level->num_inits = 0;
       if (symbol->attrs->init.init_type == INITIAL && symbol->attrs->init.init_list != NULL) {
         size_t count = 0;
         for (struct InitList* init = symbol->attrs->init.init_list;
@@ -577,7 +581,6 @@ struct TopLevel* symbol_to_TAC(struct SymbolEntry* symbol) {
              init = init->next) {
           count++;
         }
-        top_level->num_inits = count;
       }
       
       top_level->next = NULL;
@@ -586,6 +589,15 @@ struct TopLevel* symbol_to_TAC(struct SymbolEntry* symbol) {
     case LOCAL_ATTR:
       // local variables do not produce file-scope TAC
       return NULL;
+    case CONST_ATTR:
+      struct TopLevel* top_level = (struct TopLevel*)arena_alloc(sizeof(struct TopLevel));
+      top_level->type = STATIC_CONST;
+      top_level->name = symbol->key;
+      top_level->global = false;
+      top_level->var_type = symbol->type;
+      top_level->init_values = symbol->attrs->init.init_list;
+      top_level->next = NULL;
+      return top_level;
     default:
       tac_error_at(NULL, "invalid symbol attribute type in file scope");
       return NULL;
@@ -726,6 +738,12 @@ struct TACInstr* var_dclr_to_TAC(struct Slice* func_name, struct Declaration* dc
 
       // create assignment statement and convert to TAC
       if (var_dclr->init->init_type == SINGLE_INIT) {
+        if (var_dclr->type != NULL && var_dclr->type->type == ARRAY_TYPE &&
+            var_dclr->init->init.single_init->type == STRING) {
+          return string_init_to_TAC(func_name, var_dclr->name,
+                                    &var_dclr->init->init.single_init->expr.string_expr,
+                                    var_dclr->type);
+        }
         struct Expr assign_expr;
         assign_expr.type = ASSIGN;
         assign_expr.loc = var_dclr->init->loc;
@@ -754,26 +772,6 @@ struct TACInstr* var_dclr_to_TAC(struct Slice* func_name, struct Declaration* dc
   }
 }
 
-/*
-arrayInitTAC :: String -> String -> [TypedAST.VarInit] -> Type_ -> Int -> TACState [Instr]
-arrayInitTAC name vName inits type_ n = do
-  symbols <- gets getSymbols
-  putSymbols $ replace vName (type_, LocalAttr) symbols
-  let dst = Arr vName (typeSize type_)
-  case inits of
-    x : xs -> do
-      case x of
-        TypedAST.SingleInit expr inner -> do
-          instrs <- arrayInitTAC name vName xs type_ (n + typeSize inner)
-          (instrs2, rslt) <- exprToTAC name expr
-          let src = getVal rslt
-          return $ instrs2 ++ (CopyToOffset dst src (n * typeSize inner) : instrs)
-        TypedAST.CompoundInit comp inner -> do
-          instrs <- arrayInitTAC name vName xs type_ (n + typeSize inner)
-          instrs2 <- arrayInitTAC name vName comp inner n
-          return $ instrs2 ++  instrs
-    [] -> return []
-*/
 // Purpose: Generate array element stores using a precomputed base address.
 // Inputs: base_ptr holds the base address; inits lists element initializers.
 // Outputs: Returns a TAC instruction list for the array initializer.
@@ -841,6 +839,77 @@ static struct TACInstr* array_init_to_TAC_with_base(struct Slice* func_name,
     }
 
     cur_offset += element_size;
+  }
+
+  return instrs;
+}
+
+// Purpose: Lower a string literal initializer for a local char array into TAC stores.
+// Inputs: func_name is the owning function; var_name is the array name; str_expr is the literal.
+// Outputs: Returns TAC instructions that write the string bytes into the array storage.
+// Invariants/Assumptions: type is ARRAY_TYPE with a char-like element type.
+static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
+                                           struct StringExpr* str_expr, struct Type* type) {
+  if (type == NULL || type->type != ARRAY_TYPE) {
+    tac_error_at(var_name ? var_name->start : NULL, "string init requires array type");
+    return NULL;
+  }
+  if (str_expr == NULL || str_expr->string == NULL) {
+    tac_error_at(var_name ? var_name->start : NULL, "missing string literal in array init");
+    return NULL;
+  }
+
+  struct Type* element_type = type->type_data.array_type.element_type;
+  if (!is_char_type(element_type)) {
+    tac_error_at(var_name ? var_name->start : NULL, "string init requires char array element type");
+    return NULL;
+  }
+
+  size_t array_len = type->type_data.array_type.size;
+  size_t str_len = str_expr->string->len;
+  if (str_len > array_len) {
+    tac_error_at(var_name ? var_name->start : NULL, "string initializer too long for array");
+    return NULL;
+  }
+
+  size_t element_size = get_type_size(element_type);
+  struct Val* base_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
+  struct Val* array_val = tac_make_var(var_name, type);
+  struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
+  addr_instr->instr.tac_get_address.dst = base_ptr;
+  addr_instr->instr.tac_get_address.src = array_val;
+
+  struct TACInstr* instrs = addr_instr;
+  for (size_t i = 0; i < array_len; i++) {
+    uint64_t byte = 0;
+    if (i < str_len) {
+      byte = (uint64_t)(unsigned char)str_expr->string->start[i];
+    }
+
+    struct Val* src = tac_make_const(byte, element_type);
+    size_t byte_offset = i * element_size;
+    struct Val* addr = base_ptr;
+    struct TACInstr* store_chain = NULL;
+    if (byte_offset != 0) {
+      addr = make_temp(func_name, base_ptr->type);
+      struct TACInstr* add_instr = tac_instr_create(TACBINARY);
+      add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, base_ptr->type);
+      add_instr->instr.tac_binary.dst = addr;
+      add_instr->instr.tac_binary.src1 = base_ptr;
+      add_instr->instr.tac_binary.src2 =
+          tac_make_const((uint64_t)byte_offset, base_ptr->type);
+      store_chain = add_instr;
+    }
+
+    struct TACInstr* store_instr = tac_instr_create(TACSTORE);
+    store_instr->instr.tac_store.dst_ptr = addr;
+    store_instr->instr.tac_store.src = src;
+    if (store_chain != NULL) {
+      concat_TAC_instrs(&store_chain, store_instr);
+    } else {
+      store_chain = store_instr;
+    }
+    concat_TAC_instrs(&instrs, store_chain);
   }
 
   return instrs;
@@ -2450,6 +2519,33 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
       result->type = DEREFERENCED_POINTER;
       result->val = addr;
       return instrs;
+    }
+    case STRING: {
+      struct StringExpr* str_expr = &expr->expr.string_expr;
+      struct Val* str_label = make_str_label(str_expr);
+
+      struct Type* arr_type = arena_alloc(sizeof(struct Type));
+      arr_type->type = ARRAY_TYPE;
+      arr_type->type_data.array_type.size = str_expr->string->len + 1; // include null terminator
+      arr_type->type_data.array_type.element_type = &kCharType;
+
+      struct IdentAttr* const_attr = arena_alloc(sizeof(struct IdentAttr));
+      const_attr->attr_type = CONST_ATTR;
+      const_attr->is_defined = true;
+      const_attr->storage = STATIC;
+      const_attr->init.init_type = INITIAL;
+      const_attr->init.init_list = arena_alloc(sizeof(struct InitList));
+      const_attr->init.init_list->next = NULL;
+      const_attr->init.init_list->value = arena_alloc(sizeof(struct StaticInit));
+      const_attr->init.init_list->value->int_type = STRING_INIT;
+      const_attr->init.init_list->value->value.string = str_expr->string;
+
+      symbol_table_insert(global_symbol_table, str_label->val.var_name, 
+        expr->value_type, const_attr);
+
+      result->type = PLAIN_OPERAND;
+      result->val = tac_make_var(str_label->val.var_name, expr->value_type);
+      return NULL;
     }
     default:
       tac_error_at(expr->loc, "expression type %d not implemented in TAC lowering", expr->type);
