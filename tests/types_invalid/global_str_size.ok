@@ -1,0 +1,1 @@
+Type error at tests/types_invalid/global_str_size.c:1:15: string literal initializer too large for array

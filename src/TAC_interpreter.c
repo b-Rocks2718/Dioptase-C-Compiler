@@ -917,7 +917,7 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
     size_t offset = 0;
     while (init != NULL) {
       if (init->value->int_type == ZERO_INIT) {
-        size_t zero_bytes = (size_t)init->value->value;
+        size_t zero_bytes = (size_t)init->value->value.num;
         for (size_t z = 0; z < zero_bytes; z += elem_size) {
           tac_memory_store(&interp->memory, base_addr + (int)(offset + z), 0);
         }
@@ -927,7 +927,7 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
       }
 
       size_t init_size = tac_static_init_size(init->value->int_type);
-      tac_memory_store(&interp->memory, base_addr + (int)offset, init->value->value);
+      tac_memory_store(&interp->memory, base_addr + (int)offset, init->value->value.num);
       offset += init_size;
       init = init->next;
     }

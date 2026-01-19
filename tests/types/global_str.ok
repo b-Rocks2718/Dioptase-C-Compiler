@@ -1,0 +1,28 @@
+Key: string.label.0
+  Type: char[6]
+  Attributes:
+    Attr Type: Constant
+    Init Type: Initial [STRING: hello] 
+    Is Defined: true
+    Storage Class: Static
+
+Key: str2
+  Type: char[3]
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Initial [STRING: \tb\n] 
+    Is Defined: true
+    Storage Class: None
+
+Key: str
+  Type: char*
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Initial [POINTER: string.label.0] 
+    Is Defined: true
+    Storage Class: None
+
+Program(
+    VarDclr(none, char*, str, SingleInit(AddrOf(String(hello):char[6]):char*));
+    VarDclr(none, char[3], str2, SingleInit(String(\tb\n):untyped));
+)

@@ -39,7 +39,8 @@ struct SymbolTable{
 enum IdentAttrType {
   FUN_ATTR,
   STATIC_ATTR,
-  LOCAL_ATTR
+  LOCAL_ATTR,
+  CONST_ATTR,
 };
 
 // Purpose: Track initialization state for static storage.
@@ -79,13 +80,19 @@ enum StaticInitType {
   ZERO_INIT,
 };
 
+union StaticInitValue {
+  uint64_t num;
+  struct Slice* string; // for STRING_INIT
+  struct Slice* pointer;     // for POINTER_INIT
+};
+
 // Purpose: Hold the value for a static initializer entry.
 // Inputs: int_type selects the kind; value holds the normalized bits.
 // Outputs: Used by InitList to describe static data.
 // Invariants/Assumptions: value is normalized to the initializer type width.
 struct StaticInit {
   enum StaticInitType int_type;
-  uint64_t value;
+  union StaticInitValue value;
 };
 
 // Purpose: Singly linked list of static initializer values.

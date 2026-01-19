@@ -69,7 +69,7 @@ Limitations:
 
 - No structs/unions, enums, `sizeof`, floating-point, `char`, or string literals
 - No `long` integers, no `void` or `void*`
-- No `typedef`, `const`, `volatile`, or `restrict`
+- No `typedef`, `const`, `volatile`, `inline`, or `restrict`
 - No multiple declarators per declaration (e.g., `int a, b;`)
 - No comma operator or unary + operator
 - No function pointers

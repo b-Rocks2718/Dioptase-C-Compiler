@@ -1,0 +1,1 @@
+Type error at tests/types_invalid/global_str_type.c:1:12: string literal initializer type mismatch

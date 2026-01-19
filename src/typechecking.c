@@ -1,10 +1,12 @@
 #include "typechecking.h"
 #include "arena.h"
 #include "source_location.h"
+#include "unique_name.h"
 
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 // Purpose: Implement typechecking and symbol table utilities.
 // Inputs: Operates on AST nodes produced by parsing and resolution.
@@ -822,6 +824,7 @@ bool typecheck_init(struct Initializer* init, struct Type* type) {
   switch (init->init_type) {
     case SINGLE_INIT: {
       if (type->type == ARRAY_TYPE && init->init.single_init->type == STRING) {
+        // single string initializer for char array
         if (!is_char_type(type->type_data.array_type.element_type)) {
           type_error_at(init->loc, "string initializer requires char array type");
           return false;
@@ -834,6 +837,7 @@ bool typecheck_init(struct Initializer* init, struct Type* type) {
         init->type = type;
         return true;
       } else {
+        // normal single initializer
         if (!typecheck_convert_expr(&init->init.single_init)) {
           return false;
         }
@@ -1762,6 +1766,10 @@ void print_ident_attr(struct IdentAttr* attrs){
     case LOCAL_ATTR:
       printf("Local Variable\n");
       break;
+    case CONST_ATTR:
+      printf("Constant\n");
+      print_ident_init(&attrs->init);
+      break;
     default:
       printf("Unknown Attribute Type\n");
       break;
@@ -1807,31 +1815,38 @@ void print_ident_init(struct IdentInit* init){
         printf("[");
         switch (cur->value->int_type){
           case CHAR_INIT:
-            printf("CHAR: %d", (int8_t)cur->value->value);
+            printf("CHAR: %d", (int8_t)cur->value->value.num);
             break;
           case UCHAR_INIT:
-            printf("UCHAR: %u", (uint8_t)cur->value->value);
+            printf("UCHAR: %u", (uint8_t)cur->value->value.num);
             break;
           case SHORT_INIT:
-            printf("SHORT: %d", (int16_t)cur->value->value);
+            printf("SHORT: %d", (int16_t)cur->value->value.num);
             break;
           case USHORT_INIT:
-            printf("USHORT: %u", (uint16_t)cur->value->value);
+            printf("USHORT: %u", (uint16_t)cur->value->value.num);
             break;
           case INT_INIT:
-            printf("INT: %d", (int32_t)cur->value->value);
+            printf("INT: %d", (int32_t)cur->value->value.num);
             break;
           case UINT_INIT:
-            printf("UINT: %u", (uint32_t)cur->value->value);
+            printf("UINT: %u", (uint32_t)cur->value->value.num);
             break;
           case LONG_INIT:
-            printf("LONG: %ld", (int64_t)cur->value->value);
+            printf("LONG: %ld", (int64_t)cur->value->value.num);
             break;
           case ULONG_INIT:
-            printf("ULONG: %lu", (uint64_t)cur->value->value);
+            printf("ULONG: %lu", (uint64_t)cur->value->value.num);
             break;
           case ZERO_INIT:
-            printf("ZERO: %lu", (uint64_t)cur->value->value);
+            printf("ZERO: %lu", (uint64_t)cur->value->value.num);
+            break;
+          case STRING_INIT:
+            printf("STRING: ");
+            print_slice_with_escapes(cur->value->value.string);
+            break;
+          case POINTER_INIT:
+            printf("POINTER: %.*s", (int)cur->value->value.pointer->len, cur->value->value.pointer->start);
             break;
           default:
             printf("Unknown Init Type");
@@ -2029,17 +2044,84 @@ bool eval_const(struct Expr* expr, uint64_t* out_value) {
 struct InitList* is_init_const(struct Type* type, struct Initializer* init) {
   switch (init->init_type){
     case SINGLE_INIT: {
-      uint64_t const_val;
-      if (!eval_const(init->init.single_init, &const_val)) {
-        return NULL;
-      }
+      if (init->init.single_init->type == STRING) {
+        struct StringExpr* str_expr = &init->init.single_init->expr.string_expr;
 
-      struct InitList* init_list = arena_alloc(sizeof(struct InitList));
-      init_list->next = NULL;
-      init_list->value = arena_alloc(sizeof(struct StaticInit));
-      init_list->value->int_type = get_var_init(type);
-      init_list->value->value = const_val;
-      return init_list;
+        struct InitList* init_list = arena_alloc(sizeof(struct InitList));
+        init_list->next = NULL;
+        init_list->value = arena_alloc(sizeof(struct StaticInit));
+        init_list->value->int_type = STRING_INIT;
+        init_list->value->value.string = str_expr->string;
+
+        // type can be either char* or array of chars
+        if (type->type == POINTER_TYPE && type->type_data.pointer_type.referenced_type->type == CHAR_TYPE) {
+          // pointer to char
+
+          struct Slice name_slice = {"string.label", 12};
+          struct Slice* string_label = make_unique(&name_slice);
+
+          struct Type* arr_type = arena_alloc(sizeof(struct Type));
+          arr_type->type = ARRAY_TYPE;
+          arr_type->type_data.array_type.size = str_expr->string->len + 1; // include null terminator
+          arr_type->type_data.array_type.element_type = &kCharType;
+
+          struct IdentAttr* const_attr = arena_alloc(sizeof(struct IdentAttr));
+          const_attr->attr_type = CONST_ATTR;
+          const_attr->is_defined = true;
+          const_attr->storage = STATIC;
+          const_attr->init.init_type = INITIAL;
+          const_attr->init.init_list = init_list;
+
+          // add string label to symbol table
+          symbol_table_insert(global_symbol_table, string_label, arr_type, const_attr);
+
+          // return pointer init to string label
+          struct InitList* pointer_init = arena_alloc(sizeof(struct InitList));
+          pointer_init->next = NULL;
+          pointer_init->value = arena_alloc(sizeof(struct StaticInit));
+          pointer_init->value->int_type = POINTER_INIT;
+          pointer_init->value->value.pointer = string_label;
+
+          return pointer_init;
+        } else if (type->type == ARRAY_TYPE && type->type_data.array_type.element_type->type == CHAR_TYPE) {
+          // array of char
+
+          // ensure array is large enough
+          size_t array_size = type->type_data.array_type.size;
+          if (str_expr->string->len > array_size) {
+            type_error_at(init->init.single_init->loc, "string literal initializer too large for array");
+            exit(1);
+          }
+
+          // append a zero_init node for padding
+          size_t element_size = get_type_size(type->type_data.array_type.element_type);
+          if (str_expr->string->len < array_size) {
+            struct InitList* pad_node = arena_alloc(sizeof(struct InitList));
+            pad_node->value = arena_alloc(sizeof(struct StaticInit));
+            pad_node->value->int_type = ZERO_INIT;
+            pad_node->value->value.num = (array_size - str_expr->string->len) * element_size;
+            pad_node->next = NULL;
+            init_list->next = pad_node;
+          }
+
+          return init_list;
+        } else {
+          type_error_at(init->init.single_init->loc, "string literal initializer type mismatch");
+          exit(1);
+        }
+      } else {
+        uint64_t const_val;
+        if (!eval_const(init->init.single_init, &const_val)) {
+          return NULL;
+        }
+
+        struct InitList* init_list = arena_alloc(sizeof(struct InitList));
+        init_list->next = NULL;
+        init_list->value = arena_alloc(sizeof(struct StaticInit));
+        init_list->value->int_type = get_var_init(type);
+        init_list->value->value.num = const_val;
+        return init_list; 
+      }
     }
     case COMPOUND_INIT: {
       if (type->type != ARRAY_TYPE) {
@@ -2083,7 +2165,7 @@ struct InitList* is_init_const(struct Type* type, struct Initializer* init) {
         struct InitList* pad_node = arena_alloc(sizeof(struct InitList));
         pad_node->value = arena_alloc(sizeof(struct StaticInit));
         pad_node->value->int_type = ZERO_INIT;
-        pad_node->value->value = (array_len - outer_count) * element_size;
+        pad_node->value->value.num = (array_len - outer_count) * element_size;
         pad_node->next = NULL;
         if (flattened == NULL) {
           flattened = pad_node;

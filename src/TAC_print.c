@@ -168,25 +168,32 @@ void print_static_init(const struct InitList* init) {
     }
     switch (cur->value->int_type){
       case SHORT_INIT:
-        printf("SHORT: %d", (int16_t)cur->value->value);
+        printf("SHORT: %d", (int16_t)cur->value->value.num);
         break;
       case USHORT_INIT:
-        printf("USHORT: %u", (uint16_t)cur->value->value);
+        printf("USHORT: %u", (uint16_t)cur->value->value.num);
         break;
       case INT_INIT:
-        printf("INT: %d", (int32_t)cur->value->value);
+        printf("INT: %d", (int32_t)cur->value->value.num);
         break;
       case UINT_INIT:
-        printf("UINT: %u", (uint32_t)cur->value->value);
+        printf("UINT: %u", (uint32_t)cur->value->value.num);
         break;
       case LONG_INIT:
-        printf("LONG: %ld", (int64_t)cur->value->value);
+        printf("LONG: %ld", (int64_t)cur->value->value.num);
         break;
       case ULONG_INIT:
-        printf("ULONG: %lu", (uint64_t)cur->value->value);
+        printf("ULONG: %lu", (uint64_t)cur->value->value.num);
         break;
       case ZERO_INIT:
-        printf("ZERO: %lu", (uint64_t)cur->value->value);
+        printf("ZERO: %lu", (uint64_t)cur->value->value.num);
+        break;
+      case STRING_INIT:
+        printf("STRING: ");
+        print_slice_with_escapes(cur->value->value.string);
+        break;
+      case POINTER_INIT:
+        printf("POINTER: %.*s", (int)cur->value->value.pointer->len, cur->value->value.pointer->start);
         break;
       default:
         printf("Unknown Init Type");

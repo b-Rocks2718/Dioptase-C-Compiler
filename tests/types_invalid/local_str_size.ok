@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/local_str_size.c:3:18: string initializer too long for array

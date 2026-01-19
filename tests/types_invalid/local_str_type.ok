@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/local_str_type.c:3:17: string initializer requires char array type

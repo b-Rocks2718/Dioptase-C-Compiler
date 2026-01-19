@@ -1173,7 +1173,7 @@ static struct MachineInstr* make_data(struct InitList* init, struct AsmType* typ
                        "unsupported static initializer type %d", (int)cur->value->int_type);
     }
 
-    cur_instr->imm = (int)cur->value->value;
+    cur_instr->imm = (int)cur->value->value.num;
 
     if (instr == NULL){
       instr = cur_instr;
