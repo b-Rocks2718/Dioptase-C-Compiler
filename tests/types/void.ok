@@ -1,0 +1,57 @@
+Key: f
+  Type: func(ret_type=void, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: x.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: unsafe
+  Type: func(ret_type=void*, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Program(
+    FunDclr(
+        unsafe,
+        storage=none
+        params=[]
+        type=func(ret_type=void*, param_types=[]),
+        body=
+            VarDclr(none, int, x.0);
+            Return(Cast(void*, AddrOf(Var(x.0):int):int*):void*, unsafe);
+    );
+    FunDclr(
+        f,
+        storage=none
+        params=[]
+        type=func(ret_type=void, param_types=[]),
+        body=
+            ExprStmt(FunCallExpr(unsafe, []):void*);
+            Return(void, f);
+    );
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            ExprStmt(FunCallExpr(f, []):void);
+            Return(LitExpr(int, 0):int, main);
+    );
+)

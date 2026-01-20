@@ -1,0 +1,13 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, char, a, SingleInit(SizeOfT(int):untyped));
+            VarDclr(none, int, b, SingleInit(SizeOf(AddOp(Var(a):untyped, LitExpr(int, 10):untyped):untyped):untyped));
+            VarDclr(none, int, c, SingleInit(SizeOf(Var(a):untyped):untyped));
+            Return(AddOp(AddOp(Var(a):untyped, Var(b):untyped):untyped, Var(c):untyped):untyped);
+    );
+)

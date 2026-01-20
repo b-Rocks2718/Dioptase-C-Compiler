@@ -265,6 +265,7 @@ enum TypeSpecifier parse_type_spec(){
   if (consume(LONG_TOK)) return LONG_SPEC;
   if (consume(SHORT_TOK)) return SHORT_SPEC;
   if (consume(CHAR_TOK)) return CHAR_SPEC;
+  if (consume(VOID_TOK)) return VOID_SPEC;
   else return 0;
 }
 
@@ -302,6 +303,7 @@ bool spec_list_valid(struct TypeSpecList* types){
   unsigned num_longs = 0;
   unsigned num_shorts = 0;
   unsigned num_chars = 0;
+  unsigned num_voids = 0;
   struct TypeSpecList* cur = types;
   while (cur != NULL){
     switch (cur->spec){
@@ -323,6 +325,9 @@ bool spec_list_valid(struct TypeSpecList* types){
       case CHAR_SPEC:
         num_chars++;
         break;
+      case VOID_SPEC:
+        num_voids++;
+        break;
       default:
         break;
     }
@@ -334,6 +339,12 @@ bool spec_list_valid(struct TypeSpecList* types){
   if (num_longs > 1) return false;
   if (num_shorts > 1) return false;
   if (num_chars > 1) return false;
+  if (num_voids > 1) return false;
+  if (num_voids > 0 && 
+     (num_ints + num_signeds + 
+      num_unsigneds + num_longs + 
+      num_shorts + num_chars) > 0) 
+    return false;
 
   if (num_signeds + num_unsigneds > 1) return false;
   if (num_chars + num_shorts + num_longs > 1) return false;
@@ -382,6 +393,10 @@ struct Type* type_spec_to_type(struct TypeSpecList* types){
   } else if (spec_list_contains(types, LONG_SPEC)){
     struct Type* type = arena_alloc(sizeof(struct Type));
     type->type = LONG_TYPE;
+    return type;
+  } else if (spec_list_contains(types, VOID_SPEC)){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = VOID_TYPE;
     return type;
   }
   // at this point it must be an int type 
@@ -542,6 +557,26 @@ struct Type* process_abstract_declarator(
   return result;
 }
 
+// parse and process a local type (type specifiers + abstract declarator)
+// no extern/static storage class specifiers allowed
+struct Type* parse_local_type(){
+  struct Token* old_current = current;
+  struct Type* base_type = parse_param_type();
+  if (base_type == NULL){
+    current = old_current;
+    return NULL;
+  }
+  struct AbstractDeclarator* declarator = parse_abstract_declarator();
+  if (declarator == NULL){
+    current = old_current;
+    return NULL;
+  }
+
+  struct Type* derived_type = process_abstract_declarator(declarator, base_type);
+
+  return derived_type;
+}
+
 // Purpose: Parse a cast expression.
 // Inputs: Consumes tokens starting at '(' type ')' and a cast operand.
 // Outputs: Returns a CAST expression or NULL if the pattern does not match.
@@ -550,22 +585,19 @@ struct Expr* parse_cast(){
   struct Token* old_current = current;
   if (!consume(OPEN_P)) return NULL;
   const char* cast_loc = (current - 1)->start;
-  struct Type* base_type = parse_param_type();
-  if (base_type == NULL){
+
+  struct Type* derived_type = parse_local_type();
+
+  if (!consume(CLOSE_P) || derived_type == NULL){
     current = old_current;
     return NULL;
   }
-  struct AbstractDeclarator* declarator = parse_abstract_declarator();
-  if (declarator == NULL || !consume(CLOSE_P)){
-    current = old_current;
-    return NULL;
-  }
+
   struct Expr* expr = parse_factor();
   if (expr == NULL){
     current = old_current;
     return NULL;
   }
-  struct Type* derived_type = process_abstract_declarator(declarator, base_type);
 
   struct CastExpr cast = {derived_type, expr};
   struct Expr* result = alloc_expr(CAST, cast_loc);
@@ -889,12 +921,59 @@ struct Expr* parse_postfix() {
   return expr;
 }
 
-struct Expr* parse_factor(){
+struct Expr* parse_sizeof(){
+  struct Token* start = current;
+  if (!consume(SIZEOF_TOK)) return NULL;
+  
+  struct Expr* expr = NULL;
+  if ((expr = parse_sub_factor())){
+    // sizeof (<expr>)
+    struct Expr* sizeof_expr = arena_alloc(sizeof(struct Expr));
+    sizeof_expr->loc = start->start;
+    sizeof_expr->type = SIZEOF_EXPR;
+    sizeof_expr->expr.sizeof_expr.expr = expr;
+    return sizeof_expr;
+  }
+
+  // sizeof (<type>)
+  if (!consume(OPEN_P)){
+    current = start;
+    return NULL;
+  }
+
+  // parse type
+  struct Type* type = parse_local_type();
+  if (type == NULL){
+    current = start;
+    return NULL;
+  }
+
+  if (!consume(CLOSE_P)){
+    current = start;
+    return NULL;
+  }
+
+  struct Expr* sizeof_t_expr = arena_alloc(sizeof(struct Expr));
+  sizeof_t_expr->loc = start->start;
+  sizeof_t_expr->type = SIZEOF_T_EXPR;
+  sizeof_t_expr->expr.sizeof_t_expr.type = type;
+  return sizeof_t_expr;
+}
+
+struct Expr* parse_sub_factor(){
+  // same as factor but without casts
+  // used because sizeof accepts this as an argument, but not casts
   struct Expr* expr = NULL;
   if ((expr = parse_unary())) return expr;
-  else if ((expr = parse_cast())) return expr;
+  else if ((expr = parse_sizeof())) return expr;
   else if ((expr = parse_postfix())) return expr;
   else return NULL;
+}
+
+struct Expr* parse_factor(){
+  struct Expr* expr = NULL;
+  if ((expr = parse_cast())) return expr;
+  else return parse_sub_factor();
 }
 
 // Purpose: Parse a primary expression or literal.
@@ -911,9 +990,6 @@ struct Expr* parse_primary_expr(){
   }
   
   struct Expr* expr;
-  //if ((expr = parse_cast())) return expr;
-  //else if ((expr = parse_unary())) return expr;
-  //else if ((expr = parse_post_op())) return expr;
   if ((expr = parse_parens())) return expr;
   else if ((expr = parse_func_call())) return expr;
   else if ((expr = parse_var())) return expr;
@@ -1071,10 +1147,9 @@ struct Statement* parse_return_stmt(){
   if (!consume(RETURN_TOK)) return NULL;
   const char* stmt_loc = (current - 1)->start;
   struct Expr* expr = parse_expr();
-  if (expr == NULL){
-    current = old_current;
-    return NULL;
-  }
+
+  // don't check if expr is NULL, as return may not have an expr
+
   if (!consume(SEMI)){
     current = old_current;
     return NULL;
@@ -1391,6 +1466,7 @@ bool is_type_specifier(enum TokenType type){
     case CHAR_TOK:
     case STATIC_TOK:
     case EXTERN_TOK:
+    case VOID_TOK:
       return true;
     default:
       return false;
@@ -1755,6 +1831,12 @@ struct DclrPrefix* parse_type_or_storage_class(){
     dclr_prefix->prefix.type_spec = CHAR_SPEC;
     return dclr_prefix;
   }
+  else if (consume(VOID_TOK)) {
+    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
+    dclr_prefix->type = TYPE_PREFIX;
+    dclr_prefix->prefix.type_spec = VOID_SPEC;
+    return dclr_prefix;
+  }
   else if (consume(STATIC_TOK)){
     struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = STORAGE_PREFIX;
@@ -1882,17 +1964,19 @@ struct Declarator* parse_simple_declarator(){
 struct ParamInfoList* parse_params(){
   struct Token* old_current = current;
   if (!consume(OPEN_P)) return NULL;
+  struct Token* before_void = current;
   if (consume(VOID_TOK)){
-    if (!consume(CLOSE_P)){
-      current = old_current;
-      return NULL;
+    if (consume(CLOSE_P)){
+      struct ParamInfoList* empty = arena_alloc(sizeof(struct ParamInfoList));
+      empty->info.type = NULL;
+      empty->info.decl.type = IDENT_DEC;
+      empty->info.decl.declarator.ident_dec.name = NULL;
+      empty->next = NULL;
+      return empty;
+    } else {
+      current = before_void;
+      // not the special case, rewind and see if its a real param
     }
-    struct ParamInfoList* empty = arena_alloc(sizeof(struct ParamInfoList));
-    empty->info.type = NULL;
-    empty->info.decl.type = IDENT_DEC;
-    empty->info.decl.declarator.ident_dec.name = NULL;
-    empty->next = NULL;
-    return empty;
   }
   if (consume(CLOSE_P)){
     struct ParamInfoList* empty = arena_alloc(sizeof(struct ParamInfoList));

@@ -509,29 +509,44 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
 
   switch (tac_instr->type) {
     case TACRETURN:{
-      // TAC:
-      // Return val
-      //
-      // ASM:
-      // Mov R1, val
-      // Ret
       struct TACReturn* ret_instr = &tac_instr->instr.tac_return;
-      asm_instr->type = ASM_MOV;
-      asm_instr->dst = arena_alloc(sizeof(struct Operand));
-      asm_instr->dst->type = OPERAND_REG;
-      asm_instr->dst->reg = R1;
-      asm_instr->dst->asm_type = type_to_asm_type(ret_instr->dst->type);
-      asm_instr->src1 = tac_val_to_asm(ret_instr->dst);
-      asm_instr->src1->asm_type = type_to_asm_type(ret_instr->dst->type);
-      asm_instr->src2 = NULL;
-      struct AsmInstr* ret_asm_instr = arena_alloc(sizeof(struct AsmInstr));
-      ret_asm_instr->type = ASM_RET;
-      ret_asm_instr->next = NULL;
-      ret_asm_instr->dst = NULL;
-      ret_asm_instr->src1 = NULL;
-      ret_asm_instr->src2 = NULL;
-      asm_instr->next = ret_asm_instr;
-      return asm_instr;
+      if (ret_instr->dst == NULL) {
+        // TAC:
+        // Return void
+        //
+        // ASM:
+        // Ret
+        asm_instr->type = ASM_RET;
+        asm_instr->dst = NULL;
+        asm_instr->src1 = NULL;
+        asm_instr->src2 = NULL;
+        asm_instr->next = NULL;
+        return asm_instr;
+      } else {
+        // TAC:
+        // Return val
+        //
+        // ASM:
+        // Mov R1, val
+        // Ret
+        asm_instr->type = ASM_MOV;
+        asm_instr->dst = arena_alloc(sizeof(struct Operand));
+        asm_instr->dst->type = OPERAND_REG;
+        asm_instr->dst->reg = R1;
+        asm_instr->dst->asm_type = type_to_asm_type(ret_instr->dst->type);
+        asm_instr->src1 = tac_val_to_asm(ret_instr->dst);
+        asm_instr->src1->asm_type = type_to_asm_type(ret_instr->dst->type);
+        asm_instr->src2 = NULL;
+
+        struct AsmInstr* ret_asm_instr = arena_alloc(sizeof(struct AsmInstr));
+        ret_asm_instr->type = ASM_RET;
+        ret_asm_instr->next = NULL;
+        ret_asm_instr->dst = NULL;
+        ret_asm_instr->src1 = NULL;
+        ret_asm_instr->src2 = NULL;
+        asm_instr->next = ret_asm_instr;
+        return asm_instr;
+      }
     }
     case TACCOPY:{
       // TAC:
@@ -646,7 +661,7 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
       // Mov reg args into R1..R8
       // Call func
       // Binary Add SP, SP, stack_bytes
-      // Mov dst, R1
+      // Mov dst, R1 (if dst != NULL)
       struct TACCall* call_instr = &tac_instr->instr.tac_call;
       struct AsmInstr* call_head = NULL;
       struct AsmInstr** call_tail = &call_head;

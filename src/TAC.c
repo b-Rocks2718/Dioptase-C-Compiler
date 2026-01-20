@@ -436,6 +436,11 @@ static struct TACInstr* emit_unsigned_lhs_signed_divmod(struct Slice* func_name,
 // Outputs: Returns a Val naming the temporary.
 // Invariants/Assumptions: The temp counter is global and monotonically increasing.
 struct Val* make_temp(struct Slice* func_name, struct Type* type) {
+  if (type->type == VOID_TYPE) {
+    // no destination for void type
+    return NULL;
+  }
+
   unsigned id_len = counter_len(tac_temp_counter);
   size_t new_len = func_name->len + 5 + id_len; // len(".tmp.") == 5
 
@@ -1002,8 +1007,13 @@ struct TACInstr* stmt_to_TAC(struct Slice* func_name, struct Statement* stmt) {
       // TAC:
       // <expr>
       // Return dst
-      struct Val* dst = (struct Val*)arena_alloc(sizeof(struct Val));
-      struct TACInstr* expr_instrs = expr_to_TAC_convert(func_name, stmt->statement.ret_stmt.expr, dst);
+      struct Val* dst = NULL;
+      struct TACInstr* expr_instrs = NULL;
+      
+      if (stmt->statement.ret_stmt.expr != NULL){
+        dst = (struct Val*)arena_alloc(sizeof(struct Val));
+        expr_instrs = expr_to_TAC_convert(func_name, stmt->statement.ret_stmt.expr, dst);
+      }
 
       struct TACInstr* ret_instr = tac_instr_create(TACRETURN);
       ret_instr->instr.tac_return.dst = dst;
@@ -2223,8 +2233,11 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
     case CONDITIONAL: {
       struct ConditionalExpr* cond_expr = &expr->expr.conditional_expr;
 
+      struct TACInstr* instrs = NULL;
+
       struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
       struct TACInstr* cond_instrs = expr_to_TAC_convert(func_name, cond_expr->condition, cond_val);
+      concat_TAC_instrs(&instrs, cond_instrs);
 
       struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
       struct TACInstr* left_instrs = expr_to_TAC_convert(func_name, cond_expr->left, left_val);
@@ -2243,47 +2256,51 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
       // Cmp cond, 0
       // CondJump CondE else
       // <left>
-      // Copy dst, left
+      // Copy dst, left (if not void)
       // Jump end
       // Label else
       // <right>
-      // Copy dst, right
+      // Copy dst, right (if not void)
       // Label end
+
       struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
       cmp_instr->instr.tac_cmp.src1 = cond_val;
       cmp_instr->instr.tac_cmp.src2 = tac_make_const(0, cond_val->type);
+      concat_TAC_instrs(&instrs, cmp_instr);
 
       struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
       cond_jump_instr->instr.tac_cond_jump.condition = CondE;
       cond_jump_instr->instr.tac_cond_jump.label = else_label;
+      concat_TAC_instrs(&instrs, cond_jump_instr);
 
-      struct TACInstr* copy_left = tac_instr_create(TACCOPY);
-      copy_left->instr.tac_copy.dst = dst;
-      copy_left->instr.tac_copy.src = left_val;
+      concat_TAC_instrs(&instrs, left_instrs);
+
+      if (expr->value_type->type != VOID_TYPE){
+        struct TACInstr* copy_left = tac_instr_create(TACCOPY);
+        copy_left->instr.tac_copy.dst = dst;
+        copy_left->instr.tac_copy.src = left_val;
+        concat_TAC_instrs(&instrs, copy_left);
+      }
 
       struct TACInstr* jump_end = tac_instr_create(TACJUMP);
       jump_end->instr.tac_jump.label = end_label;
+      concat_TAC_instrs(&instrs, jump_end);
 
       struct TACInstr* else_label_instr = tac_instr_create(TACLABEL);
       else_label_instr->instr.tac_label.label = else_label;
+      concat_TAC_instrs(&instrs, else_label_instr);
 
-      struct TACInstr* copy_right = tac_instr_create(TACCOPY);
-      copy_right->instr.tac_copy.dst = dst;
-      copy_right->instr.tac_copy.src = right_val;
+      concat_TAC_instrs(&instrs, right_instrs);
+
+      if (expr->value_type->type != VOID_TYPE){
+        struct TACInstr* copy_right = tac_instr_create(TACCOPY);
+        copy_right->instr.tac_copy.dst = dst;
+        copy_right->instr.tac_copy.src = right_val;
+        concat_TAC_instrs(&instrs, copy_right);
+      }
 
       struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
       end_label_instr->instr.tac_label.label = end_label;
-
-      struct TACInstr* instrs = NULL;
-      concat_TAC_instrs(&instrs, cond_instrs);
-      concat_TAC_instrs(&instrs, cmp_instr);
-      concat_TAC_instrs(&instrs, cond_jump_instr);
-      concat_TAC_instrs(&instrs, left_instrs);
-      concat_TAC_instrs(&instrs, copy_left);
-      concat_TAC_instrs(&instrs, jump_end);
-      concat_TAC_instrs(&instrs, else_label_instr);
-      concat_TAC_instrs(&instrs, right_instrs);
-      concat_TAC_instrs(&instrs, copy_right);
       concat_TAC_instrs(&instrs, end_label_instr);
 
       result->type = PLAIN_OPERAND;
@@ -2398,7 +2415,10 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
       size_t num_args = 0;
       struct TACInstr* arg_instrs = args_to_TAC(func_name, expr->expr.fun_call_expr.args, &args, &num_args);
 
-      struct Val* dst = make_temp(func_name, expr->value_type);
+      struct Val* dst = NULL;
+      if (expr->value_type->type != VOID_TYPE) {
+        dst = make_temp(func_name, expr->value_type);
+      }
       // AST:
       // func(arg0, arg1, ...)
       // TAC:
@@ -2422,6 +2442,13 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
       struct CastExpr* cast_expr = &expr->expr.cast_expr;
       struct Val* src_val = (struct Val*)arena_alloc(sizeof(struct Val));
       struct TACInstr* src_instrs = expr_to_TAC_convert(func_name, cast_expr->expr, src_val);
+
+      if (cast_expr->target->type == VOID_TYPE) {
+        // Casting to void is a no-op.
+        result->type = PLAIN_OPERAND;
+        result->val = src_val;
+        return src_instrs;
+      }
 
       size_t target_size = get_type_size(cast_expr->target);
       size_t src_size = get_type_size(cast_expr->expr->value_type);
@@ -2600,6 +2627,22 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
 
       result->type = PLAIN_OPERAND;
       result->val = tac_make_var(str_label->val.var_name, expr->value_type);
+      return NULL;
+    }
+    case SIZEOF_EXPR: {
+      struct SizeOfExpr* sizeof_expr = &expr->expr.sizeof_expr;
+      size_t type_size = get_type_size(sizeof_expr->expr->value_type);
+
+      result->type = PLAIN_OPERAND;
+      result->val = tac_make_const(type_size, tac_builtin_type(UINT_TYPE));
+      return NULL;
+    }
+    case SIZEOF_T_EXPR: {
+      struct SizeOfTExpr* sizeof_type_expr = &expr->expr.sizeof_t_expr;
+      size_t type_size = get_type_size(sizeof_type_expr->type);
+
+      result->type = PLAIN_OPERAND;
+      result->val = tac_make_const(type_size, tac_builtin_type(UINT_TYPE));
       return NULL;
     }
     default:

@@ -225,6 +225,9 @@ void print_token(struct Token token){
     case CLOSE_S:
       printf("]");
       break;
+    case SIZEOF_TOK:
+      printf("sizeof");
+      break;
     default:
       printf("Token?");
       break;

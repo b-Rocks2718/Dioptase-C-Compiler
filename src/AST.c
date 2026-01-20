@@ -71,6 +71,9 @@ void print_type(struct Type* type){
         printf("[%zu]", cur->type_data.array_type.size);
       }
       break;
+    case VOID_TYPE:
+      printf("void");
+      break;
     default:
       printf("unknown_type");
       break;
@@ -132,6 +135,16 @@ void print_expr(struct Expr* expr){
     case STRING:
       printf("String(");
       print_slice_with_escapes(expr->expr.string_expr.string);
+      printf(")");
+      break;
+    case SIZEOF_EXPR:
+      printf("SizeOf(");
+      print_expr(expr->expr.sizeof_expr.expr);
+      printf(")");
+      break;
+    case SIZEOF_T_EXPR:
+      printf("SizeOfT(");
+      print_type(expr->expr.sizeof_t_expr.type);
       printf(")");
       break;
   }
@@ -410,7 +423,11 @@ void print_case_list(struct CaseList* case_list){
 
 void print_return_stmt(struct ReturnStmt* ret_stmt, unsigned tabs){
   printf("Return(");
-  print_expr(ret_stmt->expr);
+  if (ret_stmt->expr == NULL){
+    printf("void");
+  } else {
+    print_expr(ret_stmt->expr);
+  }
   if (ret_stmt->func != NULL){
     printf(", ");
     print_slice(ret_stmt->func);
@@ -688,6 +705,7 @@ bool compare_types(struct Type* a, struct Type* b) {
     case CHAR_TYPE:
     case SCHAR_TYPE:
     case UCHAR_TYPE:
+    case VOID_TYPE:
       return true; // primitive types match
 
     case POINTER_TYPE:

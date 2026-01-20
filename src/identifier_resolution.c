@@ -167,6 +167,10 @@ bool resolve_expr(struct Expr* expr) {
     case SUBSCRIPT:
       return resolve_expr(expr->expr.subscript_expr.array) &&
              resolve_expr(expr->expr.subscript_expr.index);
+    case SIZEOF_EXPR:
+      return resolve_expr(expr->expr.sizeof_expr.expr);
+    case SIZEOF_T_EXPR:
+      return true;
     default:
       ident_error_at(expr->loc, "unknown expression type");
       return false;
@@ -269,6 +273,10 @@ bool resolve_for_init(struct ForInit* init) {
 bool resolve_stmt(struct Statement* stmt) {
   switch (stmt->type) {
     case RETURN_STMT:
+      if (!stmt->statement.ret_stmt.expr) {
+        // void return, nothing to resolve
+        return true;
+      }
       return resolve_expr(stmt->statement.ret_stmt.expr);
     case EXPR_STMT:
       return resolve_expr(stmt->statement.expr_stmt.expr);

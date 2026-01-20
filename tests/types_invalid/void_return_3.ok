@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/void_return_3.c:3:3: void function cannot return a value

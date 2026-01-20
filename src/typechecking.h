@@ -236,6 +236,18 @@ bool is_unsigned_type(struct Type* type);
 // Invariants/Assumptions: Does not inspect referenced type.
 bool is_pointer_type(struct Type* type);
 
+bool is_void_pointer_type(struct Type* type);
+
+bool is_complete_type(struct Type* type);
+
+bool is_pointer_to_complete_type(struct Type* type);
+
+bool is_valid_type_specifier(struct Type* type);
+
+// scalar types include arithmetic types and pointer types
+// do not include arrays, functions, or void
+bool is_scalar_type(struct Type* type);
+
 // Purpose: Check whether an expression is a null pointer constant.
 // Inputs: expr is the expression node.
 // Outputs: Returns true if expr is a null pointer constant.

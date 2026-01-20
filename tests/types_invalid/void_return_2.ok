@@ -1,0 +1,3 @@
+Typechecking failed
+Type error at tests/types_invalid/void_return_2.c:3:10: cannot convert type for assignment
+Type error at tests/types_invalid/void_return_2.c:3:3: incompatible return type in return statement

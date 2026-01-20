@@ -29,6 +29,7 @@ enum TypeType {
   FUN_TYPE,
   POINTER_TYPE,
   ARRAY_TYPE,
+  VOID_TYPE,
 };
 
 struct FunType {
@@ -138,6 +139,8 @@ enum ExprType {
   DEREFERENCE,
   SUBSCRIPT,
   STRING,
+  SIZEOF_EXPR,
+  SIZEOF_T_EXPR,
 };
 
 enum BinOp {
@@ -266,6 +269,14 @@ struct StringExpr {
   struct Slice* string;
 };
 
+struct SizeOfExpr {
+  struct Expr* expr;
+};
+
+struct SizeOfTExpr {
+  struct Type* type;
+};
+
 union ExprVariant {
   struct BinaryExpr bin_expr;
   struct AssignExpr assign_expr;
@@ -280,6 +291,8 @@ union ExprVariant {
   struct DereferenceExpr deref_expr;
   struct SubscriptExpr subscript_expr;
   struct StringExpr string_expr;
+  struct SizeOfExpr sizeof_expr;
+  struct SizeOfTExpr sizeof_t_expr;
 };
 
 struct Expr {
@@ -542,6 +555,7 @@ enum TypeSpecifier {
   LONG_SPEC,
   SHORT_SPEC,
   CHAR_SPEC,
+  VOID_SPEC,
 };
 
 struct TypeSpecList {

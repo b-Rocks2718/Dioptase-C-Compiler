@@ -1,0 +1,29 @@
+Program(
+    FunDclr(
+        unsafe,
+        storage=none
+        params=[]
+        type=func(ret_type=void*, param_types=[]),
+        body=
+            VarDclr(none, int, x);
+            Return(AddrOf(Var(x):untyped):untyped);
+    );
+    FunDclr(
+        f,
+        storage=none
+        params=[]
+        type=func(ret_type=void, param_types=[]),
+        body=
+            ExprStmt(FunCallExpr(unsafe, []):untyped);
+            Return(void);
+    );
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            ExprStmt(FunCallExpr(f, []):untyped);
+            Return(LitExpr(int, 0):untyped);
+    );
+)

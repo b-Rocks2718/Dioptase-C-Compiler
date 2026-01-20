@@ -429,6 +429,7 @@ static struct Token* consume_any(){
   if (consume_keyword("long")) return finish_simple_token(token, LONG_TOK);
   if (consume_keyword("short")) return finish_simple_token(token, SHORT_TOK);
   if (consume_keyword("char")) return finish_simple_token(token, CHAR_TOK);
+  if (consume_keyword("sizeof")) return finish_simple_token(token, SIZEOF_TOK);
 
   if (consume(",")) return finish_simple_token(token, COMMA);
   if (consume("?")) return finish_simple_token(token, QUESTION);

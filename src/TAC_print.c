@@ -229,7 +229,11 @@ static void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
   switch (instr->type) {
     case TACRETURN:
       printf("Return ");
-      print_tac_val(instr->instr.tac_return.dst);
+      if (instr->instr.tac_return.dst == NULL) {
+        printf("void");
+      } else {
+        print_tac_val(instr->instr.tac_return.dst);
+      }
       printf("\n");
       break;
     case TACUNARY:
@@ -287,7 +291,11 @@ static void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
       printf("Call ");
       print_slice(instr->instr.tac_call.func_name);
       printf(" -> ");
-      print_tac_val(instr->instr.tac_call.dst);
+      if (instr->instr.tac_call.dst == NULL) {
+        printf("void");
+      } else {
+        print_tac_val(instr->instr.tac_call.dst);
+      }
       printf(" (");
       for (size_t i = 0; i < instr->instr.tac_call.num_args; i++) {
         if (i != 0) {

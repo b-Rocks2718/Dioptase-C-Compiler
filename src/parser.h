@@ -57,6 +57,16 @@ struct Expr* parse_primary_expr();
 
 struct Expr* parse_factor();
 
+// factor but without casts
+// used because sizeof accepts this as an argument, but not casts
+struct Expr* parse_sub_factor();
+
+// Purpose: Parse a local type for sizeof(type) and casts.
+// Inputs: Consumes the global parser token stream.
+// Outputs: Returns a Type node or NULL on failure.
+// Invariants/Assumptions: Caller has consumed the opening '(' and will consume closing ')'.
+struct Type* parse_local_type();
+
 // Purpose: Parse a variable expression.
 // Inputs: Consumes the global parser token stream.
 // Outputs: Returns a VAR expression or NULL if no identifier matches.

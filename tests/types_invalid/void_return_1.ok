@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/void_return_1.c:3:3: non-void function must return a value

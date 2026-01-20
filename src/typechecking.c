@@ -19,8 +19,10 @@
 // Invariants/Assumptions: Only one typechecking pass runs at a time.
 struct SymbolTable* global_symbol_table = NULL;
 
-static struct Type kIntType = { .type = INT_TYPE };
+struct Type kIntType = { .type = INT_TYPE };
+struct Type kUIntType = { .type = UINT_TYPE };
 struct Type kCharType = { .type = CHAR_TYPE };
+struct Type kVoidType = { .type = VOID_TYPE };
 
 // Purpose: Identify compound assignment operators.
 // Inputs: op is the binary operator enum value.
@@ -268,11 +270,26 @@ static void decay_param_array_types(struct FunctionDclr* func_dclr) {
           array_type->type_data.array_type.element_type;
       param_cur->param.type = pointer_type;
       type_cur->type = pointer_type;
+      // Keep the parameter symbol type in sync with the decayed pointer type.
+      if (param_cur->param.name != NULL) {
+        struct SymbolEntry* entry =
+            symbol_table_get(global_symbol_table, param_cur->param.name);
+        if (entry != NULL) {
+          entry->type = pointer_type;
+        }
+      }
     }
   }
 }
 
 bool typecheck_func(struct FunctionDclr* func_dclr) {
+  // Parameters share the same symbol table as the body in this pass.
+  // typecheck them before decaying array types, so that incomplete array
+  // types are caught as errors.
+  if (!typecheck_params(func_dclr->params)) {
+    return false;
+  }
+
   decay_param_array_types(func_dclr);
   struct SymbolEntry* entry = symbol_table_get(global_symbol_table, func_dclr->name);
 
@@ -340,11 +357,6 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
     entry->attrs->storage = merge_storage_class(entry->attrs->storage, effective_storage);
   }
 
-  // Parameters share the same symbol table as the body in this pass.
-  if (!typecheck_params(func_dclr->params)) {
-    return false;
-  }
-
   if (func_dclr->body != NULL) {
     // typecheck function body
     if (!typecheck_block(func_dclr->body)) {
@@ -366,6 +378,13 @@ bool typecheck_params(struct ParamList* params) {
     if (cur->param.init != NULL) {
       type_error_at(cur->param.name->start,
                     "function parameter %.*s should not have an initializer",
+                    (int)cur->param.name->len, cur->param.name->start);
+      return false;
+    }
+
+    if (!is_valid_type_specifier(cur->param.type)) {
+      type_error_at(cur->param.name->start,
+                    "invalid type specifier for function parameter %.*s",
                     (int)cur->param.name->len, cur->param.name->start);
       return false;
     }
@@ -419,7 +438,7 @@ bool typecheck_stmt(struct Statement* stmt) {
   switch (stmt->type) {
     // Placeholder implementation
     case RETURN_STMT: {
-      if (!typecheck_convert_expr(&stmt->statement.ret_stmt.expr)) {
+      if (stmt->statement.ret_stmt.expr != NULL && !typecheck_convert_expr(&stmt->statement.ret_stmt.expr)) {
         return false;
       }
 
@@ -432,8 +451,18 @@ bool typecheck_stmt(struct Statement* stmt) {
       struct Type* func_type = entry->type;
       struct Type* ret_type = func_type->type_data.fun_type.return_type;
 
-      if (!convert_by_assignment(&stmt->statement.ret_stmt.expr, ret_type)) {
+      if (stmt->statement.ret_stmt.expr != NULL && !convert_by_assignment(&stmt->statement.ret_stmt.expr, ret_type)) {
         type_error_at(stmt->loc, "incompatible return type in return statement");
+        return false;
+      }
+
+      if (ret_type->type == VOID_TYPE && stmt->statement.ret_stmt.expr != NULL) {
+        type_error_at(stmt->loc, "void function cannot return a value");
+        return false;
+      }
+
+      if (ret_type->type != VOID_TYPE && stmt->statement.ret_stmt.expr == NULL) {
+        type_error_at(stmt->loc, "non-void function must return a value");
         return false;
       }
 
@@ -447,6 +476,12 @@ bool typecheck_stmt(struct Statement* stmt) {
     }
     case IF_STMT: {
       if (!typecheck_convert_expr(&stmt->statement.if_stmt.condition)) {
+        return false;
+      }
+
+      if (!is_scalar_type(stmt->statement.if_stmt.condition->value_type)) {
+        type_error_at(stmt->statement.if_stmt.condition->loc,
+                      "if condition must have scalar type");
         return false;
       }
 
@@ -482,6 +517,12 @@ bool typecheck_stmt(struct Statement* stmt) {
         return false;
       }
 
+      if (!is_scalar_type(stmt->statement.while_stmt.condition->value_type)) {
+        type_error_at(stmt->statement.while_stmt.condition->loc,
+                      "while condition must have scalar type");
+        return false;
+      }
+
       if (!is_arithmetic_type(stmt->statement.while_stmt.condition->value_type) &&
           !is_pointer_type(stmt->statement.while_stmt.condition->value_type)) {
         type_error_at(stmt->statement.while_stmt.condition->loc,
@@ -499,6 +540,12 @@ bool typecheck_stmt(struct Statement* stmt) {
         return false;
       }
       if (!typecheck_convert_expr(&stmt->statement.do_while_stmt.condition)) {
+        return false;
+      }
+
+      if (!is_scalar_type(stmt->statement.do_while_stmt.condition->value_type)) {
+        type_error_at(stmt->statement.do_while_stmt.condition->loc,
+                      "do-while condition must have scalar type");
         return false;
       }
 
@@ -1014,12 +1061,15 @@ bool typecheck_expr(struct Expr* expr) {
             type_error_at(expr->loc, "incompatible pointer types in equality comparison");
             return false;
           }
-        } else {
+        } else if (is_arithmetic_type(left_type) && is_arithmetic_type(right_type)) {
           common_type = get_common_type(left_type, right_type);
           if (common_type == NULL) {
             type_error_at(expr->loc, "incompatible types in equality comparison");
             return false;
           }
+        } else {
+          type_error_at(expr->loc, "invalid types in equality comparison");
+          return false;
         }
 
         convert_expr_type(&bin_expr->left, common_type);
@@ -1050,8 +1100,8 @@ bool typecheck_expr(struct Expr* expr) {
           convert_expr_type(&bin_expr->right, common_type);
           expr->value_type = common_type;
           return true;
-        } else if ((is_arithmetic_type(left_type) && is_pointer_type(right_type)) ||
-                   (is_pointer_type(left_type) && is_arithmetic_type(right_type))) {
+        } else if ((is_arithmetic_type(left_type) && is_pointer_to_complete_type(right_type)) ||
+                   (is_pointer_to_complete_type(left_type) && is_arithmetic_type(right_type))) {
           expr->value_type = is_pointer_type(left_type) ? left_type : right_type;
           return true;
         } else {
@@ -1066,7 +1116,7 @@ bool typecheck_expr(struct Expr* expr) {
           convert_expr_type(&bin_expr->right, common_type);
           expr->value_type = common_type;
           return true;
-        } else if (is_pointer_type(left_type) && is_arithmetic_type(right_type)) {
+        } else if (is_pointer_to_complete_type(left_type) && is_arithmetic_type(right_type)) {
           // Pointer minus integer yields a pointer.
           expr->value_type = left_type;
           return true;
@@ -1077,6 +1127,10 @@ bool typecheck_expr(struct Expr* expr) {
       } 
       else if (bin_expr->op == BOOL_AND || bin_expr->op == BOOL_OR) {
         // Logical operators always yield int in this language subset.
+        if (!is_scalar_type(left_type) || !is_scalar_type(right_type)) {
+          type_error_at(expr->loc, "invalid types in logical operation");
+          return false;
+        }
         expr->value_type = &kIntType; // result type of logical operations is int
         return true;
       }
@@ -1093,8 +1147,8 @@ bool typecheck_expr(struct Expr* expr) {
         expr->value_type = right_type;
         return true;
       } else {
-        if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
-          type_error_at(expr->loc, "invalid pointer arithmetic in binary operation");
+        if (!is_arithmetic_type(left_type) || !is_arithmetic_type(right_type)) {
+          type_error_at(expr->loc, "invalid types in binary operation");
           return false;
         }
         struct Type* common_type = get_common_type(left_type, right_type);
@@ -1165,23 +1219,34 @@ bool typecheck_expr(struct Expr* expr) {
         return false;
       }
 
+      if (!is_scalar_type(cond_expr->condition->value_type)) {
+        type_error_at(expr->loc, "condition in conditional expression must have scalar type");
+        return false;
+      }
+
       struct Type* left_type = cond_expr->left->value_type;
       struct Type* right_type = cond_expr->right->value_type;
 
       // Find a compatible common type for the true/false arms.
       struct Type* common_type = NULL;
-      if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
+      if (left_type->type == VOID_TYPE && right_type->type == VOID_TYPE) {
+        expr->value_type = &kVoidType;
+        return true;
+      } else if (is_arithmetic_type(left_type) && is_arithmetic_type(right_type)) {
+        common_type = get_common_type(left_type, right_type);
+        if (common_type == NULL) {
+          type_error_at(expr->loc, "incompatible arithmetic types in conditional expression");
+          return false;
+        }
+      } else if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
         common_type = get_common_pointer_type(cond_expr->left, cond_expr->right);
         if (common_type == NULL) {
           type_error_at(expr->loc, "incompatible pointer types in conditional expression");
           return false;
         }
       } else {
-        common_type = get_common_type(left_type, right_type);
-        if (common_type == NULL) {
-          type_error_at(expr->loc, "incompatible types in conditional expression");
-          return false;
-        }
+        type_error_at(expr->loc, "incompatible types in conditional expression");
+        return false;
       }
 
       convert_expr_type(&cond_expr->left, common_type);
@@ -1247,6 +1312,10 @@ bool typecheck_expr(struct Expr* expr) {
         expr_type = unary_expr->expr->value_type;
       }
       if (unary_expr->op == BOOL_NOT) {
+        if (!is_scalar_type(expr_type)) {
+          type_error_at(expr->loc, "logical not requires scalar type");
+          return false;
+        }
         expr->value_type = &kIntType;
       } else {
         expr->value_type = expr_type;
@@ -1276,13 +1345,32 @@ bool typecheck_expr(struct Expr* expr) {
     }
     case CAST: {
       struct CastExpr* cast_expr = &expr->expr.cast_expr;
-      if (cast_expr->target->type == ARRAY_TYPE) {
-        type_error_at(expr->loc, "cannot cast to array type");
-        return false;
-      }
+    
       if (!typecheck_convert_expr(&cast_expr->expr)) {
         return false;
       }
+
+      if (cast_expr->target->type == VOID_TYPE) {
+        // can always cast to void
+        expr->value_type = cast_expr->target;
+        return true;
+      }
+
+      if (!is_scalar_type(cast_expr->target)){
+        type_error_at(expr->loc, "can only cast to scalar types or void");
+        return false;
+      }
+
+      if (!is_scalar_type(cast_expr->expr->value_type)) {
+        type_error_at(expr->loc, "cannot cast non-scalar type to scalar type");
+        return false;
+      }
+
+      if (!is_valid_type_specifier(cast_expr->target)) {
+        type_error_at(expr->loc, "invalid target type in cast expression");
+        return false;
+      }
+
       expr->value_type = cast_expr->target;
       return true;
     }
@@ -1360,6 +1448,29 @@ bool typecheck_expr(struct Expr* expr) {
       expr->value_type->type_data.array_type.element_type = &kCharType;
       return true;
     }
+    case SIZEOF_EXPR: {
+      if (!typecheck_expr(expr->expr.sizeof_expr.expr)) {
+        return false;
+      }
+      if (!is_complete_type(expr->expr.sizeof_expr.expr->value_type)) {
+        type_error_at(expr->loc, "incomplete type in sizeof expression");
+        return false;
+      }
+      expr->value_type = &kUIntType; // not size_t yet, uint is large enough for now
+      return true;
+    }
+    case SIZEOF_T_EXPR: {
+      if (!is_valid_type_specifier(expr->expr.sizeof_t_expr.type)) {
+        type_error_at(expr->loc, "invalid type in sizeof expression");
+        return false;
+      }
+      if (!is_complete_type(expr->expr.sizeof_t_expr.type)) {
+        type_error_at(expr->loc, "incomplete type in sizeof expression");
+        return false;
+      }
+      expr->value_type = &kUIntType; // not size_t yet, uint is large enough for now
+      return true;
+    }
     default: {
       type_error_at(expr->loc, "unknown expression type in typecheck_expr");
       return false; // Unknown expression type
@@ -1421,6 +1532,17 @@ bool is_unsigned_type(struct Type* type) {
       return true;
     default:
       return false;
+  }
+}
+
+bool is_scalar_type(struct Type* type) {
+  switch (type->type) {
+    case VOID_TYPE:
+    case ARRAY_TYPE:
+    case FUN_TYPE:
+      return false;
+    default:
+      return true;
   }
 }
 
@@ -1570,6 +1692,55 @@ bool is_null_pointer_constant(struct Expr* expr) {
   return false;
 }
 
+bool is_void_pointer_type(struct Type* type) {
+  if (type->type != POINTER_TYPE) {
+    return false;
+  }
+  struct Type* referenced = type->type_data.pointer_type.referenced_type;
+  return referenced->type == VOID_TYPE;
+}
+
+bool is_complete_type(struct Type* type) {
+  return type->type != VOID_TYPE;
+}
+
+bool is_pointer_to_complete_type(struct Type* type) {
+  if (!is_pointer_type(type)) {
+    return false;
+  }
+  struct Type* referenced = type->type_data.pointer_type.referenced_type;
+  return is_complete_type(referenced);
+}
+
+bool is_valid_type_specifier(struct Type* type) {
+  switch (type->type) {
+    case ARRAY_TYPE: {
+      // element type must be complete
+      if (!is_complete_type(type->type_data.array_type.element_type)) {
+        return false;
+      }
+      // recursively check element type
+      return is_valid_type_specifier(type->type_data.array_type.element_type);
+    }
+    case FUN_TYPE: {
+      // check parameter types and return type
+      for (struct ParamTypeList* param = type->type_data.fun_type.param_types;
+           param != NULL; param = param->next) {
+        if (!is_valid_type_specifier(param->type)) {
+          return false;
+        }
+      }
+      return is_valid_type_specifier(type->type_data.fun_type.return_type);
+    }
+    case POINTER_TYPE: {
+      // recursively check referenced type
+      return is_valid_type_specifier(type->type_data.pointer_type.referenced_type);
+    }
+    default:
+      return true;
+  }
+}
+
 // Purpose: Determine a common pointer type for pointer comparisons/conditionals.
 // Inputs: expr1 and expr2 are the operand expressions.
 // Outputs: Returns a compatible pointer type or NULL if incompatible.
@@ -1584,6 +1755,10 @@ struct Type* get_common_pointer_type(struct Expr* expr1, struct Expr* expr2) {
     return t2;
   } else if (is_null_pointer_constant(expr2)) {
     return t1;
+  } else if (is_void_pointer_type(t1) && is_pointer_type(t2)) {
+    return t1;
+  } else if (is_void_pointer_type(t2) && is_pointer_type(t1)) {
+    return t2;
   }
   return NULL;
 }
@@ -1606,6 +1781,18 @@ bool convert_by_assignment(struct Expr** expr, struct Type* target) {
 
   if (is_pointer_type(target) && is_null_pointer_constant(*expr)) {
     // perform conversion (TODO: should really only allow this for null pointer constants)
+    convert_expr_type(expr, target);
+    return true;
+  }
+
+  if (is_void_pointer_type(target) && is_pointer_type((*expr)->value_type)) {
+    // allow conversion to void* from other pointer types
+    convert_expr_type(expr, target);
+    return true;
+  }
+
+  if (is_pointer_type(target) && is_void_pointer_type((*expr)->value_type)) {
+    // allow conversion from void* to other pointer types
     convert_expr_type(expr, target);
     return true;
   }

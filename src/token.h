@@ -78,6 +78,7 @@ enum TokenType {
   LONG_TOK,
   SHORT_TOK,
   CHAR_TOK,
+  SIZEOF_TOK,
 };
 
 union TokenVariant {
