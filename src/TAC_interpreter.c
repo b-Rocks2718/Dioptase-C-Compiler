@@ -514,6 +514,9 @@ static uint64_t tac_apply_unary(enum UnOp op, uint64_t value, const struct Type*
     case BOOL_NOT:
       result = (value == 0) ? 1u : 0u;
       break;
+    case UNARY_PLUS:
+      result = value;
+      break;
     default:
       tac_interp_error("unsupported unary operator %d", (int)op);
       return 0;

@@ -130,6 +130,7 @@ static enum UnOp consume_unary_op(){
   if (consume(TILDE)) return COMPLEMENT;
   if (consume(MINUS)) return NEGATE;
   if (consume(EXCLAMATION)) return BOOL_NOT;
+  if (consume(PLUS)) return UNARY_PLUS;
   return 0;
 }
 

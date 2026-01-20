@@ -182,6 +182,9 @@ static void print_asm_un_op(enum UnOp op) {
     case BOOL_NOT:
       printf("BoolNot");
       break;
+    case UNARY_PLUS:
+      printf("UnaryPlus");
+      break;
     default:
       printf("UnOp?");
       break;

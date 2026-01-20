@@ -541,9 +541,11 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             sub->rb = R0;
             sub->rc = kScratchRegA;
             append_instr(&head, &tail, sub);
+          } else if (cur->unary_op == UNARY_PLUS) {
+            // no-op
           } else {
             codegen_errorf(func_name, cur->type,
-                           "unsupported unary op %d; expected COMPLEMENT or NEGATE",
+                           "unsupported unary op %d; expected COMPLEMENT, NEGATE, or UNARY_PLUS",
                            (int)cur->unary_op);
           }
           break;

@@ -177,7 +177,8 @@ enum BinOp {
 enum UnOp {
   COMPLEMENT = 1,
   NEGATE,
-  BOOL_NOT
+  BOOL_NOT,
+  UNARY_PLUS,
 };
 
 struct BinaryExpr {

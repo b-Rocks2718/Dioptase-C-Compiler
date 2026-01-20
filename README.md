@@ -52,14 +52,14 @@ Flags can be combined to dump multiple stages. `-preprocess` exits early unless 
 
 Supported:
 
-- Types: `int`, `unsigned int`, `short`, `unsigned short`, arrays, and pointers to these types
+- Types: `int`, `unsigned int`, `short`, `unsigned short`, `char` types, arrays, strings, and pointers to these types
 - Storage classes: `static`, `extern`
 - Declarations: global and local variables, function declarations/definitions
 - Expressions:
   - literals: decimal and `0x` hex integers
   - variables, assignments (`=`, compound assignments)
-  - unary: `-`, `~`, `!`, `&`, `*`, pre/post `++` and `--`
-  - binary: `+`, `-`, `*`, `/`, `%`, shifts, bitwise ops, comparisons, `&&`, `||`
+  - unary: `-`, `~`, `!`, `&`, `*`, `+`, pre/post `++` and `--`
+  - binary: `+`, `-`, `*`, `/`, `%`, shifts, bitwise ops, comparisons, `&&`, `||`, and `,`  
   - ternary `?:`
   - function calls
 - Statements: expression statements, `return`, blocks, `if`/`else`, `while`, `do`/`while`,
@@ -67,11 +67,10 @@ Supported:
 
 Limitations:
 
-- No structs/unions, enums, `sizeof`, floating-point, `char`, or string literals
+- No structs/unions, enums, `sizeof`, or floating-point
 - No `long` integers, no `void` or `void*`
 - No `typedef`, `const`, `volatile`, `inline`, or `restrict`
 - No multiple declarators per declaration (e.g., `int a, b;`)
-- No comma operator or unary + operator
 - No function pointers
 - No variadic functions
 - No inline assembly

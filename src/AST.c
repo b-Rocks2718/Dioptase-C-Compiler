@@ -256,6 +256,9 @@ void print_un_expr(struct UnaryExpr* un_expr){
     case BOOL_NOT:
       printf("BoolNot(");
       break;
+    case UNARY_PLUS:
+      printf("UnaryPlus(");
+      break;
   }
   print_expr(un_expr->expr);
   printf(")");

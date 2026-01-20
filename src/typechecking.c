@@ -1241,7 +1241,7 @@ bool typecheck_expr(struct Expr* expr) {
         return false;
       }
       if (is_char_type(expr_type) &&
-          (unary_expr->op == NEGATE || unary_expr->op == COMPLEMENT)) {
+          (unary_expr->op == NEGATE || unary_expr->op == COMPLEMENT || unary_expr->op == UNARY_PLUS)) {
         //  Promote char to int for these operations.
         convert_expr_type(&unary_expr->expr, &kIntType);
         expr_type = unary_expr->expr->value_type;
