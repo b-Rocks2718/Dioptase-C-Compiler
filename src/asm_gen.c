@@ -697,7 +697,7 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
         stack_bytes += padding;
         stack_bytes += type_size;
 
-        if (alignment != 0) {
+        if (padding != 0) {
           // add padding if needed
           // sub sp sp <padding>
           struct AsmInstr* pad_instr = arena_alloc(sizeof(struct AsmInstr));
@@ -725,6 +725,34 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
         *call_tail = push_instr;
         call_tail = &push_instr->next;
       }
+
+      //// make the stack pointer 4 byte aligned
+      //size_t padding = (4 - (stack_bytes % 4)) % 4;
+      //stack_bytes += padding;
+
+      //if (padding != 0) {
+      //  // add padding if needed
+      //  // sub sp sp <padding>
+      //  struct AsmInstr* pad_instr = arena_alloc(sizeof(struct AsmInstr));
+      //  pad_instr->type = ASM_BINARY;
+      //  pad_instr->alu_op = ALU_SUB;
+      //  pad_instr->dst = arena_alloc(sizeof(struct Operand));
+      //  pad_instr->dst->type = OPERAND_REG;
+      //  pad_instr->dst->reg = SP;
+      //  pad_instr->dst->asm_type = &kWordType;
+      //  pad_instr->src1 = arena_alloc(sizeof(struct Operand));
+      //  pad_instr->src1->type = OPERAND_REG;
+      //  pad_instr->src1->reg = SP;
+      //  pad_instr->src1->asm_type = &kWordType;
+      //  pad_instr->src2 = arena_alloc(sizeof(struct Operand));
+      //  pad_instr->src2->type = OPERAND_LIT;
+      //  pad_instr->src2->lit_value = padding;
+      //  pad_instr->src2->asm_type = &kWordType;
+      //  pad_instr->next = NULL;
+      //  // append padding instruction
+      //  *call_tail = pad_instr;
+      //  call_tail = &pad_instr->next;
+      //}
 
       size_t reg_arg_count = num_args < REG_ARG_LIMIT ? num_args : REG_ARG_LIMIT;
       for (size_t i = 0; i < reg_arg_count; i++) {
@@ -935,6 +963,10 @@ size_t create_maps(struct AsmInstr* asm_instr) {
       pseudo_map_insert(pseudo_map, opr, mapped);
     }
   }
+
+  // pad to 4-byte alignment
+  size_t padding = (4 - (stack_bytes % 4)) % 4;
+  stack_bytes += padding;
 
   return stack_bytes;
 }
