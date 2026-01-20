@@ -2419,24 +2419,73 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
       if (expr->value_type->type != VOID_TYPE) {
         dst = make_temp(func_name, expr->value_type);
       }
-      // AST:
-      // func(arg0, arg1, ...)
-      // TAC:
-      // <arg0>, <arg1>, ...
-      // Call func -> dst
-      struct TACInstr* call_instr = tac_instr_create(TACCALL);
-      call_instr->instr.tac_call.func_name = expr->expr.fun_call_expr.func_name;
-      call_instr->instr.tac_call.dst = dst;
-      call_instr->instr.tac_call.args = args;
-      call_instr->instr.tac_call.num_args = num_args;
 
-      struct TACInstr* instrs = NULL;
-      concat_TAC_instrs(&instrs, arg_instrs);
-      concat_TAC_instrs(&instrs, call_instr);
+      struct Expr* func_expr = expr->expr.fun_call_expr.func;
+      struct Type* func_expr_type = func_expr->value_type;
+      bool is_direct_call = false;
+      if (func_expr->type == VAR) {
+        struct SymbolEntry* entry = symbol_table_get(global_symbol_table,
+                                                     func_expr->expr.var_expr.name);
+        if (entry != NULL) {
+          func_expr_type = entry->type;
+          func_expr->value_type = entry->type;
+          if (entry->type->type == FUN_TYPE) {
+            is_direct_call = true;
+          }
+        }
+      }
+      if (is_direct_call) {
+        // normal call
 
-      result->type = PLAIN_OPERAND;
-      result->val = dst;
-      return instrs;
+        // AST:
+        // func(arg0, arg1, ...)
+        // TAC:
+        // <arg0>, <arg1>, ...
+        // Call func -> dst
+        struct TACInstr* call_instr = tac_instr_create(TACCALL);
+        call_instr->instr.tac_call.func_name = func_expr->expr.var_expr.name;
+        call_instr->instr.tac_call.dst = dst;
+        call_instr->instr.tac_call.args = args;
+        call_instr->instr.tac_call.num_args = num_args;
+
+        struct TACInstr* instrs = NULL;
+        concat_TAC_instrs(&instrs, arg_instrs);
+        concat_TAC_instrs(&instrs, call_instr);
+
+        result->type = PLAIN_OPERAND;
+        result->val = dst;
+        return instrs;
+      } else {
+        // indirect call
+        if (func_expr_type == NULL) {
+          tac_error_at(expr->loc, "indirect call missing callee type");
+          return NULL;
+        }
+
+        // AST:
+        // func(arg0, arg1, ...)
+        // TAC:
+        // tmp <- <func>
+        // <arg0>, <arg1>, ...
+        // Call tmp -> dst
+        struct Val* tmp = make_temp(func_name, func_expr_type);
+        struct TACInstr* func_instrs = expr_to_TAC_convert(func_name, func_expr, tmp);
+
+        struct TACInstr* call_instr = tac_instr_create(TACCALL_INDIRECT);
+        call_instr->instr.tac_call_indirect.func = tmp;
+        call_instr->instr.tac_call_indirect.dst = dst;
+        call_instr->instr.tac_call_indirect.args = args;
+        call_instr->instr.tac_call_indirect.num_args = num_args;
+
+        struct TACInstr* instrs = NULL;
+        concat_TAC_instrs(&instrs, func_instrs);
+        concat_TAC_instrs(&instrs, arg_instrs);
+        concat_TAC_instrs(&instrs, call_instr);
+
+        result->type = PLAIN_OPERAND;
+        result->val = dst;
+        return instrs;
+      }
     }
     case CAST: {
       struct CastExpr* cast_expr = &expr->expr.cast_expr;

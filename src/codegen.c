@@ -744,6 +744,14 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
           append_instr(&head, &tail, call);
           break;
         }
+        case ASM_INDIRECT_CALL: {
+          
+          struct MachineInstr* call = alloc_machine_instr(MACHINE_BRA);
+          call->ra = RA;
+          call->rb = kScratchRegA;
+          append_instr(&head, &tail, call);
+          break;
+        }
         case ASM_PUSH: {
           // Machine: Push rScratchA
           struct MachineInstr* push;

@@ -12,7 +12,7 @@ Program(
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            Return(FunCallExpr(helper, []):untyped);
+            Return(FunCallExpr(Var(helper):untyped, []):untyped);
     );
     FunDclr(
         helper,

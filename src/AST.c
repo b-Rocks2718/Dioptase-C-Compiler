@@ -347,7 +347,7 @@ void print_args_list(struct ArgList* args_list){
 
 void print_fun_call_expr(struct FunctionCallExpr* fun_expr){
   printf("FunCallExpr(");
-  print_slice(fun_expr->func_name);
+  print_expr(fun_expr->func);
   printf(", [");
   print_args_list(fun_expr->args);
   printf("])");

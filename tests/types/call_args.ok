@@ -64,7 +64,7 @@ Program(
         body=
             VarDclr(none, int, x.2, SingleInit(LitExpr(int, 3):int));
             VarDclr(none, long, y.3, SingleInit(Cast(long, LitExpr(int, 4):int):long));
-            VarDclr(none, long, z.4, SingleInit(FunCallExpr(widen, [Var(x.2):int, Cast(int, Var(y.3):long):int, ]):long));
+            VarDclr(none, long, z.4, SingleInit(FunCallExpr(Var(widen):untyped, [Var(x.2):int, Cast(int, Var(y.3):long):int, ]):long));
             Return(BoolGe(Var(z.4):long, Cast(long, LitExpr(int, 0):int):long):int, main);
     );
 )

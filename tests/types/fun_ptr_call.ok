@@ -1,0 +1,55 @@
+Key: fp.1
+  Type: func(ret_type=int, param_types=[int, ])*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: add_one
+  Type: func(ret_type=int, param_types=[int, ])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: x.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: y.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Program(
+    FunDclr(
+        add_one,
+        storage=none
+        params=[VarDclr(none, int, x.0), ]
+        type=func(ret_type=int, param_types=[int, ]),
+        body=
+            Return(AddOp(Var(x.0):int, LitExpr(int, 1):int):int, add_one);
+    );
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, func(ret_type=int, param_types=[int, ])*, fp.1, SingleInit(AddrOf(Var(add_one):func(ret_type=int, param_types=[int, ])):func(ret_type=int, param_types=[int, ])*));
+            VarDclr(none, int, y.2, SingleInit(FunCallExpr(Var(fp.1):untyped, [LitExpr(int, 41):int, ]):int));
+            Return(Var(y.2):int, main);
+    );
+)

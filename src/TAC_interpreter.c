@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 // TAC interpreter written by Codex
 
@@ -26,6 +27,7 @@ static const size_t kTacInterpInitialLabelCapacity = 8;
 static const size_t kTacInterpGrowthFactor = 2;
 static const size_t kTacInterpSingleSlot = 1;
 static const size_t kTacInterpMainNameLen = sizeof("main") - 1;
+static const int kTacInterpFunctionAddrBase = 0x10000000;
 // Purpose: Define supported host builtin names and signatures.
 // Inputs/Outputs: Used to detect external calls like putchar.
 // Invariants/Assumptions: Builtins exist only for test-visible output.
@@ -72,6 +74,26 @@ struct TacBindings {
   size_t capacity;
 };
 
+// Purpose: Map a function name to a synthetic address for function pointers.
+// Inputs: name is the function identifier; func is the top-level node; address is the pointer value.
+// Outputs: Used to resolve function-pointer calls and address-of operations.
+// Invariants/Assumptions: address values are unique and non-zero.
+struct TacFunctionEntry {
+  struct Slice* name;
+  const struct TopLevel* func;
+  int address;
+};
+
+// Purpose: Track function pointer addresses for the interpreter.
+// Inputs/Outputs: entries holds the registered functions; next_address allocates unique addresses.
+// Invariants/Assumptions: next_address is advanced by word size for each function.
+struct TacFunctionTable {
+  struct TacFunctionEntry* entries;
+  size_t count;
+  size_t capacity;
+  int next_address;
+};
+
 // Purpose: Associate a label name with its instruction node.
 // Inputs: label is the label name; instr points at the label instruction.
 // Outputs: Supports TACJUMP and TACCOND_JUMP dispatch.
@@ -103,6 +125,7 @@ struct TacInterpreter {
   const struct TACProg* prog;
   struct TacMemory memory;
   struct TacBindings globals;
+  struct TacFunctionTable functions;
 };
 
 // Purpose: Emit a TAC interpreter error and terminate execution.
@@ -313,6 +336,115 @@ static struct TacBinding* tac_bindings_get_or_add(struct TacBindings* bindings,
                                                   struct TacMemory* mem,
                                                   struct Slice* name) {
   return tac_bindings_get_or_add_range(bindings, mem, name, kTacInterpSingleSlot);
+}
+
+// Purpose: Initialize a TacFunctionTable structure.
+// Inputs: table points to the function table to initialize.
+// Outputs: Resets the table to empty and sets the first synthetic address.
+// Invariants/Assumptions: table is non-NULL.
+static void tac_function_table_init(struct TacFunctionTable* table) {
+  table->entries = NULL;
+  table->count = 0;
+  table->capacity = 0;
+  table->next_address = kTacInterpFunctionAddrBase;
+}
+
+// Purpose: Release memory held by a TacFunctionTable.
+// Inputs: table points to the function table to free.
+// Outputs: Frees the entries array and resets metadata.
+// Invariants/Assumptions: table was initialized with tac_function_table_init.
+static void tac_function_table_destroy(struct TacFunctionTable* table) {
+  free(table->entries);
+  table->entries = NULL;
+  table->count = 0;
+  table->capacity = 0;
+  table->next_address = 0;
+}
+
+// Purpose: Grow the function table if needed.
+// Inputs: table points to the function table to grow.
+// Outputs: Ensures capacity for at least one more entry.
+// Invariants/Assumptions: table is non-NULL.
+static void tac_function_table_reserve(struct TacFunctionTable* table) {
+  if (table->count < table->capacity) {
+    return;
+  }
+  size_t new_capacity = (table->capacity == 0)
+                            ? kTacInterpInitialBindingCapacity
+                            : table->capacity * kTacInterpGrowthFactor;
+  struct TacFunctionEntry* next =
+      (struct TacFunctionEntry*)realloc(table->entries, new_capacity * sizeof(*next));
+  if (next == NULL) {
+    tac_interp_error("memory allocation failed while growing TAC function table");
+  }
+  table->entries = next;
+  table->capacity = new_capacity;
+}
+
+// Purpose: Find a function table entry by name.
+// Inputs: table holds the function table; name is the identifier to find.
+// Outputs: Returns the entry pointer or NULL if not found.
+// Invariants/Assumptions: Name comparisons use slice equality.
+static struct TacFunctionEntry* tac_function_table_find_name(struct TacFunctionTable* table,
+                                                             const struct Slice* name) {
+  for (size_t i = 0; i < table->count; i++) {
+    if (compare_slice_to_slice(table->entries[i].name, name)) {
+      return &table->entries[i];
+    }
+  }
+  return NULL;
+}
+
+// Purpose: Find a function table entry by address.
+// Inputs: table holds the function table; address is the synthetic pointer value.
+// Outputs: Returns the entry pointer or NULL if not found.
+// Invariants/Assumptions: address values are unique per function.
+static struct TacFunctionEntry* tac_function_table_find_address(struct TacFunctionTable* table,
+                                                                int address) {
+  for (size_t i = 0; i < table->count; i++) {
+    if (table->entries[i].address == address) {
+      return &table->entries[i];
+    }
+  }
+  return NULL;
+}
+
+// Purpose: Register a function in the table and return its synthetic address.
+// Inputs: table holds the function table; func is the function to register.
+// Outputs: Returns the assigned synthetic address for func.
+// Invariants/Assumptions: Each function name is registered at most once.
+static int tac_function_table_register(struct TacFunctionTable* table,
+                                       const struct TopLevel* func) {
+  if (func == NULL || func->name == NULL) {
+    tac_interp_error("attempted to register a null function in TAC function table");
+  }
+  struct TacFunctionEntry* existing = tac_function_table_find_name(table, func->name);
+  if (existing != NULL) {
+    return existing->address;
+  }
+  if (table->next_address > INT_MAX - kTacInterpWordBytes) {
+    tac_interp_error("function address space exhausted in TAC interpreter");
+  }
+  tac_function_table_reserve(table);
+  struct TacFunctionEntry* entry = &table->entries[table->count++];
+  entry->name = func->name;
+  entry->func = func;
+  entry->address = table->next_address;
+  table->next_address += kTacInterpWordBytes;
+  return entry->address;
+}
+
+// Purpose: Populate the function table from a TAC program.
+// Inputs: table holds the function table; prog is the TAC program to scan.
+// Outputs: Registers all top-level functions for pointer resolution.
+// Invariants/Assumptions: prog is non-NULL and contains unique function names.
+static void tac_function_table_populate(struct TacFunctionTable* table,
+                                        const struct TACProg* prog) {
+  for (const struct TopLevel* cur = prog->head; cur != NULL; cur = cur->next) {
+    if (cur->type == FUNC) {
+      (void)tac_function_table_register(table, cur);
+    }
+  }
 }
 
 // Purpose: Select the binding list that should store a variable.
@@ -823,10 +955,65 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
         }
         break;
       }
+      case TACCALL_INDIRECT: {
+        uint64_t* call_args = NULL;
+        if (pc->instr.tac_call_indirect.num_args > 0) {
+          call_args =
+              (uint64_t*)malloc(sizeof(uint64_t) * pc->instr.tac_call_indirect.num_args);
+          if (call_args == NULL) {
+            tac_interp_error("memory allocation failed while preparing indirect call arguments");
+          }
+          for (size_t i = 0; i < pc->instr.tac_call_indirect.num_args; i++) {
+            call_args[i] = tac_eval_val(interp, &frame, &pc->instr.tac_call_indirect.args[i]);
+          }
+        }
+        if (pc->instr.tac_call_indirect.func == NULL) {
+          free(call_args);
+          tac_interp_error("indirect call missing function operand");
+        }
+        uint64_t callee_addr_val = tac_eval_val(interp, &frame, pc->instr.tac_call_indirect.func);
+        if (callee_addr_val == 0) {
+          free(call_args);
+          tac_interp_error("call through null function pointer");
+        }
+        if (callee_addr_val > (uint64_t)INT_MAX) {
+          free(call_args);
+          tac_interp_error("function pointer address out of range: %llu",
+                           (unsigned long long)callee_addr_val);
+        }
+        struct TacFunctionEntry* callee_entry =
+            tac_function_table_find_address(&interp->functions, (int)callee_addr_val);
+        if (callee_entry == NULL || callee_entry->func == NULL) {
+          free(call_args);
+          tac_interp_error("call through unknown function pointer address %d",
+                           (int)callee_addr_val);
+        }
+        uint64_t result = tac_execute_function(interp,
+                                               callee_entry->func,
+                                               call_args,
+                                               pc->instr.tac_call_indirect.num_args);
+        free(call_args);
+        if (pc->instr.tac_call_indirect.dst != NULL) {
+          tac_assign_val(interp, &frame, pc->instr.tac_call_indirect.dst, result);
+        }
+        break;
+      }
       case TACGET_ADDRESS: {
         struct Val* src = pc->instr.tac_get_address.src;
         if (src == NULL || src->val_type != VARIABLE) {
           tac_interp_error("get-address requires a variable source");
+        }
+        if (src->type != NULL && src->type->type == FUN_TYPE) {
+          struct TacFunctionEntry* entry =
+              tac_function_table_find_name(&interp->functions, src->val.var_name);
+          if (entry == NULL) {
+            tac_interp_error("unknown function in get-address %.*s",
+                             (int)src->val.var_name->len,
+                             src->val.var_name->start);
+          }
+          tac_assign_val(interp, &frame, pc->instr.tac_get_address.dst,
+                         (uint64_t)entry->address);
+          break;
         }
         size_t slots = tac_slots_for_type(src->type);
         int addr = tac_address_of(interp, &frame, src->val.var_name, slots);
@@ -1062,6 +1249,8 @@ int tac_interpret_prog(const struct TACProg* prog) {
   interp.prog = prog;
   tac_memory_init(&interp.memory);
   tac_bindings_init(&interp.globals);
+  tac_function_table_init(&interp.functions);
+  tac_function_table_populate(&interp.functions, prog);
 
   struct Slice main_name = { .start = "main", .len = kTacInterpMainNameLen };
   const struct TopLevel* main_func = tac_find_function(prog, &main_name);
@@ -1082,6 +1271,7 @@ int tac_interpret_prog(const struct TACProg* prog) {
   tac_init_globals(&interp, prog);
 
   uint64_t result = tac_execute_function(&interp, main_func, NULL, 0);
+  tac_function_table_destroy(&interp.functions);
   tac_bindings_destroy(&interp.globals);
   tac_memory_destroy(&interp.memory);
   return (int)result;

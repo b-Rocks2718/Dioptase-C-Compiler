@@ -448,54 +448,110 @@ static bool parse_array_size_literal(size_t* size_out){
   return false;
 }
 
+// Purpose: Convert an abstract declarator into a concrete type.
+// Inputs: declarator is the parsed abstract declarator; base_type is the core type.
+// Outputs: Returns the derived type or NULL on failure.
+struct Type* process_abstract_declarator(
+    struct AbstractDeclarator* declarator,
+    struct Type* base_type);
+
+// Purpose: Parse parameters for an abstract function declarator.
+// Inputs: Consumes tokens after the opening '('.
+// Outputs: Returns true on success and writes the param list (NULL for empty).
+// Invariants/Assumptions: Caller already consumed the opening '(' token.
+static bool parse_abstract_params_after_open(struct ParamTypeList** params_out,
+                                             struct Token* rewind_to){
+  struct Token* before_void = current;
+  if (consume(VOID_TOK)){
+    if (consume(CLOSE_P)){
+      *params_out = NULL;
+      return true;
+    }
+    current = before_void;
+  }
+  if (consume(CLOSE_P)){
+    *params_out = NULL;
+    return true;
+  }
+
+  struct ParamTypeList* head = NULL;
+  struct ParamTypeList** tail = &head;
+  while (true){
+    struct Type* base_type = parse_param_type();
+    if (base_type == NULL){
+      current = rewind_to;
+      return false;
+    }
+    struct AbstractDeclarator* declarator = parse_abstract_declarator();
+    if (declarator == NULL){
+      current = rewind_to;
+      return false;
+    }
+    struct Type* param_type = process_abstract_declarator(declarator, base_type);
+    struct ParamTypeList* node = arena_alloc(sizeof(struct ParamTypeList));
+    node->type = param_type;
+    node->next = NULL;
+    *tail = node;
+    tail = &node->next;
+    if (consume(COMMA)) continue;
+    if (consume(CLOSE_P)) break;
+    current = rewind_to;
+    return false;
+  }
+  *params_out = head;
+  return true;
+}
+
 // Purpose: Parse a direct abstract declarator (base or parenthesized).
 // Inputs: Consumes tokens from the current cursor.
 // Outputs: Returns an AbstractDeclarator or NULL if absent.
 // Invariants/Assumptions: Only pointer/identifier-free declarators are allowed.
 struct AbstractDeclarator* parse_direct_abstract_declarator(){
   struct Token* old_current = current;
-  if (!consume(OPEN_P)) {
-    goto only_dimensions;
-  }
-  struct AbstractDeclarator* declarator = parse_abstract_declarator();
-  if (declarator == NULL || !consume(CLOSE_P)){
-    current = old_current;
-    goto only_dimensions;
-  }
-  // Parse array sizes
-  while (consume(OPEN_S)){
-    size_t size = 0;
-    if (!parse_array_size_literal(&size) || !consume(CLOSE_S)){
+  struct AbstractDeclarator* declarator = NULL;
+
+  if (consume(OPEN_P)){
+    declarator = parse_abstract_declarator();
+    if (declarator == NULL || !consume(CLOSE_P)){
       current = old_current;
-      goto only_dimensions;
+      declarator = NULL;
     }
-    struct AbstractDeclarator* array_decl = arena_alloc(sizeof(struct AbstractDeclarator));
-    array_decl->type = ABSTRACT_ARRAY;
-    struct AbstractArray* array_data = arena_alloc(sizeof(struct AbstractArray));
-    array_data->next = declarator;
-    array_data->size = size;
-    array_decl->data.array_type = array_data;
-    declarator = array_decl;
   }
 
-  return declarator;
+  if (declarator == NULL){
+    declarator = arena_alloc(sizeof(struct AbstractDeclarator));
+    declarator->type = ABSTRACT_BASE;
+  }
 
-  only_dimensions:
-  declarator = arena_alloc(sizeof(struct AbstractDeclarator));
-  declarator->type = ABSTRACT_BASE;
-  while (consume(OPEN_S)){
-    size_t size = 0;
-    if (!parse_array_size_literal(&size) || !consume(CLOSE_S)){
-      current = old_current;
-      return NULL;
+  while (true){
+    if (consume(OPEN_S)){
+      size_t size = 0;
+      if (!parse_array_size_literal(&size) || !consume(CLOSE_S)){
+        current = old_current;
+        return NULL;
+      }
+      struct AbstractDeclarator* array_decl = arena_alloc(sizeof(struct AbstractDeclarator));
+      array_decl->type = ABSTRACT_ARRAY;
+      struct AbstractArray* array_data = arena_alloc(sizeof(struct AbstractArray));
+      array_data->next = declarator;
+      array_data->size = size;
+      array_decl->data.array_type = array_data;
+      declarator = array_decl;
+    } else if (consume(OPEN_P)){
+      struct ParamTypeList* params = NULL;
+      if (!parse_abstract_params_after_open(&params, old_current)){
+        return NULL;
+      }
+      struct AbstractDeclarator* fun_decl = arena_alloc(sizeof(struct AbstractDeclarator));
+      fun_decl->type = ABSTRACT_FUNCTION;
+      struct AbstractFunction* fun_data = arena_alloc(sizeof(struct AbstractFunction));
+      fun_data->next = declarator;
+      fun_data->params = params;
+      fun_decl->data.function_type = fun_data;
+      declarator = fun_decl;
+    } else {
+      break;
     }
-    struct AbstractDeclarator* array_decl = arena_alloc(sizeof(struct AbstractDeclarator));
-    array_decl->type = ABSTRACT_ARRAY;
-    struct AbstractArray* array_data = arena_alloc(sizeof(struct AbstractArray));
-    array_data->next = declarator;
-    array_data->size = size;
-    array_decl->data.array_type = array_data;
-    declarator = array_decl;
   }
 
   return declarator;
@@ -551,6 +607,17 @@ struct Type* process_abstract_declarator(
       arr_type->type_data.array_type.element_type = base_type;
       result = process_abstract_declarator(declarator->data.array_type->next, arr_type);
       break;
+    case ABSTRACT_FUNCTION:
+      if (base_type->type == FUN_TYPE) {
+        parse_error_at(parser_error_ptr(), "function cannot return function type");
+        return NULL;
+      }
+      struct Type* fun_type = arena_alloc(sizeof(struct Type));
+      fun_type->type = FUN_TYPE;
+      fun_type->type_data.fun_type.return_type = base_type;
+      fun_type->type_data.fun_type.param_types = declarator->data.function_type->params;
+      result = process_abstract_declarator(declarator->data.function_type->next, fun_type);
+      break;
     default:
       result = NULL; // should never happen
   }
@@ -605,33 +672,6 @@ struct Expr* parse_cast(){
   return result;
 }
 
-// Purpose: Parse postfix ++/-- and emit POST_ASSIGN expressions.
-// Inputs: Consumes tokens from the current cursor.
-// Outputs: Returns a POST_ASSIGN expression or NULL if not present.
-// Invariants/Assumptions: Only parenthesized variables are accepted.
-struct Expr* parse_post_op(){
-  struct Token* old_current = current;
-  struct Expr* inner;
-  if ((inner = parse_paren_var())){
-    if (consume(INC_TOK)){
-      const char* op_loc = (current - 1)->start;
-      struct PostAssignExpr add_one = {POST_INC, inner};
-      struct Expr* result = alloc_expr(POST_ASSIGN, op_loc);
-      result->expr.post_assign_expr = add_one;
-      return result;
-    } else if (consume(DEC_TOK)){
-      const char* op_loc = (current - 1)->start;
-      struct PostAssignExpr sub_one = {POST_DEC, inner};
-      struct Expr* result = alloc_expr(POST_ASSIGN, op_loc);
-      result->expr.post_assign_expr = sub_one;
-      return result;
-    } else {
-      current = old_current;
-      return NULL;
-    }
-  } else return NULL;
-}
-
 // Purpose: Parse a parenthesized expression.
 // Inputs: Consumes '(' expr ')' from the token stream.
 // Outputs: Returns the inner expression or NULL on failure.
@@ -670,36 +710,6 @@ struct ArgList* parse_args(){
       return NULL;
     }
     return args;
-  } else return NULL;
-}
-
-// Purpose: Parse a function call expression.
-// Inputs: Consumes IDENT '(' args ')' from the token stream.
-// Outputs: Returns a FUNCTION_CALL expression or NULL if not present.
-// Invariants/Assumptions: Arguments are parsed with parse_args.
-struct Expr* parse_func_call(){
-  union TokenVariant* data;
-  struct Token* old_current = current;
-  if ((data = consume_with_data(IDENT))){
-    const char* name_loc = (current - 1)->start;
-    if (!consume(OPEN_P)){
-      current = old_current;
-      return NULL;
-    }
-    struct ArgList* args;
-    if (consume(CLOSE_P)) args = NULL;
-    else {
-      args = parse_args();
-      if (args == NULL){
-        current = old_current;
-        return NULL;
-      }
-    }
-    struct FunctionCallExpr call = {data->ident_name, args};
-
-    struct Expr* expr = alloc_expr(FUNCTION_CALL, name_loc);
-    expr->expr.fun_call_expr = call;
-    return expr;
   } else return NULL;
 }
 
@@ -891,7 +901,22 @@ struct Expr* parse_postfix() {
   if (expr == NULL) return NULL;
 
   while (true){
-    if (consume(OPEN_S)){
+    if (consume(OPEN_P)){
+      const char* call_loc = (current - 1)->start;
+      struct ArgList* args;
+      if (consume(CLOSE_P)) args = NULL;
+      else {
+        args = parse_args();
+        if (args == NULL){
+          current = old_current;
+          return NULL;
+        }
+      }
+      struct FunctionCallExpr call = {expr, args};
+      struct Expr* new_expr = alloc_expr(FUNCTION_CALL, call_loc);
+      new_expr->expr.fun_call_expr = call;
+      expr = new_expr;
+    } else if (consume(OPEN_S)){
       struct Expr* index = parse_expr();
       if (index == NULL || !consume(CLOSE_S)){
         current = old_current;
@@ -991,7 +1016,6 @@ struct Expr* parse_primary_expr(){
   
   struct Expr* expr;
   if ((expr = parse_parens())) return expr;
-  else if ((expr = parse_func_call())) return expr;
   else if ((expr = parse_var())) return expr;
   else if ((expr = parse_string())) return expr;
   else return NULL;
@@ -1996,6 +2020,23 @@ struct ParamInfoList* parse_params(){
     }
     struct Declarator* declarator = parse_declarator();
     if (declarator == NULL){
+      struct AbstractDeclarator* abstract_decl = parse_abstract_declarator();
+      if (abstract_decl == NULL){
+        current = old_current;
+        return NULL;
+      }
+      struct Type* derived_type = process_abstract_declarator(abstract_decl, type_);
+      struct Declarator* abstract_name = arena_alloc(sizeof(struct Declarator));
+      abstract_name->type = IDENT_DEC;
+      abstract_name->declarator.ident_dec.name = NULL;
+      struct ParamInfoList* node = arena_alloc(sizeof(struct ParamInfoList));
+      node->info.type = derived_type;
+      node->info.decl = *abstract_name;
+      node->next = NULL;
+      *tail = node;
+      tail = &node->next;
+      if (consume(COMMA)) continue;
+      if (consume(CLOSE_P)) break;
       current = old_current;
       return NULL;
     }
@@ -2097,10 +2138,6 @@ struct ParamTypeList* params_to_types(struct ParamList* params){
 // Invariants/Assumptions: Parameter declarators follow the same rules as variables.
 static bool process_param_info(struct ParamInfo* param, struct Slice** name_out,
                                struct Type** type_out){
-  if (param->decl.type == FUN_DEC){
-    parse_error_at(parser_error_ptr(), "function pointers in parameters aren't supported");
-    return false;
-  }
   struct ParamList* ignored_params = NULL;
   return process_declarator(&param->decl, param->type, name_out, type_out,
                             &ignored_params);
@@ -2166,13 +2203,12 @@ bool process_declarator(struct Declarator* decl, struct Type* base_type,
                                 name_out, derived_type_out, params_out);
     }
     case FUN_DEC: {
-      // Function declarators only allow identifiers at the core.
-      struct Declarator* inner_decl = decl->declarator.fun_dec.decl;
-      if (inner_decl->type != IDENT_DEC){
-        parse_error_at(parser_error_ptr(),
-                       "can't apply additional type derivations to a function type");
+      if (base_type->type == FUN_TYPE) {
+        parse_error_at(parser_error_ptr(), "function cannot return function type");
         return false;
       }
+      // Function declarators only allow identifiers at the core.
+      struct Declarator* inner_decl = decl->declarator.fun_dec.decl;
       struct ParamList* params = NULL;
       if (!process_params_info(decl->declarator.fun_dec.params, &params)){
         return false;
@@ -2181,10 +2217,15 @@ bool process_declarator(struct Declarator* decl, struct Type* base_type,
       fun_type->type = FUN_TYPE;
       fun_type->type_data.fun_type.return_type = base_type;
       fun_type->type_data.fun_type.param_types = params_to_types(params);
-      *name_out = inner_decl->declarator.ident_dec.name;
-      *derived_type_out = fun_type;
-      *params_out = params;
-      return true;
+      if (inner_decl->type == IDENT_DEC){
+        *name_out = inner_decl->declarator.ident_dec.name;
+        *derived_type_out = fun_type;
+        *params_out = params;
+        return true;
+      }
+      *params_out = NULL;
+      return process_declarator(inner_decl, fun_type,
+                                name_out, derived_type_out, params_out);
     }
     case ARRAY_DEC: {
       // Build an array type and recurse inward for further derivations

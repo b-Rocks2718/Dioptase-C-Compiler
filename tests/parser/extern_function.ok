@@ -12,6 +12,6 @@ Program(
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            Return(FunCallExpr(ext, [LitExpr(int, 1):untyped, LitExpr(int, 2):untyped, ]):untyped);
+            Return(FunCallExpr(Var(ext):untyped, [LitExpr(int, 1):untyped, LitExpr(int, 2):untyped, ]):untyped);
     );
 )

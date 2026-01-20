@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/fun_ptr_not_callable.c:3:11: variable x.0 cannot be used as a function

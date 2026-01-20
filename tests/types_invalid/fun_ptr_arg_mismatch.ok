@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/fun_ptr_arg_mismatch.c:7:12: argument and parameter count mismatch

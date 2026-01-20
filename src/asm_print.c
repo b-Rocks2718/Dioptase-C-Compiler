@@ -307,6 +307,12 @@ static void print_asm_instr(const struct AsmInstr* instr, unsigned tabs) {
       }
       printf("\n");
       break;
+    case ASM_INDIRECT_CALL:
+      printf("IndirectCall ");
+      if (instr->dst != NULL){
+        print_operand(instr->dst);
+      }
+      printf("\n");
     case ASM_JUMP:
       printf("Jump ");
       if (instr->label != NULL) {

@@ -243,7 +243,7 @@ struct VarExpr {
 };
 
 struct FunctionCallExpr {
-  struct Slice* func_name;
+  struct Expr* func; // name or pointer
   struct ArgList* args;
 };
 
@@ -525,6 +525,7 @@ struct ParamInfoList {
 enum AbstractDeclaratorType {
   ABSTRACT_POINTER,
   ABSTRACT_ARRAY,
+  ABSTRACT_FUNCTION,
   ABSTRACT_BASE,
 };
 
@@ -537,9 +538,15 @@ struct AbstractArray {
   size_t size;
 };
 
+struct AbstractFunction {
+  struct AbstractDeclarator* next;
+  struct ParamTypeList* params;
+};
+
 union AbstractDeclaratorVariant {
   struct AbstractPointer* pointer_type;
   struct AbstractArray* array_type;
+  struct AbstractFunction* function_type;
   // no data for AbstractBase
 };
 

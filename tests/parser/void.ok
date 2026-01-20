@@ -14,7 +14,7 @@ Program(
         params=[]
         type=func(ret_type=void, param_types=[]),
         body=
-            ExprStmt(FunCallExpr(unsafe, []):untyped);
+            ExprStmt(FunCallExpr(Var(unsafe):untyped, []):untyped);
             Return(void);
     );
     FunDclr(
@@ -23,7 +23,7 @@ Program(
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            ExprStmt(FunCallExpr(f, []):untyped);
+            ExprStmt(FunCallExpr(Var(f):untyped, []):untyped);
             Return(LitExpr(int, 0):untyped);
     );
 )

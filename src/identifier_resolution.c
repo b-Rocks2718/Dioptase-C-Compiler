@@ -147,16 +147,10 @@ bool resolve_expr(struct Expr* expr) {
       }
     }
     case FUNCTION_CALL: {
-      bool from_current_scope = false;
-      struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, expr->expr.fun_call_expr.func_name, &from_current_scope);
-      if (entry != NULL) {
-        // Resolve through the current scope so locals can shadow functions.
-        expr->expr.fun_call_expr.func_name = entry->entry_name;
-        return resolve_args(expr->expr.fun_call_expr.args);
-      } else {
-        ident_error_at(expr->loc, "function has not been declared");
+      if (!resolve_expr(expr->expr.fun_call_expr.func)) {
         return false;
       }
+      return resolve_args(expr->expr.fun_call_expr.args);
     }
     case CAST:
       return resolve_expr(expr->expr.cast_expr.expr);

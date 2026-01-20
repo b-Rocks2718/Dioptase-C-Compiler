@@ -1,11 +1,11 @@
 Program(
-    VarDclr(none, int*, ptr);
     FunDclr(
         add,
         storage=none
         params=[VarDclr(none, int, a), VarDclr(none, int, b), ]
         type=func(ret_type=int, param_types=[int, int, ]),
-        body=null
+        body=
+            Return(AddOp(Var(a):untyped, Var(b):untyped):untyped);
     );
     FunDclr(
         main,
@@ -13,7 +13,7 @@ Program(
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            ExprStmt(Assign(Var(ptr):untyped, AddrOf(Var(ptr):untyped):untyped):untyped);
-            Return(FunCallExpr(Var(add):untyped, [LitExpr(int, 1):untyped, LitExpr(int, 2):untyped, ]):untyped);
+            VarDclr(none, func(ret_type=int, param_types=[int, int, ])*, fp, SingleInit(Var(add):untyped));
+            Return(FunCallExpr(Var(fp):untyped, [LitExpr(int, 3):untyped, LitExpr(int, 4):untyped, ]):untyped);
     );
 )

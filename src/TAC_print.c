@@ -306,6 +306,25 @@ static void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
       printf(")\n");
       break;
     }
+    case TACCALL_INDIRECT: {
+      printf("CallIndirect ");
+      print_tac_val(instr->instr.tac_call_indirect.func);
+      printf(" -> ");
+      if (instr->instr.tac_call_indirect.dst == NULL) {
+        printf("void");
+      } else {
+        print_tac_val(instr->instr.tac_call_indirect.dst);
+      }
+      printf(" (");
+      for (size_t i = 0; i < instr->instr.tac_call_indirect.num_args; i++) {
+        if (i != 0) {
+          printf(", ");
+        }
+        print_tac_val(&instr->instr.tac_call_indirect.args[i]);
+      }
+      printf(")\n");
+      break;
+    }
     case TACGET_ADDRESS:
       printf("GetAddress ");
       print_tac_val(instr->instr.tac_get_address.dst);

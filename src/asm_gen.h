@@ -88,6 +88,7 @@ enum AsmInstrType {
   ASM_CMP,
   ASM_PUSH,
   ASM_CALL,
+  ASM_INDIRECT_CALL,
   ASM_JUMP,
   ASM_COND_JUMP,
   ASM_LABEL,

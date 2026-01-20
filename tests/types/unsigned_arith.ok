@@ -64,7 +64,7 @@ Program(
         body=
             VarDclr(none, uint, u.2, SingleInit(Cast(uint, LitExpr(int, 1):int):uint));
             VarDclr(none, int, s.3, SingleInit(Negate(LitExpr(int, 2):int):int));
-            VarDclr(none, uint, r.4, SingleInit(FunCallExpr(add, [Var(u.2):uint, Var(s.3):int, ]):uint));
+            VarDclr(none, uint, r.4, SingleInit(FunCallExpr(Var(add):untyped, [Var(u.2):uint, Var(s.3):int, ]):uint));
             Return(Cast(int, Var(r.4):uint):int, main);
     );
 )

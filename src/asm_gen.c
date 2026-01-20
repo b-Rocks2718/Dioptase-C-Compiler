@@ -231,6 +231,8 @@ static const char* tac_instr_name(enum TACInstrType type) {
       return "TACCOPY";
     case TACCALL:
       return "TACCALL";
+    case TACCALL_INDIRECT:
+      return "TACCALL_INDIRECT";
     case TACGET_ADDRESS:
       return "TACGET_ADDRESS";
     case TACLOAD:
@@ -726,34 +728,6 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
         call_tail = &push_instr->next;
       }
 
-      //// make the stack pointer 4 byte aligned
-      //size_t padding = (4 - (stack_bytes % 4)) % 4;
-      //stack_bytes += padding;
-
-      //if (padding != 0) {
-      //  // add padding if needed
-      //  // sub sp sp <padding>
-      //  struct AsmInstr* pad_instr = arena_alloc(sizeof(struct AsmInstr));
-      //  pad_instr->type = ASM_BINARY;
-      //  pad_instr->alu_op = ALU_SUB;
-      //  pad_instr->dst = arena_alloc(sizeof(struct Operand));
-      //  pad_instr->dst->type = OPERAND_REG;
-      //  pad_instr->dst->reg = SP;
-      //  pad_instr->dst->asm_type = &kWordType;
-      //  pad_instr->src1 = arena_alloc(sizeof(struct Operand));
-      //  pad_instr->src1->type = OPERAND_REG;
-      //  pad_instr->src1->reg = SP;
-      //  pad_instr->src1->asm_type = &kWordType;
-      //  pad_instr->src2 = arena_alloc(sizeof(struct Operand));
-      //  pad_instr->src2->type = OPERAND_LIT;
-      //  pad_instr->src2->lit_value = padding;
-      //  pad_instr->src2->asm_type = &kWordType;
-      //  pad_instr->next = NULL;
-      //  // append padding instruction
-      //  *call_tail = pad_instr;
-      //  call_tail = &pad_instr->next;
-      //}
-
       size_t reg_arg_count = num_args < REG_ARG_LIMIT ? num_args : REG_ARG_LIMIT;
       for (size_t i = 0; i < reg_arg_count; i++) {
         struct AsmInstr* mov_instr = arena_alloc(sizeof(struct AsmInstr));
@@ -774,6 +748,143 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
       call_asm->label = call_instr->func_name;
       call_asm->dst = NULL;
       call_asm->src1 = NULL;
+      call_asm->src2 = NULL;
+      call_asm->next = NULL;
+      *call_tail = call_asm;
+      call_tail = &call_asm->next;
+
+      size_t stack_arg_count = num_args > REG_ARG_LIMIT ? num_args - REG_ARG_LIMIT : 0;
+      if (stack_arg_count > 0) {
+        struct AsmInstr* stack_adjust = arena_alloc(sizeof(struct AsmInstr));
+        stack_adjust->type = ASM_BINARY;
+        stack_adjust->alu_op = ALU_ADD;
+        stack_adjust->dst = arena_alloc(sizeof(struct Operand));
+        stack_adjust->dst->type = OPERAND_REG;
+        stack_adjust->dst->reg = SP;
+        stack_adjust->dst->asm_type = &kWordType;
+        stack_adjust->src1 = arena_alloc(sizeof(struct Operand));
+        stack_adjust->src1->type = OPERAND_REG;
+        stack_adjust->src1->reg = SP;
+        stack_adjust->src1->asm_type = &kWordType;
+        stack_adjust->src2 = arena_alloc(sizeof(struct Operand));
+        stack_adjust->src2->type = OPERAND_LIT;
+        stack_adjust->src2->lit_value = stack_bytes;
+        stack_adjust->src2->asm_type = &kWordType;
+        stack_adjust->next = NULL;
+        *call_tail = stack_adjust;
+        call_tail = &stack_adjust->next;
+      }
+
+      if (call_instr->dst != NULL) {
+        struct AsmInstr* result_mov = arena_alloc(sizeof(struct AsmInstr));
+        result_mov->type = ASM_MOV;
+        result_mov->dst = tac_val_to_asm(call_instr->dst);
+        result_mov->src1 = arena_alloc(sizeof(struct Operand));
+        result_mov->src1->type = OPERAND_REG;
+        result_mov->src1->reg = R1;
+        result_mov->src1->asm_type = type_to_asm_type(call_instr->dst->type);
+        result_mov->src2 = NULL;
+        result_mov->next = NULL;
+        *call_tail = result_mov;
+        call_tail = &result_mov->next;
+      }
+
+      return call_head;
+    }
+    case TACCALL_INDIRECT:{
+      // TAC:
+      // Call func -> dst (args...)
+      //
+      // ASM:
+      // Push stack args (reverse order)
+      // Mov reg args into R1..R8
+      // Call func
+      // Binary Add SP, SP, stack_bytes
+      // Mov dst, R1 (if dst != NULL)
+      struct TACCallIndirect* call_instr = &tac_instr->instr.tac_call_indirect;
+      struct AsmInstr* call_head = NULL;
+      struct AsmInstr** call_tail = &call_head;
+
+      size_t num_args = call_instr->num_args;
+      struct Val* args = call_instr->args;
+      const size_t REG_ARG_LIMIT = 8;
+      size_t stack_arg_start = num_args > REG_ARG_LIMIT ? REG_ARG_LIMIT : num_args;
+
+      size_t stack_bytes = 0; // track how much stack space we use for args
+
+      for (size_t idx = num_args; idx > stack_arg_start; ) {
+        idx--;
+        struct AsmInstr* push_instr = arena_alloc(sizeof(struct AsmInstr));
+        push_instr->type = ASM_PUSH;
+        push_instr->src1 = tac_val_to_asm(&args[idx]);
+        push_instr->src2 = NULL;
+
+        struct AsmType* type = push_instr->src1->asm_type;
+        if (type == NULL) {
+          asm_gen_error("call-args", func_name,
+                        "missing asm type for stack arg %zu", idx);
+        }
+        size_t type_size = asm_type_size(type);
+
+        push_instr->dst = NULL;
+        push_instr->next = NULL;
+
+        size_t alignment = type_size <= 4 ? type_size : 4;
+
+        // ensure proper alignment
+        size_t padding = (alignment - (stack_bytes % alignment)) % alignment;
+        stack_bytes += padding;
+        stack_bytes += type_size;
+
+        if (padding != 0) {
+          // add padding if needed
+          // sub sp sp <padding>
+          struct AsmInstr* pad_instr = arena_alloc(sizeof(struct AsmInstr));
+          pad_instr->type = ASM_BINARY;
+          pad_instr->alu_op = ALU_SUB;
+          pad_instr->dst = arena_alloc(sizeof(struct Operand));
+          pad_instr->dst->type = OPERAND_REG;
+          pad_instr->dst->reg = SP;
+          pad_instr->dst->asm_type = &kWordType;
+          pad_instr->src1 = arena_alloc(sizeof(struct Operand));
+          pad_instr->src1->type = OPERAND_REG;
+          pad_instr->src1->reg = SP;
+          pad_instr->src1->asm_type = &kWordType;
+          pad_instr->src2 = arena_alloc(sizeof(struct Operand));
+          pad_instr->src2->type = OPERAND_LIT;
+          pad_instr->src2->lit_value = padding;
+          pad_instr->src2->asm_type = &kWordType;
+          pad_instr->next = NULL;
+          // append padding instruction
+          *call_tail = pad_instr;
+          call_tail = &pad_instr->next;
+        }
+
+        // append push instruction (possibly after padding)
+        *call_tail = push_instr;
+        call_tail = &push_instr->next;
+      }
+
+      size_t reg_arg_count = num_args < REG_ARG_LIMIT ? num_args : REG_ARG_LIMIT;
+      for (size_t i = 0; i < reg_arg_count; i++) {
+        struct AsmInstr* mov_instr = arena_alloc(sizeof(struct AsmInstr));
+        mov_instr->type = ASM_MOV;
+        mov_instr->dst = arena_alloc(sizeof(struct Operand));
+        mov_instr->dst->type = OPERAND_REG;
+        mov_instr->dst->reg = (enum Reg)(R1 + i);
+        mov_instr->dst->asm_type = &kWordType;
+        mov_instr->src1 = tac_val_to_asm(&args[i]);
+        mov_instr->src2 = NULL;
+        mov_instr->next = NULL;
+        *call_tail = mov_instr;
+        call_tail = &mov_instr->next;
+      }
+
+      struct AsmInstr* call_asm = arena_alloc(sizeof(struct AsmInstr));
+      call_asm->type = ASM_INDIRECT_CALL;
+      call_asm->label = NULL;
+      call_asm->dst = NULL;
+      call_asm->src1 = tac_val_to_asm(call_instr->func);
       call_asm->src2 = NULL;
       call_asm->next = NULL;
       *call_tail = call_asm;
@@ -1047,6 +1158,11 @@ struct Operand** get_srcs(struct AsmInstr* asm_instr, size_t* out_count) {
       struct Operand** srcs_extend = arena_alloc(sizeof(struct Operand*));
       srcs_extend[0] = asm_instr->src1;
       return srcs_extend;
+    case ASM_INDIRECT_CALL:
+      *out_count = 1;
+      struct Operand** srcs_indirect_call = arena_alloc(sizeof(struct Operand*));
+      srcs_indirect_call[0] = asm_instr->src1;
+      return srcs_indirect_call;
     default:
       *out_count = 0;
       return NULL;
@@ -1089,6 +1205,10 @@ bool is_static_symbol_operand(const struct Operand* opr) {
   struct SymbolEntry* entry = symbol_table_get(global_symbol_table, opr->pseudo);
   if (entry == NULL || entry->attrs == NULL) {
     return false;
+  }
+  if (entry->type != NULL && entry->type->type == FUN_TYPE) {
+    // Function symbols live in the text segment and should be treated as static operands.
+    return true;
   }
   return entry->attrs->attr_type == STATIC_ATTR ||
          entry->attrs->attr_type == CONST_ATTR;

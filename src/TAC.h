@@ -59,6 +59,7 @@ enum TACInstrType {
   TACLABEL,
   TACCOPY,
   TACCALL,
+  TACCALL_INDIRECT,
   TACGET_ADDRESS,
   TACLOAD,
   TACSTORE,
@@ -147,6 +148,13 @@ struct TACCall {
   size_t num_args;
 };
 
+struct TACCallIndirect {
+  struct Val* func;
+  struct Val* dst;
+  struct Val* args;
+  size_t num_args;
+};
+
 struct TACGetAddress {
   struct Val* dst;
   struct Val* src;
@@ -194,6 +202,7 @@ union TACInstrVariant {
   struct TACLabel tac_label;
   struct TACCopy tac_copy;
   struct TACCall tac_call;
+  struct TACCallIndirect tac_call_indirect;
   struct TACGetAddress tac_get_address;
   struct TACLoad tac_load;
   struct TACStore tac_store;

@@ -1,0 +1,10 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            Return(SizeOfT(func(ret_type=int, param_types=[int, ])*):untyped);
+    );
+)

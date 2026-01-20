@@ -845,6 +845,15 @@ bool typecheck_convert_expr(struct Expr** expr) {
     addr_expr->value_type = make_pointer_type((*expr)->value_type->type_data.array_type.element_type);
     *expr = addr_expr;
   }
+  if ((*expr)->value_type->type == FUN_TYPE) {
+    // Function designators decay to pointers in expression contexts.
+    struct Expr* addr_expr = arena_alloc(sizeof(struct Expr));
+    addr_expr->type = ADDR_OF;
+    addr_expr->loc = (*expr)->loc;
+    addr_expr->expr.addr_of_expr.expr = *expr;
+    addr_expr->value_type = make_pointer_type((*expr)->value_type);
+    *expr = addr_expr;
+  }
   return true;
 }
 
@@ -1255,17 +1264,38 @@ bool typecheck_expr(struct Expr* expr) {
       return true;
     }
     case FUNCTION_CALL: {
-      struct SymbolEntry* entry = symbol_table_get(global_symbol_table, expr->expr.fun_call_expr.func_name);
-      if (entry == NULL) {
-        type_error_at(expr->loc, "unknown function in function call");
-        return false;
+      struct Expr* func_expr = expr->expr.fun_call_expr.func;
+      struct Type* func_type = NULL;
+      if (func_expr->type == VAR) {
+        // Identifiers can refer to functions or function pointers.
+        struct SymbolEntry* entry = symbol_table_get(global_symbol_table,
+                                                     func_expr->expr.var_expr.name);
+        if (entry == NULL) {
+          type_error_at(expr->loc, "unknown function in function call");
+          return false;
+        }
+        func_type = entry->type;
+      } else {
+        if (!typecheck_convert_expr(&expr->expr.fun_call_expr.func)) {
+          return false;
+        }
+        func_expr = expr->expr.fun_call_expr.func;
+        func_type = func_expr->value_type;
       }
-      struct Type* func_type = entry->type;
+
+      if (func_type->type == POINTER_TYPE &&
+          func_type->type_data.pointer_type.referenced_type->type == FUN_TYPE) {
+        func_type = func_type->type_data.pointer_type.referenced_type;
+      }
       if (func_type->type != FUN_TYPE) {
-        type_error_at(expr->loc,
-                      "variable %.*s cannot be used as a function",
-                      (int)expr->expr.fun_call_expr.func_name->len,
-                      expr->expr.fun_call_expr.func_name->start);
+        if (func_expr->type == VAR) {
+          type_error_at(expr->loc,
+                        "variable %.*s cannot be used as a function",
+                        (int)func_expr->expr.var_expr.name->len,
+                        func_expr->expr.var_expr.name->start);
+        } else {
+          type_error_at(expr->loc, "expression cannot be used as a function");
+        }
         return false;
       }
 
@@ -1282,12 +1312,6 @@ bool typecheck_expr(struct Expr* expr) {
       if (entry == NULL) {
         type_error_at(expr->loc,
                       "unknown variable %.*s",
-                      (int)expr->expr.var_expr.name->len, expr->expr.var_expr.name->start);
-        return false;
-      }
-      if (entry->type->type == FUN_TYPE) {
-        type_error_at(expr->loc,
-                      "function %.*s cannot be used as a variable",
                       (int)expr->expr.var_expr.name->len, expr->expr.var_expr.name->start);
         return false;
       }
@@ -1701,7 +1725,7 @@ bool is_void_pointer_type(struct Type* type) {
 }
 
 bool is_complete_type(struct Type* type) {
-  return type->type != VOID_TYPE;
+  return type->type != VOID_TYPE && type->type != FUN_TYPE;
 }
 
 bool is_pointer_to_complete_type(struct Type* type) {

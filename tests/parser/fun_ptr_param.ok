@@ -1,0 +1,18 @@
+Program(
+    FunDclr(
+        inc,
+        storage=none
+        params=[VarDclr(none, int, x), ]
+        type=func(ret_type=int, param_types=[int, ]),
+        body=
+            Return(AddOp(Var(x):untyped, LitExpr(int, 1):untyped):untyped);
+    );
+    FunDclr(
+        apply,
+        storage=none
+        params=[VarDclr(none, func(ret_type=int, param_types=[int, ])*, fn), VarDclr(none, int, x), ]
+        type=func(ret_type=int, param_types=[func(ret_type=int, param_types=[int, ])*, int, ]),
+        body=
+            Return(FunCallExpr(Dereference(Var(fn):untyped):untyped, [Var(x):untyped, ]):untyped);
+    );
+)
