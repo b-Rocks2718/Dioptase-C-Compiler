@@ -1,11 +1,10 @@
 // Purpose: Verify cleanup runs at block exit for a local variable.
 // Expected: main returns 0.
-#define TEST_ZERO 0
 #define TEST_OK 0
 #define TEST_FAIL 1
 #define TEST_VALUE 37
 
-int result = TEST_ZERO;
+int result = 0;
 
 void cleanup_int(int *p) {
   result = *p;

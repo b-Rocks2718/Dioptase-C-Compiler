@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/cleanup_not_function.c:6:36: cleanup function cleanup_target must have type void func(type*)

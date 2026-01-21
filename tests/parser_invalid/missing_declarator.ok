@@ -1,1 +1,2 @@
+Parse error at tests/parser_invalid/missing_declarator.c:1:1: expected declarator after type specifiers
 Parse error at tests/parser_invalid/missing_declarator.c:1:1: unexpected token

@@ -1,0 +1,4 @@
+Identifier resolution failed
+Identifier Resolution Error at tests/idents_invalid/cleanup_extern.c:7:14: extern/static variables cannot have cleanup attributes
+Identifier Resolution Error: failed to resolve declaration in block
+Identifier Resolution Error: failed to resolve declaration

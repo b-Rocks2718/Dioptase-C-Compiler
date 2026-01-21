@@ -1,0 +1,2 @@
+Parse error at tests/parser_invalid/cleanup_missing_paren.c:4:48: expected ')))' after attribute identifier
+Parse error at tests/parser_invalid/cleanup_missing_paren.c:4:48: unexpected token

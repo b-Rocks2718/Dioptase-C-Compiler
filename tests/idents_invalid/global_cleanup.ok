@@ -1,0 +1,3 @@
+Identifier resolution failed
+Identifier Resolution Error at tests/idents_invalid/global_cleanup.c:6:40: file-scope variables cannot have cleanup attributes
+Identifier Resolution Error: failed to resolve declaration

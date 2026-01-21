@@ -1,0 +1,54 @@
+Key: cleanup_ptr
+  Type: func(ret_type=void, param_types=[int**, ])
+  Attributes:
+    Attr Type: Function
+    Is Defined: false
+    Storage Class: None
+
+Key: p.0
+  Type: int**
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: value.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: ptr.2
+  Type: int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Program(
+    FunDclr(
+        cleanup_ptr,
+        storage=none
+        params=[VarDclr(none, int**, p.0), ]
+        type=func(ret_type=void, param_types=[int**, ]),
+        body=null
+    );
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int, value.1, SingleInit(LitExpr(int, 0):int));
+            VarDclr(none, int*, cleanup = cleanup_ptr, ptr.2, SingleInit(AddrOf(Var(value.1):int):int*));
+            Return(Dereference(Var(ptr.2):int*):int, main);
+    );
+)

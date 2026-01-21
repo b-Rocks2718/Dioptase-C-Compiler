@@ -1,0 +1,4 @@
+Identifier resolution failed
+Identifier Resolution Error at tests/idents_invalid/dup_param.c:1:20: multiple declarations for variable
+Identifier Resolution Error at tests/idents_invalid/dup_param.c:1:20: failed to resolve parameter
+Identifier Resolution Error: failed to resolve declaration

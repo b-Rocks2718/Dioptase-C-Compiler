@@ -1,0 +1,4 @@
+Identifier resolution failed
+Identifier Resolution Error at tests/idents_invalid/call_before_decl.c:2:10: no declaration for variable
+Identifier Resolution Error at tests/idents_invalid/call_before_decl.c:2:3: failed to resolve statement in block
+Identifier Resolution Error: failed to resolve declaration

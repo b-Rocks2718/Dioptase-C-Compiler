@@ -1,0 +1,4 @@
+Identifier resolution failed
+Identifier Resolution Error at tests/idents_invalid/out_of_scope_var.c:5:10: no declaration for variable
+Identifier Resolution Error at tests/idents_invalid/out_of_scope_var.c:5:3: failed to resolve statement in block
+Identifier Resolution Error: failed to resolve declaration

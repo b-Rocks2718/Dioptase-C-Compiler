@@ -1,0 +1,20 @@
+Program(
+    FunDclr(
+        cleanup_int,
+        storage=none
+        params=[VarDclr(none, int*, p), ]
+        type=func(ret_type=void, param_types=[int*, ]),
+        body=null
+    );
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int, cleanup = cleanup_int, value, SingleInit(LitExpr(int, 0):untyped));
+            VarDclr(none, int, cleanup = cleanup_int, value2, SingleInit(LitExpr(int, 0):untyped));
+            VarDclr(none, int, cleanup = cleanup_int, value3, SingleInit(LitExpr(int, 0):untyped));
+            Return(Var(value):untyped);
+    );
+)

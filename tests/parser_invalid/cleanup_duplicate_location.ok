@@ -1,0 +1,2 @@
+Parse error at tests/parser_invalid/cleanup_duplicate_location.c:4:81: cleanup specified multiple times
+Parse error at tests/parser_invalid/cleanup_duplicate_location.c:4:81: unexpected token

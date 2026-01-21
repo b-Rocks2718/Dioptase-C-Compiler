@@ -290,7 +290,8 @@ struct TACInstr* for_to_TAC(struct Slice* func_name,
                                    struct Expr* condition,
                                    struct Expr* end,
                                    struct Statement* body,
-                                   struct Slice* label);
+                                   struct Slice* label,
+                                   struct IdentMap* idents);
 
 // ----- Utility functions -----
 

@@ -4,6 +4,9 @@
 #include <stddef.h>
 #include <stdbool.h>
 
+#include "slice.h"
+#include "identifier_map.h"
+
 /* AST data structures */
 
 struct Program {
@@ -90,11 +93,16 @@ struct Initializer {
   const char* loc; // location in source for error reporting
 };
 
+struct VarAttributes {
+  struct Slice* cleanup_func;
+};
+
 struct VariableDclr {
   struct Slice* name;
   struct Initializer* init;
   struct Type* type;
   enum StorageClass storage;
+  struct VarAttributes attributes;
 };
 
 struct FunctionDclr {
@@ -385,6 +393,7 @@ struct ForStmt {
   struct Expr* end;
   struct Statement* statement;
   struct Slice* label;
+  struct IdentMap* init_idents;
 };
 
 enum ForInitType {
@@ -463,6 +472,7 @@ struct BlockItem {
 
 struct Block {
   struct BlockItem* item;
+  struct IdentMap* idents;
   struct Block* next;
 };
 

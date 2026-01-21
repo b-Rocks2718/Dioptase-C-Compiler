@@ -1,0 +1,4 @@
+Identifier resolution failed
+Identifier Resolution Error at tests/idents_invalid/dup_local_var.c:3:7: multiple declarations for variable
+Identifier Resolution Error: failed to resolve declaration in block
+Identifier Resolution Error: failed to resolve declaration

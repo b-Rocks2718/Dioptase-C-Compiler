@@ -62,15 +62,17 @@ void enter_scope(struct IdentStack* stack);
 
 // Purpose: Pop and destroy the top scope from the stack.
 // Inputs: stack is the identifier stack.
-// Outputs: Removes the current IdentMap and frees it.
+// Outputs: Removes the current IdentMap and returns it.
 // Invariants/Assumptions: No lookups should occur in the popped scope afterward.
-void exit_scope(struct IdentStack* stack);
+struct IdentMap* exit_scope(struct IdentStack* stack);
 
 // Purpose: Look up an identifier across scopes.
 // Inputs: stack is the identifier stack; key is the lookup name.
 // Outputs: Returns the entry and sets from_current_scope accordingly.
 // Invariants/Assumptions: Searches from innermost to outermost scope.
 struct IdentMapEntry* ident_stack_get(struct IdentStack* stack, struct Slice* key, bool* from_current_scope);
+
+void destroy_ident_map(struct IdentMap* map);
 
 // Purpose: Check if an identifier exists in the current scope.
 // Inputs: stack is the identifier stack; key is the lookup name.

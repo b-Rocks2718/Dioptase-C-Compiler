@@ -145,15 +145,16 @@ void enter_scope(struct IdentStack* stack){
 
 // Purpose: Pop and destroy the current scope.
 // Inputs: stack is the identifier stack.
-// Outputs: Frees the top IdentMap and removes it from the stack.
+// Outputs: Returns the top IdentMap and removes it from the stack.
 // Invariants/Assumptions: Prints an error if the stack is empty.
-void exit_scope(struct IdentStack* stack){
+struct IdentMap* exit_scope(struct IdentStack* stack){
   struct IdentMap* old_map = ident_stack_pop(stack);
   if (old_map != NULL){
-    destroy_ident_map(old_map);
+    return old_map;
   } else {
     // error: no map to pop
     printf("Identifier Map Error: No map in stack to pop\n");
+    exit(1);
   }
 }
 

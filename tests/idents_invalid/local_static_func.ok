@@ -1,0 +1,4 @@
+Identifier resolution failed
+Identifier Resolution Error at tests/idents_invalid/local_static_func.c:2:14: local function declarations cannot be static
+Identifier Resolution Error: failed to resolve declaration in block
+Identifier Resolution Error: failed to resolve declaration

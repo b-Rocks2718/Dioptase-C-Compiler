@@ -1,0 +1,42 @@
+Program(
+    FunDclr(
+        cleanup_int_ptr,
+        storage=none
+        params=[VarDclr(none, int**, p), ]
+        type=func(ret_type=void, param_types=[int**, ]),
+        body=null
+    );
+    FunDclr(
+        cleanup_arr_ptrs,
+        storage=none
+        params=[VarDclr(none, int*[2]*, p), ]
+        type=func(ret_type=void, param_types=[int*[2]*, ]),
+        body=null
+    );
+    FunDclr(
+        cleanup_arr,
+        storage=none
+        params=[VarDclr(none, int[2]*, p), ]
+        type=func(ret_type=void, param_types=[int[2]*, ]),
+        body=null
+    );
+    FunDclr(
+        cleanup_fp,
+        storage=none
+        params=[VarDclr(none, func(ret_type=int, param_types=[int, ])**, p), ]
+        type=func(ret_type=void, param_types=[func(ret_type=int, param_types=[int, ])**, ]),
+        body=null
+    );
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int**, cleanup = cleanup_int_ptr, pp);
+            VarDclr(none, int*[2], cleanup = cleanup_arr_ptrs, arr);
+            VarDclr(none, int[2]*, cleanup = cleanup_arr, arr_ptr);
+            VarDclr(none, func(ret_type=int, param_types=[int, ])*, cleanup = cleanup_fp, fp);
+            Return(LitExpr(int, 0):untyped);
+    );
+)

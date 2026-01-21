@@ -113,6 +113,7 @@ struct IdentAttr {
   bool is_defined;
   enum StorageClass storage;
   struct IdentInit init;
+  struct Slice* cleanup_handler;
 };
 
 // Purpose: Global symbol table for the active typechecking pass.

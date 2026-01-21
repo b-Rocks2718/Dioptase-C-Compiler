@@ -1,0 +1,2 @@
+Parse error at tests/parser_invalid/cleanup_missing_arg.c:4:35: expected identifier for cleanup function
+Parse error at tests/parser_invalid/cleanup_missing_arg.c:4:35: unexpected token

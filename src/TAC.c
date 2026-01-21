@@ -699,6 +699,38 @@ struct TACInstr* block_to_TAC(struct Slice* func_name, struct Block* block) {
     concat_TAC_instrs(&head, item_instrs);
   }
 
+  // call all cleanup handlers for variables going out of scope
+  if (block == NULL || block->idents == NULL) {
+    return head;
+  }
+  for (size_t i = 0; i < block->idents->size; ++i){
+    for (struct IdentMapEntry* ident_entry = block->idents->arr[i]; ident_entry != NULL; ident_entry = ident_entry->next) {
+      struct SymbolEntry* symbol_entry = symbol_table_get(global_symbol_table, ident_entry->entry_name);
+      if (symbol_entry == NULL || symbol_entry->attrs == NULL) {
+        continue;
+      }
+      if (symbol_entry->attrs->attr_type == LOCAL_ATTR &&
+          symbol_entry->attrs->cleanup_handler != NULL) {
+        struct TACInstr* cleanup_instr = tac_instr_create(TACCALL);
+        cleanup_instr->instr.tac_call.func_name = symbol_entry->attrs->cleanup_handler;
+        struct Val* var = tac_make_var(ident_entry->entry_name, symbol_entry->type);
+        struct Val* addr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
+        struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
+        addr_instr->instr.tac_get_address.dst = addr;
+        addr_instr->instr.tac_get_address.src = var;
+        concat_TAC_instrs(&head, addr_instr);
+        cleanup_instr->instr.tac_call.args = addr;
+        cleanup_instr->instr.tac_call.dst = NULL;
+        cleanup_instr->instr.tac_call.num_args = 1;
+        concat_TAC_instrs(&head, cleanup_instr);
+      }
+    }
+  }
+  if (block->idents != NULL) {
+    destroy_ident_map(block->idents);
+    block->idents = NULL;
+  }
+
   return head;
 }
 
@@ -1097,7 +1129,8 @@ struct TACInstr* stmt_to_TAC(struct Slice* func_name, struct Statement* stmt) {
                         stmt->statement.for_stmt.condition,
                         stmt->statement.for_stmt.end,
                         stmt->statement.for_stmt.statement,
-                        stmt->statement.for_stmt.label);
+                        stmt->statement.for_stmt.label,
+                        stmt->statement.for_stmt.init_idents);
     }
     case SWITCH_STMT: {
       // AST:
@@ -1381,7 +1414,8 @@ struct TACInstr* for_to_TAC(struct Slice* func_name,
                                    struct Expr* condition,
                                    struct Expr* end,
                                    struct Statement* body,
-                                   struct Slice* label) {
+                                   struct Slice* label,
+                                   struct IdentMap* idents) {
   if (label == NULL) {
     tac_error_at(condition ? condition->loc : NULL, "for loop label missing");
     return NULL;
@@ -1453,6 +1487,38 @@ struct TACInstr* for_to_TAC(struct Slice* func_name,
   struct TACInstr* break_label_instr = tac_instr_create(TACLABEL);
   break_label_instr->instr.tac_label.label = break_label;
   concat_TAC_instrs(&instrs, break_label_instr);
+
+  // call all cleanup functions for variables going out of scope here
+  if (idents == NULL) {
+    return instrs;
+  }
+  for (size_t i = 0; i < idents->size; ++i){
+    for (struct IdentMapEntry* ident_entry = idents->arr[i]; ident_entry != NULL; ident_entry = ident_entry->next) {
+      struct SymbolEntry* symbol_entry = symbol_table_get(global_symbol_table, ident_entry->entry_name);
+      if (symbol_entry == NULL || symbol_entry->attrs == NULL) {
+        continue;
+      }
+      if (symbol_entry->attrs->attr_type == LOCAL_ATTR &&
+          symbol_entry->attrs->cleanup_handler != NULL) {
+        struct TACInstr* cleanup_instr = tac_instr_create(TACCALL);
+        cleanup_instr->instr.tac_call.func_name = symbol_entry->attrs->cleanup_handler;
+        struct Val* var = tac_make_var(ident_entry->entry_name, symbol_entry->type);
+        // pass in address of var
+        struct Val* addr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
+        struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
+        addr_instr->instr.tac_get_address.dst = addr;
+        addr_instr->instr.tac_get_address.src = var;
+        concat_TAC_instrs(&instrs, addr_instr);
+        cleanup_instr->instr.tac_call.args = addr;
+        cleanup_instr->instr.tac_call.dst = NULL;
+        cleanup_instr->instr.tac_call.num_args = 1;
+        concat_TAC_instrs(&instrs, cleanup_instr);
+      }
+    }
+  }
+  if (idents != NULL){
+    destroy_ident_map(idents);
+  }
 
   return instrs;
 }

@@ -629,10 +629,19 @@ void print_initializer(struct Initializer* init, int tabs){
   }
 }
 
+void print_var_attributes(struct VarAttributes attrs){
+  if (attrs.cleanup_func != NULL){
+    printf("cleanup = ");
+    print_slice(attrs.cleanup_func);
+    printf(", ");
+  }
+}
+
 void print_var_dclr(struct VariableDclr* var_dclr, int tabs){
   printf("VarDclr(");
   print_storage_class(var_dclr->storage); printf(", ");
   print_type(var_dclr->type); printf(", ");
+  print_var_attributes(var_dclr->attributes);
   print_slice(var_dclr->name);
   if (var_dclr->init != NULL) {
     printf(", "); print_initializer(var_dclr->init, tabs);

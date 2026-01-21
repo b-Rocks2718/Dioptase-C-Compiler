@@ -237,6 +237,7 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
     attrs->storage = var_dclr->storage;
     attrs->init.init_type = init_type;
     attrs->init.init_list = init_list;
+    attrs->cleanup_handler = NULL;
 
     symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
   }
@@ -307,6 +308,7 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
     attrs->attr_type = FUN_ATTR;
     attrs->is_defined = (func_dclr->body != NULL);
     attrs->storage = func_dclr->storage;
+    attrs->cleanup_handler = NULL;
     symbol_table_insert(global_symbol_table, func_dclr->name, func_dclr->type, attrs);
   } else {
     // ensure the existing entry is a function
@@ -394,6 +396,7 @@ bool typecheck_params(struct ParamList* params) {
     attrs->attr_type = LOCAL_ATTR;
     attrs->is_defined = true;
     attrs->storage = NONE; // parameters have no storage class
+    attrs->cleanup_handler = NULL;
     symbol_table_insert(global_symbol_table, cur->param.name, cur->param.type, attrs);
 
     cur = cur->next;
@@ -703,6 +706,7 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
       attrs->storage = EXTERN;
       attrs->init.init_type = NO_INIT;
       attrs->init.init_list = NULL;
+      attrs->cleanup_handler = NULL;
       symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
     } else {
       // ensure the existing entry is not a function
@@ -752,13 +756,13 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
 
     struct SymbolEntry* entry = symbol_table_get(global_symbol_table, var_dclr->name);
     if (entry == NULL) {
-      // HERE!
       struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
       attrs->attr_type = STATIC_ATTR;
       attrs->is_defined = (var_dclr->init != NULL);
       attrs->storage = STATIC;
       attrs->init.init_type = (var_dclr->init != NULL) ? INITIAL : TENTATIVE;
       attrs->init.init_list = init_list;
+      attrs->cleanup_handler = NULL;
       symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
     } else {
       // ensure the existing entry is not a function
@@ -809,6 +813,7 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
     attrs->attr_type = LOCAL_ATTR;
     attrs->is_defined = true;
     attrs->storage = NONE; // local variables have no storage class
+    attrs->cleanup_handler = var_dclr->attributes.cleanup_func;
     symbol_table_insert(global_symbol_table, var_dclr->name, var_dclr->type, attrs);
 
     if (var_dclr->init != NULL) {
@@ -816,6 +821,42 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
       if (!typecheck_init(var_dclr->init, var_dclr->type)) {
         return false;
       }
+    }
+  }
+
+  // this is a local declaration, so we should typecheck the cleanup if it exists
+  if (var_dclr->attributes.cleanup_func != NULL) {
+    // look up the cleanup function in the symbol table
+    struct SymbolEntry* cleanup_entry = symbol_table_get(global_symbol_table, var_dclr->attributes.cleanup_func);
+    if (cleanup_entry == NULL) {
+      type_error_at(var_dclr->attributes.cleanup_func->start,
+                    "unknown cleanup function %.*s for static local variable %.*s",
+                    (int)var_dclr->attributes.cleanup_func->len, var_dclr->attributes.cleanup_func->start,
+                    (int)var_dclr->name->len, var_dclr->name->start);
+      return false;
+    }
+
+    // ensure the cleanup function has the correct type: void func(type*)
+    struct Type* cleanup_type = cleanup_entry->type;
+    if (cleanup_type->type != FUN_TYPE ||
+        cleanup_type->type_data.fun_type.return_type->type != VOID_TYPE ||
+        cleanup_type->type_data.fun_type.param_types == NULL ||
+        cleanup_type->type_data.fun_type.param_types->next != NULL) {
+      type_error_at(var_dclr->attributes.cleanup_func->start,
+                    "cleanup function %.*s must have type void func(type*)",
+                    (int)var_dclr->attributes.cleanup_func->len, var_dclr->attributes.cleanup_func->start);
+      return false;
+    }
+
+    // check parameter type
+    struct Type* param_type = cleanup_type->type_data.fun_type.param_types->type;
+    if (param_type->type != POINTER_TYPE ||
+        !compare_types(param_type->type_data.pointer_type.referenced_type, var_dclr->type)) {
+      type_error_at(var_dclr->attributes.cleanup_func->start,
+                    "cleanup function %.*s must have type void func(type*) where type matches variable %.*s",
+                    (int)var_dclr->attributes.cleanup_func->len, var_dclr->attributes.cleanup_func->start,
+                    (int)var_dclr->name->len, var_dclr->name->start);
+      return false;
     }
   }
 

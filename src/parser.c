@@ -1522,6 +1522,11 @@ struct VariableDclr* parse_for_dclr(){
   if ((size_t)(current - program) >= prog_size) {
     return NULL;
   }
+
+  // check for attributes
+  struct VarAttributes* attrs = NULL;
+  if ((attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 1
+
   if (!is_type_specifier(current->type)) {
     return NULL;
   }
@@ -1534,10 +1539,29 @@ struct VariableDclr* parse_for_dclr(){
     return NULL;
   }
 
+  struct VarAttributes* new_attrs = NULL;
+  if ((new_attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 2
+  if (attrs->cleanup_func != NULL && new_attrs->cleanup_func != NULL){
+    parse_error_at(parser_error_ptr(), "cleanup specified multiple times");
+    return NULL;
+  }
+  if (new_attrs->cleanup_func != NULL){
+    attrs = new_attrs;
+  }
+
   struct Declarator* declarator = parse_declarator();
   if (declarator == NULL) {
-    current = old_current;
+    parse_error_at(parser_error_ptr(), "invalid declarator in for-loop initializer");
     return NULL;
+  }
+
+  if ((new_attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 3
+  if (attrs->cleanup_func != NULL && new_attrs->cleanup_func != NULL){
+    parse_error_at(parser_error_ptr(), "cleanup specified multiple times");
+    return NULL;
+  }
+  if (new_attrs->cleanup_func != NULL){
+    attrs = new_attrs;
   }
 
   struct Slice* name = NULL;
@@ -1557,6 +1581,7 @@ struct VariableDclr* parse_for_dclr(){
     current = old_current;
     return NULL;
   }
+  var_dclr->attributes = *attrs;
   return var_dclr;
 }
 
@@ -1827,6 +1852,7 @@ struct VariableDclr* parse_var_dclr(struct Type* type, enum StorageClass storage
   var_dclr->name = name;
   var_dclr->type = type;
   var_dclr->storage = storage;
+  var_dclr->attributes.cleanup_func = NULL;
   return var_dclr;
 }
 
@@ -2188,6 +2214,7 @@ bool process_params_info(struct ParamInfoList* params, struct ParamList** params
     node->param.type = type_;
     node->param.init = NULL;
     node->param.storage = NONE;
+    node->param.attributes.cleanup_func = NULL;
     node->next = NULL;
     if (head == NULL){
       head = node;
@@ -2321,6 +2348,48 @@ struct FunctionDclr* parse_function(struct Type* ret_type, enum StorageClass sto
   return result;
 }
 
+struct VarAttributes* parse_var_attributes(){
+  // only supports __attribute__((cleanup(...))) for now
+  struct VarAttributes* attrs = arena_alloc(sizeof(struct VarAttributes));
+  if (!consume(ATTRIBUTE_TOK)){
+    attrs->cleanup_func = NULL;
+    return attrs;
+  }
+
+  // there is an attribute list
+  if (!consume(OPEN_P) || !consume(OPEN_P)){
+    parse_error_at(parser_error_ptr(), "expected '((' after 'attribute'");
+    return NULL;
+  }
+
+  union TokenVariant* data = consume_with_data(IDENT);
+  if (data == NULL){
+    parse_error_at(parser_error_ptr(), "expected identifier for attribute");
+    return NULL;
+  }
+  if (!compare_slice_to_pointer(data->ident_name, "cleanup")){
+    parse_error_at(parser_error_ptr(), "only 'cleanup' attribute is supported");
+    return NULL;
+  }
+  if (!consume(OPEN_P)){
+    parse_error_at(parser_error_ptr(), "expected '(' after 'cleanup'");
+    return NULL;
+  }
+  data = consume_with_data(IDENT);
+  if (data == NULL){
+    parse_error_at(parser_error_ptr(), "expected identifier for cleanup function");
+    return NULL;
+  }
+  attrs->cleanup_func = data->ident_name;
+
+  if (!consume(CLOSE_P) || !consume(CLOSE_P) || !consume(CLOSE_P)){
+    parse_error_at(parser_error_ptr(), "expected ')))' after attribute identifier");
+    return NULL;
+  }
+
+  return attrs;
+}
+
 // Parse a full declaration (function or variable).
 // Purpose: Parse a declaration (function or variable) at any scope.
 // Inputs: Consumes tokens from the current cursor.
@@ -2328,6 +2397,8 @@ struct FunctionDclr* parse_function(struct Type* ret_type, enum StorageClass sto
 // Invariants/Assumptions: Storage class and type specifiers precede declarators.
 struct Declaration* parse_declaration(){
   struct Token* old_current = current;
+  struct VarAttributes* attrs = NULL;
+  if ((attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 1
   if ((size_t)(current - program) >= prog_size) return NULL;
   if (!is_type_specifier(current->type)) return NULL;
   
@@ -2338,11 +2409,28 @@ struct Declaration* parse_declaration(){
     current = old_current;
     return NULL;
   }
+  struct VarAttributes* new_attrs = NULL;
+  if ((new_attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 2
+  if (attrs->cleanup_func != NULL && new_attrs->cleanup_func != NULL){
+    parse_error_at(parser_error_ptr(), "cleanup specified multiple times");
+    return NULL;
+  }
+  if (new_attrs->cleanup_func != NULL){
+    attrs = new_attrs;
+  }
 
   struct Declarator* declarator = parse_declarator();
   if (declarator == NULL){
-    current = old_current;
+    parse_error_at(parser_error_ptr(), "expected declarator after type specifiers");
     return NULL;
+  }
+  if ((new_attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 3
+  if (attrs->cleanup_func != NULL && new_attrs->cleanup_func != NULL){
+    parse_error_at(parser_error_ptr(), "cleanup specified multiple times");
+    return NULL;
+  }
+  if (new_attrs->cleanup_func != NULL){
+    attrs = new_attrs;
   }
 
   struct Slice* name = NULL;
@@ -2375,6 +2463,7 @@ struct Declaration* parse_declaration(){
   }
   result->type = VAR_DCLR;
   result->dclr.var_dclr = *var_dclr;
+  result->dclr.var_dclr.attributes = *attrs;
   return result;
 }
 

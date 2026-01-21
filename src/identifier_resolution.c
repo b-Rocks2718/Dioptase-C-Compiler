@@ -178,6 +178,22 @@ bool resolve_expr(struct Expr* expr) {
 // Outputs: Returns true on success; false on redeclaration or lookup errors.
 // Invariants/Assumptions: Locals may be renamed to unique slices.
 bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
+  // extern and static declarations don't support cleanup attributes
+  if (var_dclr->storage != NONE && var_dclr->attributes.cleanup_func != NULL) {
+    ident_error_at(var_dclr->name->start, "extern/static variables cannot have cleanup attributes");
+    return false;
+  }
+
+  if (var_dclr->attributes.cleanup_func != NULL) {
+    // ensure cleanup function is declared
+    bool from_current_scope = false;
+    struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, var_dclr->attributes.cleanup_func, &from_current_scope);
+    if (entry == NULL) {
+      ident_error_at(var_dclr->attributes.cleanup_func->start, "cleanup function not declared");
+      return false;
+    }
+  }
+
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, var_dclr->name, &from_current_scope);
   if (var_dclr->storage == EXTERN) {
@@ -299,7 +315,12 @@ bool resolve_stmt(struct Statement* stmt) {
       if (!resolve_block(stmt->statement.compound_stmt.block)) {
         return false;
       }
-      exit_scope(global_ident_stack);
+      struct IdentMap* maps = exit_scope(global_ident_stack);
+      if (stmt->statement.compound_stmt.block != NULL) {
+        stmt->statement.compound_stmt.block->idents = maps;
+      } else {
+        destroy_ident_map(maps);
+      }
       return true;
     case BREAK_STMT:
       return true;
@@ -335,7 +356,7 @@ bool resolve_stmt(struct Statement* stmt) {
       if (!resolve_stmt(stmt->statement.for_stmt.statement)) {
         return false;
       }
-      exit_scope(global_ident_stack);
+      stmt->statement.for_stmt.init_idents = exit_scope(global_ident_stack);
       return true;
     case SWITCH_STMT:
       if (!resolve_expr(stmt->statement.switch_stmt.condition)) {
@@ -435,6 +456,12 @@ bool resolve_block(struct Block* block){
 // Outputs: Returns true on success; false on invalid redeclarations.
 // Invariants/Assumptions: File-scope variables keep their original names.
 bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
+  // file scope vars don't support cleanup attributes
+  if (var_dclr->attributes.cleanup_func != NULL) {
+    ident_error_at(var_dclr->name->start, "file-scope variables cannot have cleanup attributes");
+    return false;
+  }
+
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, var_dclr->name, &from_current_scope);
   if (entry != NULL) {
@@ -481,7 +508,7 @@ bool resolve_file_scope_func(struct FunctionDclr* func_dclr) {
     enter_scope(global_ident_stack);
     bool params_resolved = resolve_params(func_dclr->params);
     bool block_resolved = resolve_block(func_dclr->body);
-    exit_scope(global_ident_stack);
+    func_dclr->body->idents = exit_scope(global_ident_stack);
     return params_resolved && block_resolved;
   } else {
     // add to ident map
@@ -492,7 +519,13 @@ bool resolve_file_scope_func(struct FunctionDclr* func_dclr) {
     enter_scope(global_ident_stack);
     bool params_resolved = resolve_params(func_dclr->params);
     bool block_resolved = resolve_block(func_dclr->body);
-    exit_scope(global_ident_stack);
+    
+    struct IdentMap* maps = exit_scope(global_ident_stack);
+    if (func_dclr->body != NULL){
+      func_dclr->body->idents = maps;
+    } else {
+      destroy_ident_map(maps);
+    }
 
     return params_resolved && block_resolved;
   }
