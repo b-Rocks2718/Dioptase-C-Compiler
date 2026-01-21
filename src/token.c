@@ -228,6 +228,9 @@ void print_token(struct Token token){
     case SIZEOF_TOK:
       printf("sizeof");
       break;
+    case ATTRIBUTE_TOK:
+      printf("__attribute__");
+      break;
     default:
       printf("Token?");
       break;
