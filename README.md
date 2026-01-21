@@ -63,12 +63,12 @@ Supported:
   - ternary `?:`
   - function calls
   - `sizeof` types and expressions
-  - Statement expressions
+  - statement expressions
 - Statements: expression statements, `return`, blocks, `if`/`else`, `while`, `do`/`while`,
   `for`, `break`, `continue`, `switch`/`case`/`default`, labels and `goto`
 
 Limitations:
-
+- No cleanup attribute
 - No structs/unions, enums, or floating-point
 - No `long` integers
 - No `typedef`, `const`, `volatile`, `inline`, or `restrict`
@@ -96,18 +96,20 @@ make test
 make test-release
 ```
 
-`make test` and `make test-release` also build and run the TAC interpreter, TAC execution, and emulator execution tests from `tests/tac_interpreter_tests.c`, `tests/tac_exec_tests.c`, and `tests/emu_exec_tests.c` (the execution tests use sources in `tests/tac_exec/` and `tests/emu_exec/`).
+`make test` and `make test-release` also build and run the TAC interpreter, TAC execution, emulator execution, and full emulator execution tests from `tests/tac_interpreter_tests.c`, `tests/tac_exec_tests.c`, `tests/emu_exec_tests.c`, and `tests/emu_exec_full_tests.c` (the execution tests use sources in `tests/tac_exec/` and `tests/exec/`).
 
 I also use [test cases from Writing a C Compiler](https://github.com/nlsandler/writing-a-c-compiler-tests#) via the wrapper in `tests/wacc_tac_compiler.py`. Run them with:
 
 ```sh
 make test-wacc
 make test-wacc-release
+make test-wacc-kernel
+make test-wacc-kernel-release
 make test-tac-wacc
 make test-tac-wacc-release
 ```
 
-`test-wacc*` runs the WACC tests via the emulator + assembler pipeline, while `test-tac-wacc*` uses the TAC interpreter wrapper. The WACC runner defaults can be overridden with `WACC_CORE_CHAPTER`, `WACC_EXTRA_CHAPTERS`, `WACC_EXTRA_CREDIT`, `WACC_SKIP_TYPES`, and `WACC_ARGS`.
+`test-wacc*` runs the WACC tests via the emulator + assembler pipeline (simple emulator), `test-wacc-kernel*` runs them via the full emulator using kernel-mode assembly plus `tests/kernel/init.s` and `tests/kernel/arithmetic.s`, and `test-tac-wacc*` uses the TAC interpreter wrapper. The WACC runner defaults can be overridden with `WACC_CORE_CHAPTER`, `WACC_EXTRA_CHAPTERS`, `WACC_EXTRA_CREDIT`, `WACC_SKIP_TYPES`, and `WACC_ARGS`. Kernel runs can also override `DIOPTASE_EMULATOR_FULL`, `DIOPTASE_WACC_KERNEL_INIT`, and `DIOPTASE_WACC_KERNEL_ARITH`.
 
 ## Makefile Targets
 
@@ -125,6 +127,8 @@ Test suites:
 - `make test-release`
 - `make test-wacc`
 - `make test-wacc-release`
+- `make test-wacc-kernel`
+- `make test-wacc-kernel-release`
 - `make test-tac-wacc`
 - `make test-tac-wacc-release`
 
