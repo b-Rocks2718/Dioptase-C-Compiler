@@ -1,0 +1,66 @@
+Key: p.0
+  Type: int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: x.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: touch
+  Type: func(ret_type=void, param_types=[int*, ])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: y.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Program(
+    FunDclr(
+        touch,
+        storage=none
+        params=[VarDclr(none, int*, p.0), ]
+        type=func(ret_type=void, param_types=[int*, ]),
+        body=
+            ExprStmt(Assign(Dereference(Var(p.0):int*):int, LitExpr(int, 1):int):int);
+    );
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int, x.1, SingleInit(LitExpr(int, 0):int));
+            ExprStmt(
+                StmtExpr(
+                    VarDclr(none, int, y.2, SingleInit(LitExpr(int, 2):int));
+                    IfStmt(
+                        c=Var(y.2):int, 
+                        left=
+                            CompoundStmt(
+                                ExprStmt(FunCallExpr(Var(touch):untyped, [AddrOf(Var(x.1):int):int*, ]):void);
+                            );
+                    );
+                )
+            :void);
+            Return(Var(x.1):int, main);
+    );
+)

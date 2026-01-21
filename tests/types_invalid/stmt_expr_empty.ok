@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/stmt_expr_empty.c:2:15: empty statement expression

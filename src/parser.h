@@ -19,6 +19,8 @@ struct Arena;
 // Invariants/Assumptions: tokens must remain valid for the parse duration.
 struct Program* parse_prog(struct TokenArray* tokens);
 
+struct Block* parse_block(bool* success);
+
 // Purpose: Parse a single statement from the current token cursor.
 // Inputs: Consumes the global parser token stream.
 // Outputs: Returns a Statement node or NULL if no statement matches.

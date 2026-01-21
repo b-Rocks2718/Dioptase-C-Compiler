@@ -165,6 +165,8 @@ bool resolve_expr(struct Expr* expr) {
       return resolve_expr(expr->expr.sizeof_expr.expr);
     case SIZEOF_T_EXPR:
       return true;
+    case STMT_EXPR:
+      return resolve_block(expr->expr.stmt_expr.block);
     default:
       ident_error_at(expr->loc, "unknown expression type");
       return false;

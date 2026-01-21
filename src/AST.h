@@ -141,6 +141,7 @@ enum ExprType {
   STRING,
   SIZEOF_EXPR,
   SIZEOF_T_EXPR,
+  STMT_EXPR,
 };
 
 enum BinOp {
@@ -277,6 +278,10 @@ struct SizeOfTExpr {
   struct Type* type;
 };
 
+struct StmtExpr {
+  struct Block* block;
+};
+
 union ExprVariant {
   struct BinaryExpr bin_expr;
   struct AssignExpr assign_expr;
@@ -293,6 +298,7 @@ union ExprVariant {
   struct StringExpr string_expr;
   struct SizeOfExpr sizeof_expr;
   struct SizeOfTExpr sizeof_t_expr;
+  struct StmtExpr stmt_expr;
 };
 
 struct Expr {
@@ -594,43 +600,45 @@ struct DclrPrefix {
 
 /* show instances */
 
-void print_expr(struct Expr* expr);
+void print_expr(struct Expr* expr, int tabs);
 
-void print_bin_expr(struct BinaryExpr* expr);
+void print_bin_expr(struct BinaryExpr* expr, int tabs);
 
-void print_un_expr(struct UnaryExpr* expr);
+void print_un_expr(struct UnaryExpr* expr, int tabs);
 
-void print_assign_expr(struct AssignExpr* expr);
+void print_assign_expr(struct AssignExpr* expr, int tabs);
 
-void print_post_assign_expr(struct PostAssignExpr* expr);
+void print_post_assign_expr(struct PostAssignExpr* expr, int tabs);
 
-void print_conditional_expr(struct ConditionalExpr* expr);
+void print_conditional_expr(struct ConditionalExpr* expr, int tabs);
 
 void print_lit_expr(struct LitExpr* expr);
 
 void print_var_expr(struct VarExpr* expr);
 
-void print_fun_call_expr(struct FunctionCallExpr* expr);
+void print_fun_call_expr(struct FunctionCallExpr* expr, int tabs);
 
-void print_cast_expr(struct CastExpr* expr);
+void print_cast_expr(struct CastExpr* expr, int tabs);
 
-void print_addr_of_expr(struct AddrOfExpr* expr);
+void print_addr_of_expr(struct AddrOfExpr* expr, int tabs);
 
-void print_dereference_expr(struct DereferenceExpr* expr);
+void print_dereference_expr(struct DereferenceExpr* expr, int tabs);
 
 void print_type(struct Type* type);
 
-void print_stmt(struct Statement* stmt, unsigned tabs);
+void print_stmt(struct Statement* stmt, int tabs);
 
-void print_declaration(struct Declaration* declaration, unsigned tabs);
+void print_declaration(struct Declaration* declaration, int tabs);
 
-void print_var_dclr(struct VariableDclr* var_dclr);
+void print_var_dclr(struct VariableDclr* var_dclr, int tabs);
+
+void print_block(struct Block* block, int tabs);
 
 void print_prog(struct Program* prog);
 
-void print_initializer(struct Initializer* init);
+void print_initializer(struct Initializer* init, int tabs);
 
-void print_subscript_expr(struct SubscriptExpr* expr);
+void print_subscript_expr(struct SubscriptExpr* expr, int tabs);
 
 bool compare_types(struct Type* a, struct Type* b);
 

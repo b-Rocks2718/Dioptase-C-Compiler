@@ -1,4 +1,3 @@
-#define TAC_INTERNAL
 #include "TAC.h"
 #include "arena.h"
 #include "label_resolution.h"
@@ -1220,7 +1219,7 @@ struct TACInstr* cases_to_TAC(struct Slice* label, struct CaseList* cases, struc
 // Inputs: func_name is the owning function; init_ may be a declaration or expression.
 // Outputs: Returns a TAC list for the initializer, or NULL if empty.
 // Invariants/Assumptions: The initializer is already typechecked.
-static struct TACInstr* for_init_to_TAC(struct Slice* func_name, struct ForInit* init_) {
+struct TACInstr* for_init_to_TAC(struct Slice* func_name, struct ForInit* init_) {
   if (init_ == NULL) {
     return NULL;
   }
@@ -1253,7 +1252,7 @@ static struct TACInstr* for_init_to_TAC(struct Slice* func_name, struct ForInit*
 // Inputs: func_name is the owning function; condition/body are loop components.
 // Outputs: Returns a TAC list implementing the loop.
 // Invariants/Assumptions: label must be non-NULL after loop labeling.
-static struct TACInstr* while_to_TAC(struct Slice* func_name,
+struct TACInstr* while_to_TAC(struct Slice* func_name,
                                      struct Expr* condition,
                                      struct Statement* body,
                                      struct Slice* label) {
@@ -1314,7 +1313,7 @@ static struct TACInstr* while_to_TAC(struct Slice* func_name,
 // Inputs: func_name is the owning function; condition/body are loop components.
 // Outputs: Returns a TAC list implementing the loop.
 // Invariants/Assumptions: label must be non-NULL after loop labeling.
-static struct TACInstr* do_while_to_TAC(struct Slice* func_name,
+struct TACInstr* do_while_to_TAC(struct Slice* func_name,
                                         struct Statement* body,
                                         struct Expr* condition,
                                         struct Slice* label) {
@@ -1377,7 +1376,7 @@ static struct TACInstr* do_while_to_TAC(struct Slice* func_name,
 // Inputs: func_name is the owning function; init/condition/end/body form the loop.
 // Outputs: Returns a TAC list implementing the loop.
 // Invariants/Assumptions: label must be non-NULL after loop labeling.
-static struct TACInstr* for_to_TAC(struct Slice* func_name,
+struct TACInstr* for_to_TAC(struct Slice* func_name,
                                    struct ForInit* init_,
                                    struct Expr* condition,
                                    struct Expr* end,
@@ -1510,7 +1509,6 @@ struct TACInstr* if_else_to_TAC(struct Slice* func_name,
   struct TACInstr* cond_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
   struct TACInstr* if_instrs = stmt_to_TAC(func_name, if_stmt);
   struct TACInstr* else_instrs = stmt_to_TAC(func_name, else_stmt);
-
   struct Slice* else_label = tac_make_label(func_name, "else");
   struct Slice* end_label = tac_make_label(func_name, "end");
 
@@ -1559,7 +1557,7 @@ struct TACInstr* if_else_to_TAC(struct Slice* func_name,
 // Inputs: func_name is the owning function; args is the linked list of expressions.
 // Outputs: Returns TAC instructions for argument evaluation and fills out_args/count.
 // Invariants/Assumptions: Arguments are evaluated left-to-right.
-static struct TACInstr* args_to_TAC(struct Slice* func_name,
+struct TACInstr* args_to_TAC(struct Slice* func_name,
                                     struct ArgList* args,
                                     struct Val** out_args,
                                     size_t* out_count) {
@@ -1592,7 +1590,7 @@ static struct TACInstr* args_to_TAC(struct Slice* func_name,
 // Inputs: func_name is the owning function; expr/op/left/right describe the comparison.
 // Outputs: Returns a TAC list and sets result to the boolean value.
 // Invariants/Assumptions: Operand types are already typechecked for comparison.
-static struct TACInstr* relational_to_TAC(struct Slice* func_name,
+struct TACInstr* relational_to_TAC(struct Slice* func_name,
                                           struct Expr* expr,
                                           enum BinOp op,
                                           struct Expr* left,
@@ -2693,6 +2691,85 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
       result->type = PLAIN_OPERAND;
       result->val = tac_make_const(type_size, tac_builtin_type(UINT_TYPE));
       return NULL;
+    }
+    case STMT_EXPR: {
+      struct StmtExpr* stmt_expr = &expr->expr.stmt_expr;
+      if (stmt_expr->block == NULL) {
+        tac_error_at(expr->loc, "empty statement expression in TAC lowering");
+        return NULL;
+      }
+
+      struct Block* last_item = stmt_expr->block;
+      while (last_item->next != NULL) {
+        last_item = last_item->next;
+      }
+
+      struct TACInstr* instrs = NULL;
+
+      for (struct Block* cur = stmt_expr->block; cur != NULL; cur = cur->next) {
+        // loop though each item here instead of doing it recursively,
+        // that way we can get the result from the last item easily
+        struct TACInstr* item_instrs = NULL;
+        bool is_last = (cur == last_item);
+
+        switch (cur->item->type) {
+          case STMT_ITEM: {
+            struct Statement* stmt = cur->item->item.stmt;
+            if (is_last && stmt->type == EXPR_STMT) {
+              // Last expression statement provides the statement-expression value.
+              struct Expr* tail_expr = stmt->statement.expr_stmt.expr;
+              if (expr->value_type->type == VOID_TYPE) {
+                item_instrs = expr_to_TAC_convert(func_name, tail_expr, NULL);
+                result->type = PLAIN_OPERAND;
+                result->val = NULL;
+              } else {
+                struct Val* dst = make_temp(func_name, expr->value_type);
+                item_instrs = expr_to_TAC_convert(func_name, tail_expr, dst);
+                result->type = PLAIN_OPERAND;
+                result->val = dst;
+              }
+            } else {
+              item_instrs = stmt_to_TAC(func_name, stmt);
+              if (is_last) {
+                result->type = PLAIN_OPERAND;
+                result->val = NULL;
+              }
+            }
+
+            if (debug_info_enabled) {
+              struct TACInstr* boundary_before = tac_instr_create(TACBOUNDARY);
+              boundary_before->instr.tac_boundary.loc = stmt->loc;
+              concat_TAC_instrs(&boundary_before, item_instrs);
+              item_instrs = boundary_before;
+            }
+            break;
+          }
+          case DCLR_ITEM: {
+            item_instrs = local_dclr_to_TAC(func_name, cur->item->item.dclr);
+            if (debug_info_enabled) {
+              const char* loc = declaration_loc(cur->item->item.dclr);
+              if (loc != NULL) {
+                struct TACInstr* boundary_dclr = tac_instr_create(TACBOUNDARY);
+                boundary_dclr->instr.tac_boundary.loc = loc;
+                concat_TAC_instrs(&boundary_dclr, item_instrs);
+                item_instrs = boundary_dclr;
+              }
+            }
+            if (is_last) {
+              result->type = PLAIN_OPERAND;
+              result->val = NULL;
+            }
+            break;
+          }
+          default:
+            tac_error_at(expr->loc, "invalid block item type in statement expression");
+            return NULL;
+        }
+
+        concat_TAC_instrs(&instrs, item_instrs);
+      }
+
+      return instrs;
     }
     default:
       tac_error_at(expr->loc, "expression type %d not implemented in TAC lowering", expr->type);

@@ -261,38 +261,36 @@ struct TACInstr* if_else_to_TAC(struct Slice* func_name, struct Expr* condition,
 
 struct TACInstr* cases_to_TAC(struct Slice* label, struct CaseList* cases, struct Val* rslt);
 
-#ifdef TAC_INTERNAL
-static struct TACInstr* relational_to_TAC(struct Slice* func_name,
+struct TACInstr* relational_to_TAC(struct Slice* func_name,
                                           struct Expr* expr,
                                           enum BinOp op,
                                           struct Expr* left,
                                           struct Expr* right,
                                           struct ExprResult* result);
 
-static struct TACInstr* args_to_TAC(struct Slice* func_name,
+struct TACInstr* args_to_TAC(struct Slice* func_name,
                                     struct ArgList* args,
                                     struct Val** out_args,
                                     size_t* out_count);
 
-static struct TACInstr* for_init_to_TAC(struct Slice* func_name, struct ForInit* init_);
+struct TACInstr* for_init_to_TAC(struct Slice* func_name, struct ForInit* init_);
 
-static struct TACInstr* while_to_TAC(struct Slice* func_name,
+struct TACInstr* while_to_TAC(struct Slice* func_name,
                                      struct Expr* condition,
                                      struct Statement* body,
                                      struct Slice* label);
 
-static struct TACInstr* do_while_to_TAC(struct Slice* func_name,
+struct TACInstr* do_while_to_TAC(struct Slice* func_name,
                                         struct Statement* body,
                                         struct Expr* condition,
                                         struct Slice* label);
 
-static struct TACInstr* for_to_TAC(struct Slice* func_name,
+struct TACInstr* for_to_TAC(struct Slice* func_name,
                                    struct ForInit* init_,
                                    struct Expr* condition,
                                    struct Expr* end,
                                    struct Statement* body,
                                    struct Slice* label);
-#endif
 
 // ----- Utility functions -----
 

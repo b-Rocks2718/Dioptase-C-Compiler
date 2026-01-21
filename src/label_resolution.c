@@ -100,6 +100,182 @@ bool label_loops(struct Program* prog) {
 
 // -------------------------------- loop/switch labeling -------------------------------- //
 
+bool label_expr(struct Slice* func_name, struct Expr* expr){
+  switch (expr->type) {
+    case BINARY: {
+      struct BinaryExpr* bin_expr = &expr->expr.bin_expr;
+      if (!label_expr(func_name, bin_expr->left)) {
+        return false;
+      }
+      if (!label_expr(func_name, bin_expr->right)) {
+        return false;
+      }
+      break;
+    }
+    case ASSIGN: {
+      struct AssignExpr* assign_expr = &expr->expr.assign_expr;
+      if (!label_expr(func_name, assign_expr->left)) {
+        return false;
+      }
+      if (!label_expr(func_name, assign_expr->right)) {
+        return false;
+      }
+      break;
+    }
+    case POST_ASSIGN: {
+      struct PostAssignExpr* post_assign_expr = &expr->expr.post_assign_expr;
+      if (!label_expr(func_name, post_assign_expr->expr)) {
+        return false;
+      }
+      break;
+    }
+    case CONDITIONAL: {
+      struct ConditionalExpr* cond_expr = &expr->expr.conditional_expr;
+      if (!label_expr(func_name, cond_expr->condition)) {
+        return false;
+      }
+      if (!label_expr(func_name, cond_expr->left)) {
+        return false;
+      }
+      if (!label_expr(func_name, cond_expr->right)) {
+        return false;
+      }
+      break;
+    }
+    case CAST: {
+      struct CastExpr* cast_expr = &expr->expr.cast_expr;
+      if (!label_expr(func_name, cast_expr->expr)) {
+        return false;
+      }
+      break;
+    }
+    case FUNCTION_CALL: {
+      struct FunctionCallExpr* fun_call_expr = &expr->expr.fun_call_expr;
+      if (!label_expr(func_name, fun_call_expr->func)) {
+        return false;
+      }
+      for (struct ArgList* arg = fun_call_expr->args; arg != NULL; arg = arg->next) {
+        if (!label_expr(func_name, arg->arg)) {
+          return false;
+        }
+      }
+      break;
+    }
+    case ADDR_OF: {
+      struct AddrOfExpr* addr_of_expr = &expr->expr.addr_of_expr;
+      if (!label_expr(func_name, addr_of_expr->expr)) {
+        return false;
+      }
+      break;
+    }
+    case DEREFERENCE: {
+      struct DereferenceExpr* deref_expr = &expr->expr.deref_expr;
+      if (!label_expr(func_name, deref_expr->expr)) {
+        return false;
+      }
+      break;
+    }
+    case SUBSCRIPT: {
+      struct SubscriptExpr* subscript_expr = &expr->expr.subscript_expr;
+      if (!label_expr(func_name, subscript_expr->array)) {
+        return false;
+      }
+      if (!label_expr(func_name, subscript_expr->index)) {
+        return false;
+      }
+      break;
+    }
+    case SIZEOF_EXPR: {
+      struct SizeOfExpr* sizeof_expr = &expr->expr.sizeof_expr;
+      if (!label_expr(func_name, sizeof_expr->expr)) {
+        return false;
+      }
+      break;
+    }
+    case STMT_EXPR: {
+      struct StmtExpr* stmt_expr = &expr->expr.stmt_expr;
+      if (!label_block(func_name, stmt_expr->block)) {
+        return false;
+      }
+      break;
+    }
+    default:
+      // No labels needed in other expression types
+      break;
+  }
+  return true;
+}
+
+// Purpose: Label any statement expressions embedded in an initializer tree.
+// Inputs: func_name is the enclosing function name; init is the initializer node.
+// Outputs: Returns true on success; false on any labeling error.
+// Invariants/Assumptions: Compound initializers may nest arbitrarily.
+static bool label_initializer(struct Slice* func_name, struct Initializer* init) {
+  if (init == NULL) {
+    return true;
+  }
+
+  switch (init->init_type) {
+    case SINGLE_INIT:
+      if (init->init.single_init != NULL) {
+        return label_expr(func_name, init->init.single_init);
+      }
+      return true;
+    case COMPOUND_INIT:
+      for (struct InitializerList* item = init->init.compound_init; item != NULL; item = item->next) {
+        if (!label_initializer(func_name, item->init)) {
+          return false;
+        }
+      }
+      return true;
+    default:
+      label_error_at("Loop Labeling Error", init->loc,
+                     "unknown initializer type");
+      return false;
+  }
+}
+
+// Purpose: Label statement expressions referenced by a local declaration.
+// Inputs: func_name is the enclosing function name; dclr is the declaration node.
+// Outputs: Returns true on success; false on any labeling error.
+// Invariants/Assumptions: Local function declarations do not have bodies.
+static bool label_local_dclr(struct Slice* func_name, struct Declaration* dclr) {
+  switch (dclr->type) {
+    case VAR_DCLR:
+      return label_initializer(func_name, dclr->dclr.var_dclr.init);
+    case FUN_DCLR:
+      return true;
+    default:
+      label_error_at("Loop Labeling Error", NULL,
+                     "unknown declaration type");
+      return false;
+  }
+}
+
+// Purpose: Label statement expressions used in a for-loop initializer.
+// Inputs: func_name is the enclosing function name; init is the for initializer.
+// Outputs: Returns true on success; false on any labeling error.
+// Invariants/Assumptions: The initializer is either a declaration or expression.
+static bool label_for_init(struct Slice* func_name, struct ForInit* init) {
+  if (init == NULL) {
+    return true;
+  }
+
+  switch (init->type) {
+    case DCLR_INIT:
+      return label_initializer(func_name, init->init.dclr_init->init);
+    case EXPR_INIT:
+      if (init->init.expr_init != NULL) {
+        return label_expr(func_name, init->init.expr_init);
+      }
+      return true;
+    default:
+      label_error_at("Loop Labeling Error", NULL,
+                     "unknown for initializer type");
+      return false;
+  }
+}
+
 // Purpose: Apply label assignment to a statement subtree.
 // Inputs: func_name is the enclosing function name; stmt is the node to label.
 // Outputs: Returns true on success; false on any invalid label usage.
@@ -107,6 +283,9 @@ bool label_loops(struct Program* prog) {
 bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
   switch (stmt->type) {
     case WHILE_STMT: {
+      if (!label_expr(func_name, stmt->statement.while_stmt.condition)) {
+        return false;
+      }
       struct WhileStmt* while_stmt = &stmt->statement.while_stmt;
       // generate label
       struct Slice* label = make_unique_label(func_name, "while");
@@ -150,6 +329,11 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       if (!label_stmt(func_name, do_while_stmt->statement)) {
         return false;
       }
+
+      if (!label_expr(func_name, do_while_stmt->condition)) {
+        return false;
+      }
+
       // assign label
       do_while_stmt->label = label;
 
@@ -176,6 +360,15 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       if (!label_stmt(func_name, for_stmt->statement)) {
         return false;
       }
+      if (!label_for_init(func_name, for_stmt->init)) {
+        return false;
+      }
+      if (for_stmt->condition != NULL && !label_expr(func_name, for_stmt->condition)) {
+        return false;
+      }
+      if (for_stmt->end != NULL && !label_expr(func_name, for_stmt->end)) {
+        return false;
+      }
       // assign label
       for_stmt->label = label;
 
@@ -197,6 +390,10 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       // Entered a switch: update current label state for break/case/default.
       cur_switch_label = label;
       cur_label_type = SWITCH;
+
+      if (!label_expr(func_name, switch_stmt->condition)) {
+        return false;
+      }
 
       // label body
       if (!label_stmt(func_name, switch_stmt->statement)) {
@@ -242,8 +439,19 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       }
       break;
     }
+    case EXPR_STMT: {
+      struct ExprStmt* expr_stmt = &stmt->statement.expr_stmt;
+      if (expr_stmt->expr != NULL && !label_expr(func_name, expr_stmt->expr)) {
+        return false;
+      }
+      break;
+    }
     case IF_STMT: {
       struct IfStmt* if_stmt = &stmt->statement.if_stmt;
+
+      if (!label_expr(func_name, if_stmt->condition)) {
+        return false;
+      }
       if (!label_stmt(func_name, if_stmt->if_stmt)) {
         return false;
       }
@@ -276,6 +484,11 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
       break;
     }
     case RETURN_STMT: {
+      if (stmt->statement.ret_stmt.expr != NULL) {
+        if (!label_expr(func_name, stmt->statement.ret_stmt.expr)) {
+          return false;
+        }
+      }
       struct ReturnStmt* ret_stmt = &stmt->statement.ret_stmt;
       // assign function name as return label
       ret_stmt->func = func_name;
@@ -333,7 +546,7 @@ bool label_stmt(struct Slice* func_name, struct Statement* stmt) {
 // Purpose: Label each statement item inside a block.
 // Inputs: func_name is the enclosing function name; block is the block list.
 // Outputs: Returns true on success; false on any labeling error.
-// Invariants/Assumptions: Declaration items do not require labeling.
+// Invariants/Assumptions: Initializers may contain statement expressions.
 bool label_block(struct Slice* func_name, struct Block* block) {
   for (struct Block* item = block; item != NULL; item = item->next) {
     switch (item->item->type) {
@@ -343,7 +556,9 @@ bool label_block(struct Slice* func_name, struct Block* block) {
         }
         break;
       case DCLR_ITEM:
-        // no need to label declarations
+        if (!label_local_dclr(func_name, item->item->item.dclr)) {
+          return false;
+        }
         break;
       default:
         label_error_at("Loop Labeling Error", NULL,
@@ -352,6 +567,100 @@ bool label_block(struct Slice* func_name, struct Block* block) {
     }
   }
   return true;
+}
+
+// Purpose: Resolve goto labels inside expression subtrees with statement expressions.
+// Inputs: expr is the expression to traverse.
+// Outputs: Returns true on success; false on unresolved goto targets.
+// Invariants/Assumptions: Statement expressions contain block lists.
+static bool resolve_gotos_expr(struct Expr* expr) {
+  if (expr == NULL) {
+    return true;
+  }
+
+  switch (expr->type) {
+    case BINARY:
+      return resolve_gotos_expr(expr->expr.bin_expr.left) &&
+             resolve_gotos_expr(expr->expr.bin_expr.right);
+    case ASSIGN:
+      return resolve_gotos_expr(expr->expr.assign_expr.left) &&
+             resolve_gotos_expr(expr->expr.assign_expr.right);
+    case POST_ASSIGN:
+      return resolve_gotos_expr(expr->expr.post_assign_expr.expr);
+    case CONDITIONAL:
+      return resolve_gotos_expr(expr->expr.conditional_expr.condition) &&
+             resolve_gotos_expr(expr->expr.conditional_expr.left) &&
+             resolve_gotos_expr(expr->expr.conditional_expr.right);
+    case CAST:
+      return resolve_gotos_expr(expr->expr.cast_expr.expr);
+    case FUNCTION_CALL: {
+      if (!resolve_gotos_expr(expr->expr.fun_call_expr.func)) {
+        return false;
+      }
+      for (struct ArgList* arg = expr->expr.fun_call_expr.args; arg != NULL; arg = arg->next) {
+        if (!resolve_gotos_expr(arg->arg)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    case ADDR_OF:
+      return resolve_gotos_expr(expr->expr.addr_of_expr.expr);
+    case DEREFERENCE:
+      return resolve_gotos_expr(expr->expr.deref_expr.expr);
+    case SUBSCRIPT:
+      return resolve_gotos_expr(expr->expr.subscript_expr.array) &&
+             resolve_gotos_expr(expr->expr.subscript_expr.index);
+    case SIZEOF_EXPR:
+      return resolve_gotos_expr(expr->expr.sizeof_expr.expr);
+    case STMT_EXPR:
+      return resolve_gotos(expr->expr.stmt_expr.block);
+    default:
+      return true;
+  }
+}
+
+// Purpose: Resolve goto labels inside initializer trees.
+// Inputs: init is the initializer node to traverse.
+// Outputs: Returns true on success; false on unresolved goto targets.
+// Invariants/Assumptions: Compound initializers may nest arbitrarily.
+static bool resolve_gotos_initializer(struct Initializer* init) {
+  if (init == NULL) {
+    return true;
+  }
+
+  switch (init->init_type) {
+    case SINGLE_INIT:
+      return resolve_gotos_expr(init->init.single_init);
+    case COMPOUND_INIT:
+      for (struct InitializerList* item = init->init.compound_init; item != NULL; item = item->next) {
+        if (!resolve_gotos_initializer(item->init)) {
+          return false;
+        }
+      }
+      return true;
+    default:
+      label_error_at("Goto Resolution Error", init->loc,
+                     "unknown initializer type");
+      return false;
+  }
+}
+
+// Purpose: Resolve goto labels inside a declaration initializer.
+// Inputs: dclr is the declaration node to traverse.
+// Outputs: Returns true on success; false on unresolved goto targets.
+// Invariants/Assumptions: Local function declarations do not have bodies.
+static bool resolve_gotos_dclr(struct Declaration* dclr) {
+  switch (dclr->type) {
+    case VAR_DCLR:
+      return resolve_gotos_initializer(dclr->dclr.var_dclr.init);
+    case FUN_DCLR:
+      return true;
+    default:
+      label_error_at("Goto Resolution Error", NULL,
+                     "unknown declaration type");
+      return false;
+  }
 }
 
 // Purpose: Resolve nested statements while rewriting goto targets.
@@ -371,6 +680,9 @@ static bool resolve_stmt(struct Statement* stmt) {
     }
   } else if (stmt->type == IF_STMT) {
     struct IfStmt* if_stmt = &stmt->statement.if_stmt;
+    if (!resolve_gotos_expr(if_stmt->condition)) {
+      return false;
+    }
     if (!resolve_stmt(if_stmt->if_stmt)) {
       return false;
     }
@@ -381,6 +693,9 @@ static bool resolve_stmt(struct Statement* stmt) {
     }
   } else if (stmt->type == WHILE_STMT) {
     struct WhileStmt* while_stmt = &stmt->statement.while_stmt;
+    if (!resolve_gotos_expr(while_stmt->condition)) {
+      return false;
+    }
     if (!resolve_stmt(while_stmt->statement)) {
       return false;
     }
@@ -389,24 +704,64 @@ static bool resolve_stmt(struct Statement* stmt) {
     if (!resolve_stmt(do_while_stmt->statement)) {
       return false;
     }
+    if (!resolve_gotos_expr(do_while_stmt->condition)) {
+      return false;
+    }
   } else if (stmt->type == FOR_STMT) {
     struct ForStmt* for_stmt = &stmt->statement.for_stmt;
+    if (for_stmt->init != NULL) {
+      if (for_stmt->init->type == DCLR_INIT) {
+        if (!resolve_gotos_initializer(for_stmt->init->init.dclr_init->init)) {
+          return false;
+        }
+      } else if (for_stmt->init->type == EXPR_INIT) {
+        if (!resolve_gotos_expr(for_stmt->init->init.expr_init)) {
+          return false;
+        }
+      } else {
+        label_error_at("Goto Resolution Error", stmt->loc,
+                       "unknown for initializer type");
+        return false;
+      }
+    }
+    if (!resolve_gotos_expr(for_stmt->condition)) {
+      return false;
+    }
+    if (!resolve_gotos_expr(for_stmt->end)) {
+      return false;
+    }
     if (!resolve_stmt(for_stmt->statement)) {
       return false;
     }
   } else if (stmt->type == SWITCH_STMT) {
     struct SwitchStmt* switch_stmt = &stmt->statement.switch_stmt;
+    if (!resolve_gotos_expr(switch_stmt->condition)) {
+      return false;
+    }
     if (!resolve_stmt(switch_stmt->statement)) {
       return false;
     }
   } else if (stmt->type == CASE_STMT) {
     struct CaseStmt* case_stmt = &stmt->statement.case_stmt;
+    if (!resolve_gotos_expr(case_stmt->expr)) {
+      return false;
+    }
     if (!resolve_stmt(case_stmt->statement)) {
       return false;
     }
   } else if (stmt->type == DEFAULT_STMT) {
     struct DefaultStmt* default_stmt = &stmt->statement.default_stmt;
     if (!resolve_stmt(default_stmt->statement)) {
+      return false;
+    }
+  } else if (stmt->type == RETURN_STMT) {
+    struct ReturnStmt* ret_stmt = &stmt->statement.ret_stmt;
+    if (!resolve_gotos_expr(ret_stmt->expr)) {
+      return false;
+    }
+  } else if (stmt->type == EXPR_STMT) {
+    struct ExprStmt* expr_stmt = &stmt->statement.expr_stmt;
+    if (!resolve_gotos_expr(expr_stmt->expr)) {
       return false;
     }
   } else if (stmt->type == GOTO_STMT) {
@@ -436,12 +791,110 @@ bool resolve_gotos(struct Block* block) {
       if (!resolve_stmt(item->item->item.stmt)) { 
         return false;
       }
+    } else if (item->item->type == DCLR_ITEM) {
+      if (!resolve_gotos_dclr(item->item->item.dclr)) {
+        return false;
+      }
     }
   }
   return true;
 }
 
 // -------------------------------- case collection -------------------------------- //
+
+// Purpose: Traverse expressions to collect cases within statement expressions.
+// Inputs: expr is the expression subtree to inspect.
+// Outputs: Returns true on success; false on case collection errors.
+// Invariants/Assumptions: Statement expressions contain block lists.
+static bool collect_cases_expr(struct Expr* expr) {
+  if (expr == NULL) {
+    return true;
+  }
+
+  switch (expr->type) {
+    case BINARY:
+      return collect_cases_expr(expr->expr.bin_expr.left) &&
+             collect_cases_expr(expr->expr.bin_expr.right);
+    case ASSIGN:
+      return collect_cases_expr(expr->expr.assign_expr.left) &&
+             collect_cases_expr(expr->expr.assign_expr.right);
+    case POST_ASSIGN:
+      return collect_cases_expr(expr->expr.post_assign_expr.expr);
+    case CONDITIONAL:
+      return collect_cases_expr(expr->expr.conditional_expr.condition) &&
+             collect_cases_expr(expr->expr.conditional_expr.left) &&
+             collect_cases_expr(expr->expr.conditional_expr.right);
+    case CAST:
+      return collect_cases_expr(expr->expr.cast_expr.expr);
+    case FUNCTION_CALL: {
+      if (!collect_cases_expr(expr->expr.fun_call_expr.func)) {
+        return false;
+      }
+      for (struct ArgList* arg = expr->expr.fun_call_expr.args; arg != NULL; arg = arg->next) {
+        if (!collect_cases_expr(arg->arg)) {
+          return false;
+        }
+      }
+      return true;
+    }
+    case ADDR_OF:
+      return collect_cases_expr(expr->expr.addr_of_expr.expr);
+    case DEREFERENCE:
+      return collect_cases_expr(expr->expr.deref_expr.expr);
+    case SUBSCRIPT:
+      return collect_cases_expr(expr->expr.subscript_expr.array) &&
+             collect_cases_expr(expr->expr.subscript_expr.index);
+    case SIZEOF_EXPR:
+      return collect_cases_expr(expr->expr.sizeof_expr.expr);
+    case STMT_EXPR:
+      return collect_cases(expr->expr.stmt_expr.block);
+    default:
+      return true;
+  }
+}
+
+// Purpose: Collect cases within initializer trees that may contain statement expressions.
+// Inputs: init is the initializer node to inspect.
+// Outputs: Returns true on success; false on case collection errors.
+// Invariants/Assumptions: Compound initializers may nest arbitrarily.
+static bool collect_cases_initializer(struct Initializer* init) {
+  if (init == NULL) {
+    return true;
+  }
+
+  switch (init->init_type) {
+    case SINGLE_INIT:
+      return collect_cases_expr(init->init.single_init);
+    case COMPOUND_INIT:
+      for (struct InitializerList* item = init->init.compound_init; item != NULL; item = item->next) {
+        if (!collect_cases_initializer(item->init)) {
+          return false;
+        }
+      }
+      return true;
+    default:
+      label_error_at("Case Collection Error", init->loc,
+                     "unknown initializer type");
+      return false;
+  }
+}
+
+// Purpose: Collect cases within declaration initializers.
+// Inputs: dclr is the declaration node to inspect.
+// Outputs: Returns true on success; false on case collection errors.
+// Invariants/Assumptions: Local function declarations do not have bodies.
+static bool collect_cases_dclr(struct Declaration* dclr) {
+  switch (dclr->type) {
+    case VAR_DCLR:
+      return collect_cases_initializer(dclr->dclr.var_dclr.init);
+    case FUN_DCLR:
+      return true;
+    default:
+      label_error_at("Case Collection Error", NULL,
+                     "unknown declaration type");
+      return false;
+  }
+}
 
 // Purpose: Traverse statements to collect case/default labels per switch.
 // Inputs: stmt is the statement subtree to inspect.
@@ -451,18 +904,48 @@ bool collect_cases_stmt(struct Statement* stmt){
   switch (stmt->type) {
     case WHILE_STMT: {
       struct WhileStmt* while_stmt = &stmt->statement.while_stmt;
+      if (!collect_cases_expr(while_stmt->condition)) {
+        return false;
+      }
       return collect_cases_stmt(while_stmt->statement);
     }
     case DO_WHILE_STMT: {
       struct DoWhileStmt* do_while_stmt = &stmt->statement.do_while_stmt;
+      if (!collect_cases_expr(do_while_stmt->condition)) {
+        return false;
+      }
       return collect_cases_stmt(do_while_stmt->statement);
     }
     case FOR_STMT: {
       struct ForStmt* for_stmt = &stmt->statement.for_stmt;
+      if (for_stmt->init != NULL) {
+        if (for_stmt->init->type == DCLR_INIT) {
+          if (!collect_cases_initializer(for_stmt->init->init.dclr_init->init)) {
+            return false;
+          }
+        } else if (for_stmt->init->type == EXPR_INIT) {
+          if (!collect_cases_expr(for_stmt->init->init.expr_init)) {
+            return false;
+          }
+        } else {
+          label_error_at("Case Collection Error", stmt->loc,
+                         "unknown for initializer type");
+          return false;
+        }
+      }
+      if (!collect_cases_expr(for_stmt->condition)) {
+        return false;
+      }
+      if (!collect_cases_expr(for_stmt->end)) {
+        return false;
+      }
       return collect_cases_stmt(for_stmt->statement);
     }
     case IF_STMT: {
       struct IfStmt* if_stmt = &stmt->statement.if_stmt;
+      if (!collect_cases_expr(if_stmt->condition)) {
+        return false;
+      }
       if (!collect_cases_stmt(if_stmt->if_stmt)) {
         return false;
       }
@@ -536,6 +1019,9 @@ bool collect_cases_stmt(struct Statement* stmt){
       struct CaseList* prev_case_list = current_case_list;
       current_case_list = NULL;
 
+      if (!collect_cases_expr(stmt->statement.switch_stmt.condition)) {
+        return false;
+      }
       if (!collect_cases_stmt(stmt->statement.switch_stmt.statement)) {
         return false;
       }
@@ -561,6 +1047,10 @@ bool collect_cases(struct Block* block) {
     // only need to process statements
     if (item->item->type == STMT_ITEM) {
       if (!collect_cases_stmt(item->item->item.stmt)) {
+        return false;
+      }
+    } else if (item->item->type == DCLR_ITEM) {
+      if (!collect_cases_dclr(item->item->item.dclr)) {
         return false;
       }
     }

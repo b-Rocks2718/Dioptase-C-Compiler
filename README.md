@@ -52,7 +52,7 @@ Flags can be combined to dump multiple stages. `-preprocess` exits early unless 
 
 Supported:
 
-- Types: `signed`/`unsigned` `int` and `short`, `void`, `char` types, arrays, strings, and pointers to these types
+- Types: `signed`/`unsigned` `int` and `short`, `void`, `char` types, arrays, functions, strings, and pointers to these types
 - Storage classes: `static`, `extern`
 - Declarations: global and local variables, function declarations/definitions
 - Expressions:
@@ -63,6 +63,7 @@ Supported:
   - ternary `?:`
   - function calls
   - `sizeof` types and expressions
+  - Statement expressions
 - Statements: expression statements, `return`, blocks, `if`/`else`, `while`, `do`/`while`,
   `for`, `break`, `continue`, `switch`/`case`/`default`, labels and `goto`
 
@@ -72,7 +73,6 @@ Limitations:
 - No `long` integers
 - No `typedef`, `const`, `volatile`, `inline`, or `restrict`
 - No multiple declarators per declaration (e.g., `int a, b;`)
-- No function pointers
 - No variadic functions
 - No inline assembly
 

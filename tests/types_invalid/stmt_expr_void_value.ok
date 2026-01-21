@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/stmt_expr_void_value.c:5:24: cannot convert type for assignment

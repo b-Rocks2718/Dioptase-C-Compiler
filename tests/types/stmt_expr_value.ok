@@ -1,0 +1,45 @@
+Key: result.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: t.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: base.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int, base.0, SingleInit(LitExpr(int, 3):int));
+            VarDclr(none, int, result.1, SingleInit(AddOp(LitExpr(int, 1):int, 
+                StmtExpr(
+                    VarDclr(none, int, t.2, SingleInit(MulOp(Var(base.0):int, LitExpr(int, 2):int):int));
+                    ExprStmt(AddOp(Var(t.2):int, LitExpr(int, 4):int):int);
+                )
+            :int):int));
+            Return(Var(result.1):int, main);
+    );
+)

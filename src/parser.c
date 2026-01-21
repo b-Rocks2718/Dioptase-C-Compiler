@@ -677,8 +677,24 @@ struct Expr* parse_cast(){
 // Outputs: Returns the inner expression or NULL on failure.
 // Invariants/Assumptions: Used to group expressions in the Pratt parser.
 struct Expr* parse_parens(){
+  struct Token* old_current = current;
   if (consume(OPEN_P)){
-    struct Token* old_current = current - 1;
+    struct Token* after_paren = current;
+    // try to consume stmt expr
+    bool success = true;
+    struct Block* block = parse_block(&success);
+    if (success){
+      if (!consume(CLOSE_P)){
+        current = after_paren;
+        goto consume_expr;
+      }
+      struct StmtExpr stmt_expr = {block};
+      struct Expr* result = alloc_expr(STMT_EXPR, (current - 1)->start);
+      result->expr.stmt_expr = stmt_expr;
+      return result;
+    }
+  consume_expr:
+    // else consume normal expr
     struct Expr* inner = parse_expr();
     if (inner == NULL) {
       current = old_current;

@@ -1495,6 +1495,29 @@ bool typecheck_expr(struct Expr* expr) {
       expr->value_type = &kUIntType; // not size_t yet, uint is large enough for now
       return true;
     }
+    case STMT_EXPR: {
+      struct StmtExpr* stmt_expr = &expr->expr.stmt_expr;
+      if (!typecheck_block(stmt_expr->block)) {
+        return false;
+      }
+
+      // get the last statement from the block
+      struct Block* last_item = stmt_expr->block;
+      if (last_item == NULL) {
+        type_error_at(expr->loc, "empty statement expression");
+        return false;
+      }
+      while (last_item->next != NULL) {
+        last_item = last_item->next;
+      }
+
+      if (last_item->item->type == STMT_ITEM && last_item->item->item.stmt->type == EXPR_STMT) {
+        expr->value_type = last_item->item->item.stmt->statement.expr_stmt.expr->value_type;
+      } else {
+        expr->value_type = &kVoidType;
+      }
+      return true;
+    }
     default: {
       type_error_at(expr->loc, "unknown expression type in typecheck_expr");
       return false; // Unknown expression type
