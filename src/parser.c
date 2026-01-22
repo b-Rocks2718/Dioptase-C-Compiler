@@ -258,15 +258,72 @@ struct Expr* parse_var(){
 // Inputs: Consumes type specifier tokens from the current cursor.
 // Outputs: Returns the parsed TypeSpecifier or 0 if none matched.
 // Invariants/Assumptions: Caller handles combinations of specifiers.
-enum TypeSpecifier parse_type_spec(){
-  if (consume(INT_TOK)) return INT_SPEC;
-  if (consume(SIGNED_TOK)) return SIGNED_SPEC;
-  if (consume(UNSIGNED_TOK)) return UNSIGNED_SPEC;
-  if (consume(LONG_TOK)) return LONG_SPEC;
-  if (consume(SHORT_TOK)) return SHORT_SPEC;
-  if (consume(CHAR_TOK)) return CHAR_SPEC;
-  if (consume(VOID_TOK)) return VOID_SPEC;
-  else return 0;
+struct TypeSpecifier parse_type_spec(){
+  if (consume(INT_TOK)) {
+    struct TypeSpecifier spec = { INT_SPEC, NULL };
+    return spec;
+  }
+  if (consume(SIGNED_TOK)) {
+    struct TypeSpecifier spec = { SIGNED_SPEC, NULL };
+    return spec;
+  }
+  if (consume(UNSIGNED_TOK)) {
+    struct TypeSpecifier spec = { UNSIGNED_SPEC, NULL };
+    return spec;
+  }
+  if (consume(LONG_TOK)) {
+    struct TypeSpecifier spec = { LONG_SPEC, NULL };
+    return spec;
+  }
+  if (consume(SHORT_TOK)) {
+    struct TypeSpecifier spec = { SHORT_SPEC, NULL };
+    return spec;
+  }
+  if (consume(CHAR_TOK)) {
+    struct TypeSpecifier spec = { CHAR_SPEC, NULL };
+    return spec;
+  }
+  if (consume(VOID_TOK)) {
+    struct TypeSpecifier spec = { VOID_SPEC, NULL };
+    return spec;
+  }
+  if (consume(STRUCT_TOK)){
+    union TokenVariant* data = consume_with_data(IDENT);
+    if (data != NULL) {
+      struct TypeSpecifier spec = { STRUCT_SPEC, data->ident_name };
+      return spec;
+    } else {
+      parse_error_at(parser_error_ptr(), "expected identifier after 'struct'");
+      struct TypeSpecifier spec = { -1, NULL };
+      return spec;
+    }
+  }
+  if (consume(UNION_TOK)){
+    union TokenVariant* data = consume_with_data(IDENT);
+    if (data != NULL) {
+      struct TypeSpecifier spec = { UNION_SPEC, data->ident_name };
+      return spec;
+    } else {
+      parse_error_at(parser_error_ptr(), "expected identifier after 'union'");
+      struct TypeSpecifier spec = { -1, NULL };
+      return spec;
+    }
+  }
+  if (consume(ENUM_TOK)){
+    union TokenVariant* data = consume_with_data(IDENT);
+    if (data != NULL) {
+      struct TypeSpecifier spec = { ENUM_SPEC, data->ident_name };
+      return spec;
+    } else {
+      parse_error_at(parser_error_ptr(), "expected identifier after 'enum'");
+      struct TypeSpecifier spec = { -1, NULL };
+      return spec;
+    }
+  }
+  else {
+    struct TypeSpecifier spec = { -1, NULL };
+    return spec;
+  }
 }
 
 // Purpose: Parse a list of type specifiers.
@@ -274,8 +331,8 @@ enum TypeSpecifier parse_type_spec(){
 // Outputs: Returns a linked list of TypeSpecList nodes or NULL.
 // Invariants/Assumptions: Caller validates duplicates and compatibility.
 struct TypeSpecList* parse_type_specs(){
-  enum TypeSpecifier spec = parse_type_spec();
-  if (spec == 0) return NULL;
+  struct TypeSpecifier spec = parse_type_spec();
+  if (spec.type == -1) return NULL;
   struct TypeSpecList* specs = arena_alloc(sizeof(struct TypeSpecList));
   specs->spec = spec;
   specs->next = parse_type_specs();
@@ -286,9 +343,9 @@ struct TypeSpecList* parse_type_specs(){
 // Inputs: types is the list; spec is the specifier to search for.
 // Outputs: Returns true if spec is present.
 // Invariants/Assumptions: types is a well-formed linked list.
-bool spec_list_contains(struct TypeSpecList* types, enum TypeSpecifier spec){
-  if (types->spec == spec) return true;
-  else if (types->next == NULL) return false;
+struct TypeSpecifier* spec_list_contains(struct TypeSpecList* types, enum TypeSpecifierType spec){
+  if (types->spec.type == spec) return &types->spec;
+  else if (types->next == NULL) return NULL;
   else return spec_list_contains(types->next, spec);
 }
 
@@ -304,9 +361,12 @@ bool spec_list_valid(struct TypeSpecList* types){
   unsigned num_shorts = 0;
   unsigned num_chars = 0;
   unsigned num_voids = 0;
+  unsigned num_structs = 0;
+  unsigned num_unions = 0;
+  unsigned num_enums = 0;
   struct TypeSpecList* cur = types;
   while (cur != NULL){
-    switch (cur->spec){
+    switch (cur->spec.type){
       case INT_SPEC:
         num_ints++;
         break;
@@ -328,11 +388,24 @@ bool spec_list_valid(struct TypeSpecList* types){
       case VOID_SPEC:
         num_voids++;
         break;
+      case STRUCT_SPEC:
+        num_structs++;
+        break;
+      case UNION_SPEC:
+        num_unions++;
+        break;
+      case ENUM_SPEC:
+        num_enums++;
+        break;
       default:
         break;
     }
     cur = cur->next;
   }
+  int int_kind_sum = num_ints + num_signeds + 
+      num_unsigneds + num_longs + 
+      num_shorts + num_chars;
+
   if (num_ints > 1) return false;
   if (num_unsigneds > 1) return false;
   if (num_signeds > 1) return false;
@@ -340,20 +413,27 @@ bool spec_list_valid(struct TypeSpecList* types){
   if (num_shorts > 1) return false;
   if (num_chars > 1) return false;
   if (num_voids > 1) return false;
-  if (num_voids > 0 && 
-     (num_ints + num_signeds + 
-      num_unsigneds + num_longs + 
-      num_shorts + num_chars) > 0) 
+  if (num_structs > 1) return false;
+  if (num_unions > 1) return false;
+  if (num_enums > 1) return false;
+  if (num_voids > 0 && int_kind_sum > 0) 
     return false;
 
   if (num_signeds + num_unsigneds > 1) return false;
   if (num_chars + num_shorts + num_longs > 1) return false;
   if (num_chars + num_ints > 1) return false;
 
+  if (num_structs + num_unions + num_enums > 1) return false;
+
+  if (num_structs > 0 && (num_voids + int_kind_sum) > 0) return false;
+  if (num_unions > 0 && (num_voids + int_kind_sum) > 0) return false;
+  if (num_enums > 0 && (num_voids + int_kind_sum) > 0) return false;
+
   return true;
 }
 
 struct Type* type_spec_to_type(struct TypeSpecList* types){
+  struct TypeSpecifier* found = NULL;
   if (types == NULL) return NULL;
   else if (!spec_list_valid(types)) {
     parse_error_at(parser_error_ptr(), "invalid type specifiers");
@@ -397,6 +477,27 @@ struct Type* type_spec_to_type(struct TypeSpecList* types){
   } else if (spec_list_contains(types, VOID_SPEC)){
     struct Type* type = arena_alloc(sizeof(struct Type));
     type->type = VOID_TYPE;
+    return type;
+  } else if ((found = spec_list_contains(types, STRUCT_SPEC)) != NULL){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = STRUCT_TYPE;
+    struct StructType struct_data;
+    struct_data.name = found->name;
+    type->type_data.struct_type = struct_data;
+    return type;
+  } else if ((found = spec_list_contains(types, UNION_SPEC)) != NULL){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = UNION_TYPE;
+    struct UnionType union_data;
+    union_data.name = found->name;
+    type->type_data.union_type = union_data;
+    return type;
+  } else if ((found = spec_list_contains(types, ENUM_SPEC)) != NULL){
+    struct Type* type = arena_alloc(sizeof(struct Type));
+    type->type = ENUM_TYPE;
+    struct EnumType enum_data;
+    enum_data.name = found->name;
+    type->type_data.enum_type = enum_data;
     return type;
   }
   // at this point it must be an int type 
@@ -912,6 +1013,9 @@ struct Expr* parse_string(void){
 }
 
 struct Expr* parse_postfix() {
+  // postfix can be a primary expr followed by
+  // function calls, array subscripts, postfix ++/--
+  // or struct . and ->
   struct Token* old_current = current;
   struct Expr* expr = parse_primary_expr();
   if (expr == NULL) return NULL;
@@ -953,6 +1057,30 @@ struct Expr* parse_postfix() {
       struct PostAssignExpr sub_one = {POST_DEC, expr};
       struct Expr* new_expr = alloc_expr(POST_ASSIGN, op_loc);
       new_expr->expr.post_assign_expr = sub_one;
+      expr = new_expr;
+    } else if (consume(DOT_TOK)){
+      const char* dot_loc = (current - 1)->start;
+      struct Token* old_current = current - 1;
+      union TokenVariant* data = consume_with_data(IDENT);
+      if (data == NULL){
+        current = old_current;
+        return NULL;
+      }
+      struct DotExpr member_access = {expr, data->ident_name};
+      struct Expr* new_expr = alloc_expr(DOT_EXPR, dot_loc);
+      new_expr->expr.dot_expr = member_access;
+      expr = new_expr;
+    } else if (consume(ARROW_TOK)){
+      const char* arrow_loc = (current - 1)->start;
+      struct Token* old_current = current - 1;
+      union TokenVariant* data = consume_with_data(IDENT);
+      if (data == NULL){
+        current = old_current;
+        return NULL;
+      }
+      struct ArrowExpr ptr_member_access = {expr, data->ident_name};
+      struct Expr* new_expr = alloc_expr(ARROW_EXPR, arrow_loc);
+      new_expr->expr.arrow_expr = ptr_member_access;
       expr = new_expr;
     } else {
       break;
@@ -1507,6 +1635,9 @@ bool is_type_specifier(enum TokenType type){
     case STATIC_TOK:
     case EXTERN_TOK:
     case VOID_TOK:
+    case STRUCT_TOK:
+    case UNION_TOK:
+    case ENUM_TOK:
       return true;
     default:
       return false;
@@ -1792,9 +1923,9 @@ struct Initializer* parse_var_init(struct Type* type){
     return NULL;
   }
 
-  if (type->type != ARRAY_TYPE){
+  if (type->type != ARRAY_TYPE && type->type != STRUCT_TYPE && type->type != UNION_TYPE){
     // error, compound init only valid for arrays currently
-    parse_error_at(parser_error_ptr(), "Compound initializers are only supported for array types.");
+    parse_error_at(parser_error_ptr(), "Compound initializers are only supported for array, struct, and union types.");
     return NULL;
   }
 
@@ -1861,49 +1992,7 @@ struct VariableDclr* parse_var_dclr(struct Type* type, enum StorageClass storage
 // Outputs: Returns a DclrPrefix node or NULL if no prefix matches.
 // Invariants/Assumptions: Only single specifiers are parsed per call.
 struct DclrPrefix* parse_type_or_storage_class(){
-  if (consume(INT_TOK)) {
-    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
-    dclr_prefix->type = TYPE_PREFIX;
-    dclr_prefix->prefix.type_spec = INT_SPEC;
-    return dclr_prefix;
-  }
-  else if (consume(SIGNED_TOK)) {
-    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
-    dclr_prefix->type = TYPE_PREFIX;
-    dclr_prefix->prefix.type_spec = SIGNED_SPEC;
-    return dclr_prefix;
-  }
-  else if (consume(UNSIGNED_TOK)) {
-    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
-    dclr_prefix->type = TYPE_PREFIX;
-    dclr_prefix->prefix.type_spec = UNSIGNED_SPEC;
-    return dclr_prefix;
-  }
-  else if (consume(LONG_TOK)) {
-    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
-    dclr_prefix->type = TYPE_PREFIX;
-    dclr_prefix->prefix.type_spec = LONG_SPEC;
-    return dclr_prefix;
-  }
-  else if (consume(SHORT_TOK)) {
-    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
-    dclr_prefix->type = TYPE_PREFIX;
-    dclr_prefix->prefix.type_spec = SHORT_SPEC;
-    return dclr_prefix;
-  }
-  else if (consume(CHAR_TOK)) {
-    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
-    dclr_prefix->type = TYPE_PREFIX;
-    dclr_prefix->prefix.type_spec = CHAR_SPEC;
-    return dclr_prefix;
-  }
-  else if (consume(VOID_TOK)) {
-    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
-    dclr_prefix->type = TYPE_PREFIX;
-    dclr_prefix->prefix.type_spec = VOID_SPEC;
-    return dclr_prefix;
-  }
-  else if (consume(STATIC_TOK)){
+  if (consume(STATIC_TOK)){
     struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = STORAGE_PREFIX;
     dclr_prefix->prefix.storage_class = STATIC;
@@ -1913,6 +2002,13 @@ struct DclrPrefix* parse_type_or_storage_class(){
     struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
     dclr_prefix->type = STORAGE_PREFIX;
     dclr_prefix->prefix.storage_class = EXTERN;
+    return dclr_prefix;
+  }
+  struct TypeSpecifier spec = parse_type_spec();
+  if (spec.type != -1){
+    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
+    dclr_prefix->type = TYPE_PREFIX;
+    dclr_prefix->prefix.type_spec = spec;
     return dclr_prefix;
   }
   return NULL;
@@ -2390,6 +2486,84 @@ struct VarAttributes* parse_var_attributes(){
   return attrs;
 }
 
+struct MemberDclr* parse_member_declarations(){
+  struct MemberDclr* head = NULL;
+  struct MemberDclr** tail = &head;
+  while (true){
+    struct Type* base_type = NULL;
+    enum StorageClass storage = NONE;
+    parse_type_and_storage_class(&base_type, &storage);
+    if (base_type == NULL) break;
+
+    struct Declarator* declarator = parse_declarator();
+    if (declarator == NULL){
+      parse_error_at(parser_error_ptr(), "expected member declarator");
+      return NULL;
+    }
+
+    struct Slice* name = NULL;
+    struct Type* decl_type = NULL;
+    struct ParamList* params = NULL;
+    if (!process_declarator(declarator, base_type, &name, &decl_type, &params)){
+      parse_error_at(parser_error_ptr(), "failed to process member declarator");
+      return NULL;
+    }
+    if (params != NULL){
+      parse_error_at(parser_error_ptr(), "member cannot be a function");
+      return NULL;
+    }
+
+    if (!consume(SEMI)){
+      parse_error_at(parser_error_ptr(), "expected ';' after member declaration");
+      return NULL;
+    }
+
+    struct MemberDclr* member = arena_alloc(sizeof(struct MemberDclr));
+    member->name = name;
+    member->type = decl_type;
+    member->next = NULL;
+    *tail = member;
+    tail = &member->next;
+  }
+  return head;
+}
+
+struct EnumMemberDclr* parse_enumerator_list(){
+  struct EnumMemberDclr* head = NULL;
+  struct EnumMemberDclr** tail = &head;
+  unsigned enum_value = 0;
+  while (true){
+    union TokenVariant* data = consume_with_data(IDENT);
+    if (data == NULL){
+      parse_error_at(parser_error_ptr(), "expected enumerator identifier");
+      return NULL;
+    }
+    if (consume(EQUALS)){
+      struct LitExpr value_expr = parse_lit_expr();
+      if (value_expr.type == -1){
+        parse_error_at(parser_error_ptr(), "expected constant expression for enumerator value");
+        return NULL;
+      }
+      if (value_expr.value.uint_val < enum_value){
+        parse_error_at(parser_error_ptr(), "enumerator value must be increasing");
+        return NULL;
+      }
+      enum_value = value_expr.value.uint_val;
+    }
+    struct EnumMemberDclr* enumerator = arena_alloc(sizeof(struct EnumMemberDclr));
+    enumerator->name = data->ident_name;
+    enumerator->value = enum_value;
+    enumerator->next = NULL;
+    *tail = enumerator;
+    tail = &enumerator->next;
+    enum_value++;
+
+    if (consume(COMMA)) continue;
+    break;
+  }
+  return head;
+}
+
 // Parse a full declaration (function or variable).
 // Purpose: Parse a declaration (function or variable) at any scope.
 // Inputs: Consumes tokens from the current cursor.
@@ -2397,6 +2571,109 @@ struct VarAttributes* parse_var_attributes(){
 // Invariants/Assumptions: Storage class and type specifiers precede declarators.
 struct Declaration* parse_declaration(){
   struct Token* old_current = current;
+
+  struct Declaration* result = arena_alloc(sizeof(struct Declaration));
+
+  // check for struct, union, or enum type declaration
+  if (consume(STRUCT_TOK)) {
+    union TokenVariant* data = consume_with_data(IDENT);
+    if (data == NULL){
+      parse_error_at(parser_error_ptr(), "expected identifier after 'struct'");
+      return NULL;
+    }
+    result->type = STRUCT_DCLR;
+    result->dclr.struct_dclr.name = data->ident_name;
+    result->dclr.struct_dclr.members = NULL;
+
+    if (consume(OPEN_B)){
+      // parse member declarations
+      struct MemberDclr* members = parse_member_declarations();
+      if (members == NULL){
+        parse_error_at(parser_error_ptr(), "expected at least one struct member declaration");
+        return NULL;
+      }
+      result->dclr.struct_dclr.members = members;
+
+      if (!consume(CLOSE_B)){
+        // for now, require at least one member
+        parse_error_at(parser_error_ptr(), "expected '}' after struct member declarations");
+        return NULL;
+      }
+    }
+
+    if (!consume(SEMI)){
+      // may be a variable declaration of struct type, so don't error yet
+      current = old_current;
+    } else {
+      // type declaration successfully parsed
+      return result;
+    }
+  } else if (consume(UNION_TOK)) {
+    union TokenVariant* data = consume_with_data(IDENT);
+    if (data == NULL){
+      parse_error_at(parser_error_ptr(), "expected identifier after 'union'");
+      return NULL;
+    }
+    result->type = UNION_DCLR;
+    result->dclr.union_dclr.name = data->ident_name;
+    result->dclr.union_dclr.members = NULL;
+
+    if (consume(OPEN_B)){
+      // parse member declarations
+      struct MemberDclr* members = parse_member_declarations();
+      if (members == NULL){
+        parse_error_at(parser_error_ptr(), "expected at least one union member declaration");
+        return NULL;
+      }
+      result->dclr.union_dclr.members = members;
+      if (!consume(CLOSE_B)){
+        // for now, require at least one member
+        parse_error_at(parser_error_ptr(), "expected '}' after union member declarations");
+        return NULL;
+      }
+    }
+
+    if (!consume(SEMI)){
+      // may be a variable declaration of union type, so don't error yet
+      current = old_current;
+    } else {
+      // type declaration successfully parsed
+      return result;
+    }
+  } else if (consume(ENUM_TOK)) {
+    union TokenVariant* data = consume_with_data(IDENT);
+    if (data == NULL){
+      parse_error_at(parser_error_ptr(), "expected identifier after 'enum'");
+      return NULL;
+    }
+    result->type = ENUM_DCLR;
+    result->dclr.enum_dclr.name = data->ident_name;
+    result->dclr.enum_dclr.members = NULL;
+
+    if (consume(OPEN_B)){
+      // parse enumerator list
+      struct EnumMemberDclr* enumerators = parse_enumerator_list();
+      if (enumerators == NULL){
+        parse_error_at(parser_error_ptr(), "expected at least one enumerator");
+        return NULL;
+      }
+      result->dclr.enum_dclr.members = enumerators;
+      if (!consume(CLOSE_B)){
+        // for now, require at least one enumerator
+        parse_error_at(parser_error_ptr(), "expected '}' after enumerator list");
+        return NULL;
+      }
+    }
+
+    if (!consume(SEMI)){
+      // may be a variable declaration of enum type, so don't error yet
+      current = old_current;
+    } else {
+      // type declaration successfully parsed
+      return result;
+    }
+  }
+
   struct VarAttributes* attrs = NULL;
   if ((attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 1
   if ((size_t)(current - program) >= prog_size) return NULL;
@@ -2441,7 +2718,6 @@ struct Declaration* parse_declaration(){
     return NULL;
   }
 
-  struct Declaration* result = arena_alloc(sizeof(struct Declaration));
   if (decl_type->type == FUN_TYPE){
     // function declaration
     struct Type* ret_type = decl_type->type_data.fun_type.return_type;

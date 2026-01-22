@@ -1,0 +1,32 @@
+Program(
+    
+    UnionDclr(name=Test);
+    
+    UnionDclr(name=Test, members=[
+        MemberDclr(name=a, type=int), 
+        MemberDclr(name=b, type=short), 
+    ]);
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, union Test, t, CompoundInit(SingleInit(LitExpr(int, 0):untyped)));
+            VarDclr(none, union Test*, p, SingleInit(AddrOf(Var(t):untyped):untyped));
+            ExprStmt(Assign(ArrowExpr(Var(p):untyped, a):untyped, LitExpr(int, 5):untyped):untyped);
+            ExprStmt(Assign(ArrowExpr(Var(p):untyped, b):untyped, LitExpr(int, 10):untyped):untyped);
+            ExprStmt(Assign(DotExpr(Var(t):untyped, a):untyped, LitExpr(int, 5):untyped):untyped);
+            ExprStmt(Assign(DotExpr(Var(t):untyped, b):untyped, LitExpr(int, 10):untyped):untyped);
+            VarDclr(none, int, sum, SingleInit(AddOp(DotExpr(Var(t):untyped, a):untyped, DotExpr(Var(t):untyped, b):untyped):untyped));
+            Return(Var(sum):untyped);
+    );
+    FunDclr(
+        func,
+        storage=none
+        params=[VarDclr(none, union Test, u), VarDclr(none, union Test*, v), ]
+        type=func(ret_type=void, param_types=[union Test, union Test*, ]),
+        body=
+            Return(void);
+    );
+)

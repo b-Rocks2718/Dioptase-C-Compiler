@@ -80,6 +80,11 @@ enum TokenType {
   CHAR_TOK,
   SIZEOF_TOK,
   ATTRIBUTE_TOK,
+  STRUCT_TOK,
+  UNION_TOK,
+  ENUM_TOK,
+  DOT_TOK,
+  ARROW_TOK,
 };
 
 union TokenVariant {

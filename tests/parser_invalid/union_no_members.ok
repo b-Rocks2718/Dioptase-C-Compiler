@@ -1,0 +1,2 @@
+Parse error at tests/parser_invalid/union_no_members.c:2:12: expected at least one union member declaration
+Parse error at tests/parser_invalid/union_no_members.c:2:12: unexpected token

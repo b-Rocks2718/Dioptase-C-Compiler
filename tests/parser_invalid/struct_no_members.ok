@@ -1,0 +1,2 @@
+Parse error at tests/parser_invalid/struct_no_members.c:2:13: expected at least one struct member declaration
+Parse error at tests/parser_invalid/struct_no_members.c:2:13: unexpected token

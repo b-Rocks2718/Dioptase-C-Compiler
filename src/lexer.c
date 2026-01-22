@@ -431,7 +431,12 @@ static struct Token* consume_any(){
   if (consume_keyword("char")) return finish_simple_token(token, CHAR_TOK);
   if (consume_keyword("sizeof")) return finish_simple_token(token, SIZEOF_TOK);
   if (consume_keyword("__attribute__")) return finish_simple_token(token, ATTRIBUTE_TOK);
+  if (consume_keyword("struct")) return finish_simple_token(token, STRUCT_TOK);
+  if (consume_keyword("union")) return finish_simple_token(token, UNION_TOK);
+  if (consume_keyword("enum")) return finish_simple_token(token, ENUM_TOK);
 
+  if (consume(".")) return finish_simple_token(token, DOT_TOK);
+  if (consume("->")) return finish_simple_token(token, ARROW_TOK);
   if (consume(",")) return finish_simple_token(token, COMMA);
   if (consume("?")) return finish_simple_token(token, QUESTION);
   if (consume(":")) return finish_simple_token(token, COLON);

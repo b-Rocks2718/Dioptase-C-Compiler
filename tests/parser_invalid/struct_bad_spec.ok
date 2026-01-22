@@ -1,0 +1,2 @@
+Parse error at tests/parser_invalid/struct_bad_spec.c:2:15: expected declarator after type specifiers
+Parse error at tests/parser_invalid/struct_bad_spec.c:2:15: unexpected token

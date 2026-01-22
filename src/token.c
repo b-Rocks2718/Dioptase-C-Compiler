@@ -231,6 +231,21 @@ void print_token(struct Token token){
     case ATTRIBUTE_TOK:
       printf("__attribute__");
       break;
+    case STRUCT_TOK:
+      printf("struct");
+      break;
+    case UNION_TOK:
+      printf("union");
+      break;
+    case ENUM_TOK:
+      printf("enum");
+      break;
+    case DOT_TOK:
+      printf(".");
+      break;
+    case ARROW_TOK:
+      printf("->");
+      break;
     default:
       printf("Token?");
       break;

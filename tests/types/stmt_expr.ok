@@ -38,7 +38,7 @@ Program(
                     VarDclr(none, int, x.1, SingleInit(LitExpr(int, 5):int));
                     ForStmt(
                         main.for.3,
-                        VarDclr(none, int, i.2, SingleInit(LitExpr(int, 0):int)):char,
+                        VarDclr(none, int, i.2, SingleInit(LitExpr(int, 0):int)),
                         PostAssign(Inc, Var(i.2):int):int,
                         CompoundStmt(
                             ExprStmt(PlusEqOp(Var(x.1):int, Var(i.2):int):int);

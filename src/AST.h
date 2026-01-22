@@ -33,6 +33,9 @@ enum TypeType {
   POINTER_TYPE,
   ARRAY_TYPE,
   VOID_TYPE,
+  STRUCT_TYPE,
+  UNION_TYPE,
+  ENUM_TYPE,
 };
 
 struct FunType {
@@ -49,10 +52,25 @@ struct ArrayType {
   size_t size;
 };
 
+struct StructType {
+  struct Slice* name;
+};
+
+struct UnionType {
+  struct Slice* name;
+};
+
+struct EnumType {
+  struct Slice* name;
+};
+
 union TypeVariant {
   struct FunType fun_type;
   struct PointerType pointer_type;
   struct ArrayType array_type;
+  struct StructType struct_type;
+  struct UnionType union_type;
+  struct EnumType enum_type;
   // no data for other types
 };
 
@@ -68,7 +86,11 @@ struct ParamTypeList {
 
 enum DclrType {
   VAR_DCLR,
-  FUN_DCLR
+  FUN_DCLR,
+  STRUCT_DCLR,
+  UNION_DCLR,
+  ENUM_DCLR,
+  MEMBER_DCLR,
 };
 
 enum InitializerType {
@@ -113,9 +135,40 @@ struct FunctionDclr {
   struct Block* body;
 };
 
+struct MemberDclr {
+  struct Slice* name;
+  struct Type* type;
+  struct MemberDclr* next;
+};
+
+struct EnumMemberDclr {
+  struct Slice* name;
+  int value;
+  struct EnumMemberDclr* next;
+};
+
+struct StructDclr {
+  struct Slice* name;
+  struct MemberDclr* members;
+};
+
+struct UnionDclr {
+  struct Slice* name;
+  struct MemberDclr* members;
+};
+
+struct EnumDclr {
+  struct Slice* name;
+  struct EnumMemberDclr* members;
+};
+
 union DeclareVariant {
   struct VariableDclr var_dclr;
   struct FunctionDclr fun_dclr;
+  struct StructDclr struct_dclr;
+  struct UnionDclr union_dclr;
+  struct EnumDclr enum_dclr;
+  struct MemberDclr member_dclr;
 };
 
 struct ParamList {
@@ -150,6 +203,8 @@ enum ExprType {
   SIZEOF_EXPR,
   SIZEOF_T_EXPR,
   STMT_EXPR,
+  DOT_EXPR,
+  ARROW_EXPR,
 };
 
 enum BinOp {
@@ -290,6 +345,16 @@ struct StmtExpr {
   struct Block* block;
 };
 
+struct DotExpr {
+  struct Expr* struct_expr;
+  struct Slice* member;
+};
+
+struct ArrowExpr {
+  struct Expr* pointer_expr;
+  struct Slice* member;
+};
+
 union ExprVariant {
   struct BinaryExpr bin_expr;
   struct AssignExpr assign_expr;
@@ -307,6 +372,8 @@ union ExprVariant {
   struct SizeOfExpr sizeof_expr;
   struct SizeOfTExpr sizeof_t_expr;
   struct StmtExpr stmt_expr;
+  struct DotExpr dot_expr;
+  struct ArrowExpr arrow_expr;
 };
 
 struct Expr {
@@ -571,7 +638,7 @@ struct AbstractDeclarator {
   union AbstractDeclaratorVariant data;
 };
 
-enum TypeSpecifier {
+enum TypeSpecifierType {
   INT_SPEC = 1,
   UNSIGNED_SPEC,
   SIGNED_SPEC,
@@ -579,10 +646,18 @@ enum TypeSpecifier {
   SHORT_SPEC,
   CHAR_SPEC,
   VOID_SPEC,
+  STRUCT_SPEC,
+  UNION_SPEC,
+  ENUM_SPEC,
+};
+
+struct TypeSpecifier {
+  enum TypeSpecifierType type;
+  struct Slice* name;
 };
 
 struct TypeSpecList {
-  enum TypeSpecifier spec;
+  struct TypeSpecifier spec;
   struct TypeSpecList* next;
 };
 
@@ -597,7 +672,7 @@ enum DclrPrefixType {
 };
 
 union DclrPrefixVariant {
-  enum TypeSpecifier type_spec;
+  struct TypeSpecifier type_spec;
   enum StorageClass storage_class;
 };
 

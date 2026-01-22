@@ -64,11 +64,11 @@ Supported:
   - function calls
   - `sizeof` types and expressions
   - statement expressions
+  - cleanup attribute
 - Statements: expression statements, `return`, blocks, `if`/`else`, `while`, `do`/`while`,
   `for`, `break`, `continue`, `switch`/`case`/`default`, labels and `goto`
 
 Limitations:
-- No cleanup attribute
 - No structs/unions, enums, or floating-point
 - No `long` integers
 - No `typedef`, `const`, `volatile`, `inline`, or `restrict`

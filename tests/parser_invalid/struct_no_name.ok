@@ -1,0 +1,2 @@
+Parse error at tests/parser_invalid/struct_no_name.c:2:1: expected identifier after 'struct'
+Parse error at tests/parser_invalid/struct_no_name.c:2:1: unexpected token

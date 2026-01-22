@@ -9,7 +9,7 @@ Program(
                 StmtExpr(
                     VarDclr(none, int, x, SingleInit(LitExpr(int, 5):untyped));
                     ForStmt(
-                        VarDclr(none, int, i, SingleInit(LitExpr(int, 0):untyped)):char,
+                        VarDclr(none, int, i, SingleInit(LitExpr(int, 0):untyped)),
                         PostAssign(Inc, Var(i):untyped):untyped,
                         CompoundStmt(
                             ExprStmt(PlusEqOp(Var(x):untyped, Var(i):untyped):untyped);

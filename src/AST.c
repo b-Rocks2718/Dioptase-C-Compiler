@@ -50,6 +50,9 @@ void print_type(struct Type* type){
       print_type(type->type_data.pointer_type.referenced_type);
       printf("*");
       break;
+    case VOID_TYPE:
+      printf("void");
+      break;
     case FUN_TYPE:
       printf("func(ret_type=");
       print_type(type->type_data.fun_type.return_type);
@@ -71,8 +74,17 @@ void print_type(struct Type* type){
         printf("[%zu]", cur->type_data.array_type.size);
       }
       break;
-    case VOID_TYPE:
-      printf("void");
+    case STRUCT_TYPE:
+      printf("struct ");
+      print_slice_with_escapes(type->type_data.struct_type.name);
+      break;
+    case UNION_TYPE:
+      printf("union ");
+      print_slice_with_escapes(type->type_data.union_type.name);
+      break;
+    case ENUM_TYPE:
+      printf("enum ");
+      print_slice_with_escapes(type->type_data.enum_type.name);
       break;
     default:
       printf("unknown_type");
@@ -155,6 +167,24 @@ void print_expr(struct Expr* expr, int tabs){
       print_tabs(tabs + 1);
       printf(")\n");
       print_tabs(tabs);
+      break;
+    case DOT_EXPR:
+      printf("DotExpr(");
+      print_expr(expr->expr.dot_expr.struct_expr, tabs);
+      printf(", ");
+      print_slice_with_escapes(expr->expr.dot_expr.member);
+      printf(")");
+      break;
+    case ARROW_EXPR:
+      printf("ArrowExpr(");
+      print_expr(expr->expr.arrow_expr.pointer_expr, tabs);
+      printf(", ");
+      print_slice_with_escapes(expr->expr.arrow_expr.member);
+      printf(")");
+      break;
+    default:
+      printf("unknown_expr %u\n", expr->type);
+      exit(1);
       break;
   }
   if (expr->value_type == NULL){
@@ -252,7 +282,7 @@ void print_bin_expr(struct BinaryExpr* bin_expr, int tabs){
       printf("ShlEqOp(");
       break;
     case SHR_EQ_OP:
-      printf("ModOp(");
+      printf("ShrEqOp(");
       break;
     case TERNARY_OP:
       printf("TernaryOp(");
@@ -410,6 +440,7 @@ void print_for_init(struct ForInit* for_init, int tabs){
   switch (for_init->type){
     case DCLR_INIT:
       print_var_dclr(for_init->init.dclr_init, tabs);
+      break;
     case EXPR_INIT:
       if (for_init->init.expr_init == NULL) return;
       print_expr(for_init->init.expr_init, tabs);
@@ -686,6 +717,76 @@ void print_fun_dclr(struct FunctionDclr* fun_dclr, int tabs){
   print_tabs(tabs); printf(")");
 }
 
+void print_member_dclr(struct MemberDclr* member){
+  printf("MemberDclr(name=");
+  print_slice_with_escapes(member->name);
+  printf(", type=");
+  print_type(member->type);
+  printf(")");
+}
+
+void print_struct_dclr(struct StructDclr* struct_dclr, int tabs){
+  printf("\n");
+  print_tabs(tabs);
+  printf("StructDclr(name=");
+  print_slice_with_escapes(struct_dclr->name);
+  if (struct_dclr->members != NULL){
+    printf(", members=[\n");
+    struct MemberDclr* member = struct_dclr->members;
+    while (member != NULL) {
+      print_tabs(tabs + 1);
+      print_member_dclr(member);
+      printf(", \n");
+      member = member->next;
+    }
+    print_tabs(tabs);
+    printf("]");
+  }
+  printf(")");
+}
+
+void print_union_dclr(struct UnionDclr* union_dclr, int tabs){
+  printf("\n");
+  print_tabs(tabs);
+  printf("UnionDclr(name=");
+  print_slice_with_escapes(union_dclr->name);
+  if (union_dclr->members != NULL){
+    printf(", members=[\n");
+    struct MemberDclr* member = union_dclr->members;
+    while (member != NULL) {
+      print_tabs(tabs + 1);
+      print_member_dclr(member);
+      printf(", \n");
+      member = member->next;
+    }
+    print_tabs(tabs);
+    printf("]");
+  }
+  printf(")");
+}
+
+void print_enum_dclr(struct EnumDclr* enum_dclr, int tabs){
+  printf("\n");
+  print_tabs(tabs);
+  printf("EnumDclr(name=");
+  print_slice_with_escapes(enum_dclr->name);
+  if (enum_dclr->members != NULL){
+    printf(", values=[\n");
+    struct EnumMemberDclr* value = enum_dclr->members;
+    while (value != NULL) {
+      print_tabs(tabs + 1);
+      printf("EnumValue(name=");
+      print_slice_with_escapes(value->name);
+      printf(", value=%d)", value->value);
+      printf(", \n");
+      value = value->next;
+    }
+    print_tabs(tabs);
+    printf("]");
+  }
+  printf(")");
+}
+
 void print_declaration(struct Declaration* declaration, int tabs){
   print_tabs(tabs);
   switch (declaration->type){
@@ -695,6 +796,22 @@ void print_declaration(struct Declaration* declaration, int tabs){
       break;
     case FUN_DCLR:
       print_fun_dclr(&declaration->dclr.fun_dclr, tabs);
+      printf(";\n");
+      break;
+    case STRUCT_DCLR:
+      print_struct_dclr(&declaration->dclr.struct_dclr, tabs);
+      printf(";\n");
+      break;
+    case UNION_DCLR:
+      print_union_dclr(&declaration->dclr.union_dclr, tabs);
+      printf(";\n");
+      break;
+    case ENUM_DCLR:
+      print_enum_dclr(&declaration->dclr.enum_dclr, tabs);
+      printf(";\n");
+      break;
+    case MEMBER_DCLR:
+      print_member_dclr(&declaration->dclr.member_dclr);
       printf(";\n");
       break;
   }

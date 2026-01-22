@@ -1,0 +1,3 @@
+Parse error at tests/parser_invalid/enum_no_members.c:2:11: expected enumerator identifier
+Parse error at tests/parser_invalid/enum_no_members.c:2:11: expected at least one enumerator
+Parse error at tests/parser_invalid/enum_no_members.c:2:11: unexpected token
