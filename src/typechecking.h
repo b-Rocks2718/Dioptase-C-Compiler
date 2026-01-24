@@ -149,6 +149,12 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr);
 // Invariants/Assumptions: Parameters and body share the global symbol table.
 bool typecheck_func(struct FunctionDclr* func_dclr);
 
+bool typecheck_struct(struct StructDclr* struct_dclr);
+
+bool typecheck_union(struct UnionDclr* union_dclr);
+
+bool typecheck_enum(struct EnumDclr* enum_dclr);
+
 // Purpose: Typecheck and convert an initializer to a target type.
 // Inputs: init is the initializer expression pointer; type is the target type.
 // Outputs: Returns true on success; false on any conversion/type errors.

@@ -1,0 +1,3 @@
+Identifier resolution failed
+Identifier Resolution Error at tests/idents_invalid/struct_redecl.c:6:7: type redeclared as different type
+Identifier Resolution Error: failed to resolve declaration

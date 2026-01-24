@@ -136,11 +136,15 @@ bool typecheck_program(struct Program* program) {
 bool typecheck_file_scope_dclr(struct Declaration* dclr) {
   switch (dclr->type) {
     case VAR_DCLR:
-      // Type check variable declaration
       return typecheck_file_scope_var(&dclr->dclr.var_dclr);
     case FUN_DCLR:
-      // Type check function declaration
       return typecheck_func(&dclr->dclr.fun_dclr);
+    case STRUCT_DCLR:
+      return typecheck_struct(&dclr->dclr.struct_dclr);
+    case UNION_DCLR:
+      return typecheck_union(&dclr->dclr.union_dclr);
+    case ENUM_DCLR:
+      return typecheck_enum(&dclr->dclr.enum_dclr);
     default:
       type_error_at(NULL, "unknown declaration type in typecheck_file_scope_dclr");
       return false; // Unknown declaration type
@@ -243,6 +247,21 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
   }
 
   return true;
+}
+
+bool typecheck_struct(struct StructDclr* struct_dclr){
+  printf("TODO: add structs\n");
+  return false;
+}
+
+bool typecheck_union(struct UnionDclr* union_dclr){
+  printf("TODO: add unions\n");
+  return false;
+}
+
+bool typecheck_enum(struct EnumDclr* enum_dclr){
+  printf("TODO: add enums\n");
+  return false;
 }
   
 // Purpose: Typecheck a function declaration or definition.

@@ -199,6 +199,20 @@ bool label_expr(struct Slice* func_name, struct Expr* expr){
       }
       break;
     }
+    case DOT_EXPR: {
+      struct DotExpr* dot_expr = &expr->expr.dot_expr;
+      if (!label_expr(func_name, dot_expr->struct_expr)){
+        return false;
+      }
+      break;
+    }
+    case ARROW_EXPR: {
+      struct ArrowExpr* arrow_expr = &expr->expr.arrow_expr;
+      if (!label_expr(func_name, arrow_expr->pointer_expr)){
+        return false;
+      }
+      break;
+    }
     default:
       // No labels needed in other expression types
       break;
@@ -615,6 +629,10 @@ static bool resolve_gotos_expr(struct Expr* expr) {
       return resolve_gotos_expr(expr->expr.sizeof_expr.expr);
     case STMT_EXPR:
       return resolve_gotos(expr->expr.stmt_expr.block);
+    case DOT_EXPR:
+      return resolve_gotos_expr(expr->expr.dot_expr.struct_expr);
+    case ARROW_EXPR:
+      return resolve_gotos_expr(expr->expr.arrow_expr.pointer_expr);
     default:
       return true;
   }
@@ -848,6 +866,12 @@ static bool collect_cases_expr(struct Expr* expr) {
       return collect_cases_expr(expr->expr.sizeof_expr.expr);
     case STMT_EXPR:
       return collect_cases(expr->expr.stmt_expr.block);
+    case DOT_EXPR: {
+      return collect_cases_expr(expr->expr.dot_expr.struct_expr);
+    }
+    case ARROW_EXPR: {
+      return collect_cases_expr(expr->expr.arrow_expr.pointer_expr);
+    }
     default:
       return true;
   }

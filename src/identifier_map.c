@@ -96,7 +96,9 @@ struct IdentMapEntry* ident_stack_get(struct IdentStack* stack, struct Slice* ke
   for (int i = stack->size - 1; i >= 0; --i){
     struct IdentMapEntry* entry = ident_map_get(stack->maps[i], key);
     if (entry != NULL){
-      *from_current_scope = (i == stack->size - 1);
+      if (from_current_scope != NULL){
+        *from_current_scope = (i == stack->size - 1);
+      }
       return entry;
     }
   }
@@ -124,10 +126,10 @@ bool ident_stack_in_current_scope(struct IdentStack* stack, struct Slice* key){
 // Outputs: Updates the current scope map.
 // Invariants/Assumptions: Current scope exists; errors are printed otherwise.
 void ident_stack_insert(struct IdentStack* stack, struct Slice* key, 
-    struct Slice* entry_name, bool has_linkage){
+    struct Slice* entry_name, bool has_linkage, enum TypeType type, bool is_const, unsigned value){
   struct IdentMap* current_map = ident_stack_peek(stack);
   if (current_map != NULL){
-    ident_map_insert(current_map, key, entry_name, has_linkage);
+    ident_map_insert(current_map, key, entry_name, has_linkage, type, is_const, value);
   } else {
     // error: no map to insert into
     printf("Identifier Map Error: No map in stack to insert into\n");
@@ -193,12 +195,15 @@ struct IdentMap* create_ident_map(size_t num_buckets){
 // Outputs: Returns a heap-allocated IdentMapEntry.
 // Invariants/Assumptions: key/entry_name pointers remain valid for entry lifetime.
 struct IdentMapEntry* create_ident_map_entry(struct Slice* key, 
-    struct Slice* entry_name, bool has_linkage){
+    struct Slice* entry_name, bool has_linkage, enum TypeType type, bool is_const, unsigned value){
   struct IdentMapEntry* entry = malloc(sizeof(struct IdentMapEntry));
 
   entry->key = key;
   entry->entry_name = entry_name;
   entry->has_linkage = has_linkage;
+  entry->type = type;
+  entry->is_const = is_const;
+  entry->value = value;
   entry->next = NULL;
 
   return entry;
@@ -209,14 +214,17 @@ struct IdentMapEntry* create_ident_map_entry(struct Slice* key,
 // Outputs: Updates or appends to the chain.
 // Invariants/Assumptions: Uses recursion for traversal.
 void ident_map_entry_insert(struct IdentMapEntry* entry, struct Slice* key, 
-    struct Slice* entry_name, bool has_linkage){
+    struct Slice* entry_name, bool has_linkage, enum TypeType type, bool is_const, unsigned value){
   if (compare_slice_to_slice(entry->key, key)){
     entry->entry_name = entry_name;
     entry->has_linkage = has_linkage;
+    entry->type = type;
+    entry->is_const = is_const;
+    entry->value = value;
   } else if (entry->next == NULL){
-    entry->next = create_ident_map_entry(key, entry_name, has_linkage);
+    entry->next = create_ident_map_entry(key, entry_name, has_linkage, type, is_const, value);
   } else {
-    ident_map_entry_insert(entry->next, key, entry_name, has_linkage);
+    ident_map_entry_insert(entry->next, key, entry_name, has_linkage, type, is_const, value);
   }
 }
 
@@ -225,13 +233,13 @@ void ident_map_entry_insert(struct IdentMapEntry* entry, struct Slice* key,
 // Outputs: Updates the map in place.
 // Invariants/Assumptions: hash_slice produces stable bucket indices.
 void ident_map_insert(struct IdentMap* hmap, struct Slice* key, 
-    struct Slice* entry_name, bool has_linkage){
+    struct Slice* entry_name, bool has_linkage, enum TypeType type, bool is_const, unsigned value){
   size_t hash = hash_slice(key) % hmap->size;
   
   if ((hmap->arr[hash]) == NULL){
-    hmap->arr[hash] = create_ident_map_entry(key, entry_name, has_linkage);
+    hmap->arr[hash] = create_ident_map_entry(key, entry_name, has_linkage, type, is_const, value);
   } else {
-    ident_map_entry_insert(hmap->arr[hash], key, entry_name, has_linkage);
+    ident_map_entry_insert(hmap->arr[hash], key, entry_name, has_linkage, type, is_const, value);
   }
 }
 

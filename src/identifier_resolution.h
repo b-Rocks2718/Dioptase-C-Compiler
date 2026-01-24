@@ -2,8 +2,8 @@
 #define IDENTIFIER_RESOLUTION_H
 
 #include <stdbool.h>
-#include "AST.h"
 #include "arena.h"
+#include "AST.h"
 
 // Purpose: Resolve identifiers to unique names across scopes.
 // Inputs: Traverses AST nodes produced by the parser.
@@ -34,6 +34,12 @@ bool resolve_file_scope_dclr(struct Declaration* dclr);
 // Invariants/Assumptions: Locals may be renamed to unique slices.
 bool resolve_local_var_dclr(struct VariableDclr* var_dclr);
 
+bool resolve_struct(struct StructDclr* struct_dclr);
+
+bool resolve_union(struct UnionDclr* union_dclr);
+
+bool resolve_enum(struct EnumDclr* enum_dclr);
+
 bool resolve_var_init(struct Initializer* init);
 
 // Purpose: Resolve identifiers in a file-scope variable declaration.
@@ -59,6 +65,8 @@ bool resolve_local_func(struct FunctionDclr* func_dclr);
 // Outputs: Returns true on success; false on any resolution error.
 // Invariants/Assumptions: Caller manages scope entry/exit as needed.
 bool resolve_block(struct Block* block);
+
+bool resolve_type(struct Type* type);
 
 // Purpose: Resolve identifiers for all declarations in a program.
 // Inputs: prog is the top-level Program node.

@@ -1,0 +1,4 @@
+Identifier resolution failed
+Identifier Resolution Error: specified an undeclared struct/union/enum type
+Identifier Resolution Error at tests/idents_invalid/struct_before_decl.c:2:13: failed to resolve variable type
+Identifier Resolution Error: failed to resolve declaration

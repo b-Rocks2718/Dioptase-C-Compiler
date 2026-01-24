@@ -1,0 +1,24 @@
+Program(
+    
+    StructDclr(name=Test.0, members=[
+        MemberDclr(name=a, type=int), 
+    ]);
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            CompoundStmt(
+                
+                StructDclr(name=Test.1, members=[
+                    MemberDclr(name=b, type=short), 
+                ]);
+                VarDclr(none, struct Test.1, t2.2);
+                ExprStmt(Assign(DotExpr(Var(t2.2):untyped, b):untyped, LitExpr(int, 3):untyped):untyped);
+            );
+            VarDclr(none, struct Test.0, t.3);
+            ExprStmt(Assign(DotExpr(Var(t.3):untyped, a):untyped, LitExpr(int, 5):untyped):untyped);
+            Return(LitExpr(int, 0):untyped);
+    );
+)

@@ -11,11 +11,10 @@
 // Outputs: Rewrites identifier slices and reports resolution errors.
 // Invariants/Assumptions: Uses a scoped identifier stack for name lookup.
 
-// Purpose: Global identifier stack for the current resolution pass.
+
 // Inputs: Initialized in resolve_prog and updated on scope entry/exit.
-// Outputs: Used to resolve variable and function identifiers.
-// Invariants/Assumptions: Only one resolution pass runs at a time.
-static struct IdentStack* global_ident_stack = NULL;
+static struct IdentStack* global_ident_stack = NULL; // function, variable, and enum constant namespace
+static struct IdentStack* global_type_stack = NULL; // struct, union, and enum type namespace
 
 // Purpose: Emit a formatted identifier-resolution error at a source location.
 // Inputs: loc points into source text; fmt is printf-style.
@@ -57,6 +56,7 @@ static struct IdentMapEntry* find_linkage_entry(struct IdentStack* stack,
 // Invariants/Assumptions: Initializes and destroys the global scope stack.
 bool resolve_prog(struct Program* prog) {
   global_ident_stack = init_scope();
+  global_type_stack = init_scope();
 
   for (struct DeclarationList* decl = prog->dclrs; decl != NULL; decl = decl->next) {
     if (!resolve_file_scope_dclr(&decl->dclr)) {
@@ -66,6 +66,7 @@ bool resolve_prog(struct Program* prog) {
   }
 
   destroy_ident_stack(global_ident_stack);
+  destroy_ident_stack(global_type_stack);
 
   return true;
 }
@@ -135,11 +136,17 @@ bool resolve_expr(struct Expr* expr) {
     case UNARY:
       return resolve_expr(expr->expr.un_expr.expr);
     case VAR: {
-      bool from_current_scope = false;
-      struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, expr->expr.var_expr.name, &from_current_scope);
+      struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, expr->expr.var_expr.name, NULL);
       if (entry != NULL) {
-        // Substitute the unique name for locals so later passes can ignore scoping rules.
-        expr->expr.var_expr.name = entry->entry_name;
+        if (entry->is_const){
+          // replace with literal expression
+          expr->type = LIT;
+          expr->expr.lit_expr.type = UINT_CONST;
+          expr->expr.lit_expr.value.uint_val = entry->value;
+        } else {
+          // Substitute the unique name for locals so later passes can ignore scoping rules.
+          expr->expr.var_expr.name = entry->entry_name;
+        }
         return true;
       } else {
         ident_error_at(expr->loc, "no declaration for variable");
@@ -167,9 +174,45 @@ bool resolve_expr(struct Expr* expr) {
       return true;
     case STMT_EXPR:
       return resolve_block(expr->expr.stmt_expr.block);
+    case DOT_EXPR:
+      return resolve_expr(expr->expr.dot_expr.struct_expr);
+    case ARROW_EXPR:
+      return resolve_expr(expr->expr.arrow_expr.pointer_expr);
     default:
       ident_error_at(expr->loc, "unknown expression type");
       return false;
+  }
+}
+
+bool resolve_type(struct Type* type){
+  switch (type->type){
+    case STRUCT_TYPE:
+    case UNION_TYPE:
+    case ENUM_TYPE:
+      struct IdentMapEntry* entry = ident_stack_get(global_type_stack, type->type_data.struct_type.name, NULL);
+      if (entry == NULL){
+        ident_error_at(NULL, "specified an undeclared struct/union/enum type");
+        return false;
+      }
+
+      if (entry->type != type->type) {
+        ident_error_at(NULL, "type redeclared as different type");
+        return false;
+      }
+
+      // rename to unique name
+      type->type_data.struct_type.name = entry->entry_name;
+
+      return true;
+    case POINTER_TYPE:
+      return resolve_type(type->type_data.pointer_type.referenced_type);
+    case ARRAY_TYPE:
+      return resolve_type(type->type_data.array_type.element_type);
+    case FUN_TYPE:
+      // resolve parameter types in resolve_params
+      return resolve_type(type->type_data.fun_type.return_type);
+    default:
+      return true;
   }
 }
 
@@ -184,10 +227,14 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
     return false;
   }
 
+  if (!resolve_type(var_dclr->type)) {
+    ident_error_at(var_dclr->name->start, "failed to resolve variable type");
+    return false;
+  }
+
   if (var_dclr->attributes.cleanup_func != NULL) {
     // ensure cleanup function is declared
-    bool from_current_scope = false;
-    struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, var_dclr->attributes.cleanup_func, &from_current_scope);
+    struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, var_dclr->attributes.cleanup_func, NULL);
     if (entry == NULL) {
       ident_error_at(var_dclr->attributes.cleanup_func->start, "cleanup function not declared");
       return false;
@@ -209,7 +256,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
     // Bind this block-scope extern to the nearest linkage-bearing declaration.
     struct IdentMapEntry* linkage_entry = find_linkage_entry(global_ident_stack, var_dclr->name);
     struct Slice* target_name = (linkage_entry != NULL) ? linkage_entry->entry_name : var_dclr->name;
-    ident_stack_insert(global_ident_stack, var_dclr->name, target_name, true);
+    ident_stack_insert(global_ident_stack, var_dclr->name, target_name, true, -1, false, 0);
     return true;
   }
 
@@ -222,7 +269,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
       // Declared in an outer scope; create a new unique local.
       struct Slice* unique_name = make_unique(var_dclr->name);
       ident_stack_insert(global_ident_stack, var_dclr->name,
-          unique_name, false);
+          unique_name, false, -1, false, 0);
       var_dclr->name = unique_name;
       if (var_dclr->init != NULL) {
         return resolve_var_init(var_dclr->init);
@@ -234,7 +281,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
   // First declaration in this scope: insert and optionally resolve initializer.
   struct Slice* unique_name = make_unique(var_dclr->name);
   ident_stack_insert(global_ident_stack, var_dclr->name,
-      unique_name, false);
+      unique_name, false, -1, false, 0);
   var_dclr->name = unique_name;
   if (var_dclr->init != NULL) {
     return resolve_var_init(var_dclr->init);
@@ -252,6 +299,12 @@ bool resolve_local_dclr(struct Declaration* dclr) {
       return resolve_local_var_dclr(&dclr->dclr.var_dclr);
     case FUN_DCLR:
       return resolve_local_func(&dclr->dclr.fun_dclr);
+    case STRUCT_DCLR:
+      return resolve_struct(&dclr->dclr.struct_dclr);
+    case UNION_DCLR:
+      return resolve_union(&dclr->dclr.union_dclr);
+    case ENUM_DCLR:
+      return resolve_enum(&dclr->dclr.enum_dclr);
     default:
       ident_error_at(NULL, "unknown declaration type");
       return false;
@@ -312,10 +365,12 @@ bool resolve_stmt(struct Statement* stmt) {
     case COMPOUND_STMT:
       // New scope for block-local declarations.
       enter_scope(global_ident_stack);
+      enter_scope(global_type_stack);
       if (!resolve_block(stmt->statement.compound_stmt.block)) {
         return false;
       }
       struct IdentMap* maps = exit_scope(global_ident_stack);
+      exit_scope(global_type_stack);
       if (stmt->statement.compound_stmt.block != NULL) {
         stmt->statement.compound_stmt.block->idents = maps;
       } else {
@@ -339,6 +394,7 @@ bool resolve_stmt(struct Statement* stmt) {
     case FOR_STMT:
       // The for-init may introduce new locals, so give the loop its own scope.
       enter_scope(global_ident_stack);
+      enter_scope(global_type_stack);
       if (!resolve_for_init(stmt->statement.for_stmt.init)) {
         return false;
       }
@@ -357,6 +413,7 @@ bool resolve_stmt(struct Statement* stmt) {
         return false;
       }
       stmt->statement.for_stmt.init_idents = exit_scope(global_ident_stack);
+      exit_scope(global_type_stack);
       return true;
     case SWITCH_STMT:
       if (!resolve_expr(stmt->statement.switch_stmt.condition)) {
@@ -364,6 +421,9 @@ bool resolve_stmt(struct Statement* stmt) {
       }
       return resolve_stmt(stmt->statement.switch_stmt.statement);
     case CASE_STMT:
+      if (!resolve_expr(stmt->statement.case_stmt.expr)) {
+        return false;
+      }
       return resolve_stmt(stmt->statement.case_stmt.statement);
     case DEFAULT_STMT:
       return resolve_stmt(stmt->statement.default_stmt.statement);
@@ -404,7 +464,7 @@ bool resolve_local_func(struct FunctionDclr* func_dclr) {
   if (entry == NULL || !from_current_scope) {
     // Insert into the current scope so inner blocks can shadow outer identifiers.
     ident_stack_insert(global_ident_stack, func_dclr->name,
-        func_dclr->name, true);
+        func_dclr->name, true, -1, false, 0);
   }
 
   return true;
@@ -462,6 +522,11 @@ bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
     return false;
   }
 
+  if (!resolve_type(var_dclr->type)) {
+    ident_error_at(var_dclr->name->start, "failed to resolve variable type");
+    return false;
+  }
+
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, var_dclr->name, &from_current_scope);
   if (entry != NULL) {
@@ -476,7 +541,7 @@ bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
   } else {
     // add to ident map
     ident_stack_insert(global_ident_stack, var_dclr->name,
-        var_dclr->name, var_dclr->storage != STATIC);
+        var_dclr->name, var_dclr->storage != STATIC, -1, false, 0);
     // expr should be a constant if it exists
     // no need to recursively process
     return true;
@@ -488,6 +553,11 @@ bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
 // Outputs: Returns true on success; false on invalid redeclarations.
 // Invariants/Assumptions: Function bodies get their own scope for params/locals.
 bool resolve_file_scope_func(struct FunctionDclr* func_dclr) {
+  if (!resolve_type(func_dclr->type)) {
+    ident_error_at(func_dclr->name->start, "failed to resolve function return type");
+    return false;
+  }
+
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, func_dclr->name, &from_current_scope);
   if (entry != NULL) {
@@ -506,21 +576,25 @@ bool resolve_file_scope_func(struct FunctionDclr* func_dclr) {
 
     // definition after a prior declaration; resolve params/body in a new scope
     enter_scope(global_ident_stack);
+    enter_scope(global_type_stack);
     bool params_resolved = resolve_params(func_dclr->params);
     bool block_resolved = resolve_block(func_dclr->body);
     func_dclr->body->idents = exit_scope(global_ident_stack);
+    exit_scope(global_type_stack);
     return params_resolved && block_resolved;
   } else {
     // add to ident map
     ident_stack_insert(global_ident_stack, func_dclr->name,
-        func_dclr->name, func_dclr->storage != STATIC);
+        func_dclr->name, func_dclr->storage != STATIC, -1, false, 0);
 
     // Parameters and body share a new scope distinct from file scope.
     enter_scope(global_ident_stack);
+    enter_scope(global_type_stack);
     bool params_resolved = resolve_params(func_dclr->params);
     bool block_resolved = resolve_block(func_dclr->body);
     
     struct IdentMap* maps = exit_scope(global_ident_stack);
+    exit_scope(global_type_stack);
     if (func_dclr->body != NULL){
       func_dclr->body->idents = maps;
     } else {
@@ -529,6 +603,104 @@ bool resolve_file_scope_func(struct FunctionDclr* func_dclr) {
 
     return params_resolved && block_resolved;
   }
+}
+
+bool resolve_struct(struct StructDclr* struct_dclr){
+  bool from_current_scope = false;
+  struct IdentMapEntry* entry = ident_stack_get(global_type_stack, struct_dclr->name, &from_current_scope);
+  if (entry == NULL || !from_current_scope){
+    // new type declaration
+    struct Slice* unique_name = make_unique(struct_dclr->name);
+    ident_stack_insert(global_type_stack, struct_dclr->name, unique_name, false, STRUCT_TYPE, false, 0);
+    struct_dclr->name = unique_name;
+  } else {
+    // redeclaration of existing type
+    if (entry->type != STRUCT_TYPE) {
+      ident_error_at(struct_dclr->name->start, "type redeclared as different type");
+      return false;
+    }
+
+    // switch to unique name
+    struct_dclr->name = entry->entry_name;
+  }
+
+  // resolve member types
+  for (struct MemberDclr* member = struct_dclr->members; member != NULL; member = member->next){
+    if (!resolve_type(member->type)){
+      ident_error_at(member->name->start, "failed to resolve struct member type");
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool resolve_union(struct UnionDclr* union_dclr){
+  bool from_current_scope = false;
+  struct IdentMapEntry* entry = ident_stack_get(global_type_stack, union_dclr->name, &from_current_scope);
+  if (entry == NULL || !from_current_scope){
+    // new type declaration
+    struct Slice* unique_name = make_unique(union_dclr->name);
+    ident_stack_insert(global_type_stack, union_dclr->name, unique_name, false, UNION_TYPE, false, 0);
+    union_dclr->name = unique_name;
+  } else {
+    // redeclaration of existing type
+    if (entry->type != UNION_TYPE) {
+      ident_error_at(union_dclr->name->start, "type redeclared as different type");
+      return false;
+    }
+
+    // switch to unique name
+    union_dclr->name = entry->entry_name;
+  }
+
+  // resolve member types
+  for (struct MemberDclr* member = union_dclr->members; member != NULL; member = member->next){
+    if (!resolve_type(member->type)){
+      ident_error_at(member->name->start, "failed to resolve union member type");
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool resolve_enum(struct EnumDclr* enum_dclr){
+  bool from_current_scope = false;
+  struct IdentMapEntry* entry = ident_stack_get(global_type_stack, enum_dclr->name, &from_current_scope);
+  if (entry == NULL || !from_current_scope){
+    // new type declaration
+    struct Slice* unique_name = make_unique(enum_dclr->name);
+    ident_stack_insert(global_type_stack, enum_dclr->name, unique_name, false, ENUM_TYPE, false, 0);
+    enum_dclr->name = unique_name;
+  } else {
+    // redeclaration of existing type
+    if (entry->type != ENUM_TYPE) {
+      ident_error_at(enum_dclr->name->start, "type redeclared as different type");
+      return false;
+    }
+
+    // switch to unique name
+    enum_dclr->name = entry->entry_name;
+  }
+
+  // add enum member values to ident map
+  for (struct EnumMemberDclr* member = enum_dclr->members; member != NULL; member = member->next){
+    // check if member already exists
+    bool from_current_scope = false;
+    struct IdentMapEntry* member_entry = ident_stack_get(global_ident_stack, member->name, &from_current_scope);
+    if (member_entry == NULL || !from_current_scope){
+      // new enum member
+      struct Slice* unique_member_name = make_unique(member->name);
+      ident_stack_insert(global_ident_stack, member->name, unique_member_name, false, -1, true, member->value);
+      member->name = unique_member_name;
+    } else {
+      ident_error_at(member->name->start, "redeclaration of enum member");
+      return false;
+    }
+  }
+
+  return true;
 }
 
 // Purpose: Resolve identifiers in a file-scope declaration.
@@ -541,6 +713,12 @@ bool resolve_file_scope_dclr(struct Declaration* dclr) {
       return resolve_file_scope_var_dclr(&dclr->dclr.var_dclr);
     case FUN_DCLR:
       return resolve_file_scope_func(&dclr->dclr.fun_dclr);
+    case STRUCT_DCLR:
+      return resolve_struct(&dclr->dclr.struct_dclr);
+    case UNION_DCLR:
+      return resolve_union(&dclr->dclr.union_dclr);
+    case ENUM_DCLR:
+      return resolve_enum(&dclr->dclr.enum_dclr);
     default:
       printf("Identifier Resolution Error: Unknown declaration type\n");
       return false;
