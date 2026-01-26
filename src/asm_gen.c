@@ -976,9 +976,14 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
     }
     case TACCOPY_TO_OFFSET:{
       struct TACCopyToOffset* copy_offset_instr = &tac_instr->instr.tac_copy_to_offset;
+      struct Type* store_type = store_type = copy_offset_instr->src->type;
+      if (store_type == NULL) {
+        asm_gen_error("instruction", func_name,
+                      "copy-to-offset missing type information for store");
+      }
       asm_instr->type = ASM_MOV;
-      asm_instr->dst = make_pseudo_mem(copy_offset_instr->dst, copy_offset_instr->offset);
-      asm_instr->dst->asm_type = type_to_asm_type(copy_offset_instr->dst->type);
+      asm_instr->dst = make_pseudo_mem(copy_offset_instr->dst, type_to_asm_type(store_type), copy_offset_instr->offset);
+      asm_instr->dst->asm_type = type_to_asm_type(store_type);
       asm_instr->src1 = tac_val_to_asm(copy_offset_instr->src);
       asm_instr->src2 = NULL;
       asm_instr->next = NULL;
@@ -1064,9 +1069,7 @@ size_t create_maps(struct AsmInstr* asm_instr) {
         mapped->type = OPERAND_MEMORY;
         mapped->reg = BP;
         mapped->lit_value = allocate_stack_slot(opr, &stack_bytes);
-        if (opr->type == OPERAND_PSEUDO_MEM) {
-            mapped->lit_value += opr->lit_value;
-        }
+        // Offset is applied at lookup time so each pseudo-mem use keeps its own byte offset.
         mapped->pseudo = NULL;
         mapped->asm_type = opr->asm_type;
       }
@@ -1297,24 +1300,17 @@ struct Operand* tac_val_to_asm(struct Val* val) {
   }
 }
 
-struct Operand* make_pseudo_mem(struct Val* val, int offset) {
-  if (val == NULL) {
-    asm_gen_error("operand", NULL, "NULL TAC value for pseudo-mem operand");
+struct Operand* make_pseudo_mem(struct Slice* var_name, struct AsmType* asm_type, int offset) {
+  if (var_name == NULL) {
+    asm_gen_error("operand", NULL, "NULL slice for pseudo-mem operand");
   }
 
-  if (val->val_type == VARIABLE) {
-    struct Operand* opr = arena_alloc(sizeof(struct Operand));
-    opr->type = OPERAND_PSEUDO_MEM;
-    opr->pseudo = val->val.var_name;
-    opr->lit_value = offset;
-    opr->asm_type = type_to_asm_type(val->type);
-    return opr;
-  } else {
-    asm_gen_error("operand", NULL,
-                  "pseudo-mem operand requires variable TAC value (got %d)",
-                  (int)val->val_type);
-    return NULL;
-  }
+  struct Operand* opr = arena_alloc(sizeof(struct Operand));
+  opr->type = OPERAND_PSEUDO_MEM;
+  opr->pseudo = var_name;
+  opr->lit_value = offset;
+  opr->asm_type = asm_type;
+  return opr;
 }
 
 size_t type_alignment(struct Type* type, const struct Slice* symbol_name) {
@@ -1449,7 +1445,23 @@ struct Operand* pseudo_map_get(struct PseudoMap* hmap, struct Operand* key){
   if (hmap->arr[label] == NULL){
     return 0;
   } else {
-    return pseudo_entry_get(hmap->arr[label], key);
+    struct Operand* mapped = pseudo_entry_get(hmap->arr[label], key);
+    if (mapped == NULL) {
+      return NULL;
+    }
+    if (key->type == OPERAND_PSEUDO_MEM) {
+      if (mapped->type == OPERAND_DATA && key->lit_value != 0) {
+        asm_gen_error("stack-map", NULL,
+                      "data operand offset not supported for pseudo %.*s",
+                      (int)key->pseudo->len, key->pseudo->start);
+      }
+      struct Operand* derived = arena_alloc(sizeof(struct Operand));
+      *derived = *mapped;
+      derived->lit_value = mapped->lit_value + key->lit_value;
+      derived->asm_type = key->asm_type;
+      return derived;
+    }
+    return mapped;
   }
 }
 

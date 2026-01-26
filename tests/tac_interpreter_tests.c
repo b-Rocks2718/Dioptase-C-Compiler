@@ -594,7 +594,7 @@ Readable TAC:
   func main:
     arr0 = 0
     p = &arr0
-    copy_to_offset p, 99, 1
+    copy_to_offset arr0, 99, 1
     addr2 = p + 1
     t0 = load [addr2]
     return t0
@@ -635,7 +635,7 @@ static bool tac_test_copy_to_offset(void) {
   copy_arr0.instr.tac_copy.src = &const_init;
   addr_of.instr.tac_get_address.dst = &p_val;
   addr_of.instr.tac_get_address.src = &arr0_val;
-  copy_offset.instr.tac_copy_to_offset.dst = &p_val;
+  copy_offset.instr.tac_copy_to_offset.dst = &arr0_name;
   copy_offset.instr.tac_copy_to_offset.src = &const_store;
   copy_offset.instr.tac_copy_to_offset.offset = kOffsetBytes;
   add_addr.instr.tac_binary.alu_op = ALU_ADD;

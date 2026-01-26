@@ -64,6 +64,7 @@ enum TACInstrType {
   TACLOAD,
   TACSTORE,
   TACCOPY_TO_OFFSET,
+  TACCOPY_FROM_OFFSET,
   TACBOUNDARY,
   TACTRUNC,
   TACEXTEND,
@@ -171,8 +172,14 @@ struct TACStore {
 };
 
 struct TACCopyToOffset {
-  struct Val* dst;
+  struct Slice* dst;
   struct Val* src;
+  int offset;
+};
+
+struct TACCopyFromOffset {
+  struct Val* dst;
+  struct Slice* src;
   int offset;
 };
 
@@ -207,6 +214,7 @@ union TACInstrVariant {
   struct TACLoad tac_load;
   struct TACStore tac_store;
   struct TACCopyToOffset tac_copy_to_offset;
+  struct TACCopyFromOffset tac_copy_from_offset;
   struct TACBoundary tac_boundary; // used for statement/declaration debug line markers
   struct TACTrunc tac_trunc;
   struct TACExtend tac_extend;
@@ -221,12 +229,15 @@ struct TACInstr {
 
 enum ExprResultType {
   PLAIN_OPERAND,
-  DEREFERENCED_POINTER
+  DEREFERENCED_POINTER,
+  SUB_OBJECT,
 };
 
 struct ExprResult {
   enum ExprResultType type;
   struct Val* val;
+  struct Slice* sub_object_base; // for SUB_OBJECT
+  int sub_object_offset;          // for SUB_OBJECT
 };
 
 // ----- Main TAC conversion functions -----

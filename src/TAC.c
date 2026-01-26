@@ -7,6 +7,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <limits.h>
 
 static int tac_temp_counter = 0;
 static int tac_label_counter = 0;
@@ -22,7 +23,10 @@ struct IdentAttr kLocalAttrs = {LOCAL_ATTR, true, NONE, {NO_INIT, NULL}};
 static struct TACInstr* array_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
     struct InitializerList* inits, struct Type* type, size_t offset);
 static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
-    struct StringExpr* str_expr, struct Type* type);
+    struct StringExpr* str_expr, struct Type* type, size_t offset);
+static struct TACInstr* struct_init_to_TAC(struct Slice* func_name, struct Slice* base,
+    struct InitializerList* inits, struct Type* type, size_t offset);
+static int init_offset_to_int(size_t offset, const char* loc);
 
 // Purpose: Choose a source location pointer for a declaration.
 // Inputs: dclr is the declaration to describe (may be NULL).
@@ -550,7 +554,11 @@ struct TopLevel* file_scope_dclr_to_TAC(struct Declaration* declaration) {
     case FUN_DCLR:
       return func_to_TAC(&declaration->dclr.fun_dclr);
     case VAR_DCLR:
+    case STRUCT_DCLR:
+    case UNION_DCLR:
+    case ENUM_DCLR:
       // TAC for static variables is generated from the symbol table later.
+      // struct/union/enum declarations do not produce TAC.
       return NULL;
     default:
       tac_error_at(NULL, "invalid declaration type in file scope");
@@ -756,6 +764,101 @@ struct TACInstr* local_dclr_to_TAC(struct Slice* func_name, struct Declaration* 
   }
 }
 
+struct TACInstr* compound_init_to_TAC(struct Slice* func_name,
+                                      struct Slice* base_var,
+                                      struct InitializerList* inits,
+                                      struct Type* type,
+                                      size_t offset) {
+  if (type->type == ARRAY_TYPE) {
+    return array_init_to_TAC(func_name, base_var, inits,
+                           type, offset);
+  } else if (type->type == STRUCT_TYPE ||
+             type->type == UNION_TYPE) {
+    return struct_init_to_TAC(func_name, base_var, inits, type, offset);
+  } else {
+    tac_error_at(inits->init->loc,
+                 "compound initializer for non-aggregate local variable");
+    return NULL;
+  }
+}
+
+// Purpose: Lower a single initializer for a scalar or aggregate element.
+// Inputs: func_name is the owning function; base_var is the target variable name.
+// Outputs: Returns TAC instructions that perform the initialization.
+// Invariants/Assumptions: offset is a byte offset into base_var storage.
+struct TACInstr* single_init_to_TAC(struct Slice* func_name,
+                                    struct Slice* base_var,
+                                    struct Expr* init,
+                                    struct Type* type,
+                                    size_t offset) {
+  if (type != NULL && type->type == ARRAY_TYPE && init->type == STRING) {
+    return string_init_to_TAC(func_name, base_var,
+                              &init->expr.string_expr,
+                              type, offset);
+  }
+
+  bool use_offset_store = offset != 0;
+  struct SymbolEntry* base_entry = symbol_table_get(global_symbol_table, base_var);
+  if (base_entry != NULL && base_entry->type != NULL) {
+    enum TypeType base_kind = base_entry->type->type;
+    if (base_kind == ARRAY_TYPE || base_kind == STRUCT_TYPE || base_kind == UNION_TYPE) {
+      // was an aggregate type; must use offset store
+      use_offset_store = true;
+    }
+  }
+  if (use_offset_store) {
+    struct Val* src = (struct Val*)arena_alloc(sizeof(struct Val));
+    struct TACInstr* expr_instrs = expr_to_TAC_convert(func_name, init, src);
+    struct TACInstr* store_instr = tac_instr_create(TACCOPY_TO_OFFSET);
+    store_instr->instr.tac_copy_to_offset.dst = base_var;
+    store_instr->instr.tac_copy_to_offset.src = src;
+    store_instr->instr.tac_copy_to_offset.offset =
+        init_offset_to_int(offset, init->loc);
+    concat_TAC_instrs(&expr_instrs, store_instr);
+    return expr_instrs;
+  }
+
+  // was not an aggregate type; use direct assignment
+
+  struct Expr assign_expr;
+  assign_expr.type = ASSIGN;
+  assign_expr.loc = init->loc;
+  assign_expr.value_type = type;
+
+  struct Expr var_expr;
+  var_expr.type = VAR;
+  var_expr.loc = init->loc;
+  var_expr.value_type = type;
+  var_expr.expr.var_expr.name = base_var;
+
+  assign_expr.expr.assign_expr.left = &var_expr;
+  assign_expr.expr.assign_expr.right = init;
+
+  return expr_to_TAC_convert(func_name, &assign_expr, NULL);
+}
+
+struct TACInstr* init_to_TAC(struct Slice* func_name,
+                                 struct Slice* base_var,
+                                 struct Initializer* init,
+                                 struct Type* type,
+                                 size_t offset) {
+  switch (init->init_type) {
+    case SINGLE_INIT: {
+      return single_init_to_TAC(func_name, base_var,
+                                init->init.single_init,
+                                type, offset);
+    }
+    case COMPOUND_INIT: {
+      return compound_init_to_TAC(func_name, base_var,
+                                 init->init.compound_init,
+                                 type, offset);
+    }
+    default:
+      tac_error_at(init->loc, "invalid initializer type in init_to_TAC");
+      return NULL;
+  }
+}
+
 // Purpose: Lower a local variable declaration initializer into TAC.
 // Inputs: func_name is the owning function; dclr is a variable declaration.
 // Outputs: Returns TAC instructions for the initializer, or NULL if none.
@@ -775,33 +878,10 @@ struct TACInstr* var_dclr_to_TAC(struct Slice* func_name, struct Declaration* dc
       // local variable initialization
 
       // create assignment statement and convert to TAC
-      if (var_dclr->init->init_type == SINGLE_INIT) {
-        if (var_dclr->type != NULL && var_dclr->type->type == ARRAY_TYPE &&
-            var_dclr->init->init.single_init->type == STRING) {
-          return string_init_to_TAC(func_name, var_dclr->name,
-                                    &var_dclr->init->init.single_init->expr.string_expr,
-                                    var_dclr->type);
-        }
-        struct Expr assign_expr;
-        assign_expr.type = ASSIGN;
-        assign_expr.loc = var_dclr->init->loc;
-        assign_expr.value_type = var_dclr->type;
-
-        struct Expr var_expr;
-        var_expr.type = VAR;
-        var_expr.loc = var_dclr->init->loc;
-        var_expr.value_type = var_dclr->type;
-        var_expr.expr.var_expr.name = var_dclr->name;
-
-        assign_expr.expr.assign_expr.left = &var_expr;
-        assign_expr.expr.assign_expr.right = var_dclr->init->init.single_init;
-
-        return expr_to_TAC_convert(func_name, &assign_expr, NULL);
-      } else {
-        // was a COMPOUND_INIT
-        return array_init_to_TAC(func_name, var_dclr->name, var_dclr->init->init.compound_init,
-                                 var_dclr->type, 0);
-      }
+      return init_to_TAC(func_name, var_dclr->name,
+                         var_dclr->init,
+                         var_dclr->type,
+                         0);
     }
     default:
       tac_error_at(var_dclr->name ? var_dclr->name->start : NULL,
@@ -810,102 +890,28 @@ struct TACInstr* var_dclr_to_TAC(struct Slice* func_name, struct Declaration* dc
   }
 }
 
-// Purpose: Generate array element stores using a precomputed base address.
-// Inputs: base_ptr holds the base address; inits lists element initializers.
-// Outputs: Returns a TAC instruction list for the array initializer.
-// Invariants/Assumptions: type is ARRAY_TYPE; offsets are byte offsets.
-static struct TACInstr* string_init_to_TAC_with_base(struct Slice* func_name,
-                                                     struct Val* base_ptr,
-                                                     size_t base_offset,
-                                                     struct StringExpr* str_expr,
-                                                     struct Type* type);
-static struct TACInstr* array_init_to_TAC_with_base(struct Slice* func_name,
-                                                    struct Val* base_ptr,
-                                                    struct InitializerList* inits,
-                                                    struct Type* type,
-                                                    size_t offset) {
-  if (inits == NULL) {
-    return NULL;
+// Purpose: Normalize initializer offsets to the TAC int field width.
+// Inputs: offset is a byte offset; loc is the initializer location for errors.
+// Outputs: Returns the offset as an int for TAC encodings.
+// Invariants/Assumptions: Offsets must fit in int for the TAC representation.
+static int init_offset_to_int(size_t offset, const char* loc) {
+  if (offset > (size_t)INT_MAX) {
+    tac_error_at(loc, "initializer offset too large");
   }
-  if (type == NULL || type->type != ARRAY_TYPE) {
-    tac_error_at(NULL, "array init requires array type");
-    return NULL;
-  }
-
-  struct Type* element_type = type->type_data.array_type.element_type;
-  size_t element_size = get_type_size(element_type);
-  size_t cur_offset = offset;
-  struct TACInstr* instrs = NULL;
-
-  for (struct InitializerList* cur = inits; cur != NULL; cur = cur->next) {
-    if (cur->init == NULL) {
-      tac_error_at(NULL, "missing initializer in array init");
-      return instrs;
-    }
-
-    switch (cur->init->init_type) {
-      case SINGLE_INIT: {
-        if (cur->init->init.single_init->type == STRING &&
-            element_type->type == ARRAY_TYPE &&
-            is_char_type(element_type->type_data.array_type.element_type)) {
-          struct TACInstr* string_instrs =
-              string_init_to_TAC_with_base(func_name, base_ptr, cur_offset,
-                                           &cur->init->init.single_init->expr.string_expr,
-                                           element_type);
-          concat_TAC_instrs(&instrs, string_instrs);
-          break;
-        }
-        struct Val* src = (struct Val*)arena_alloc(sizeof(struct Val));
-        struct TACInstr* expr_instrs =
-            expr_to_TAC_convert(func_name, cur->init->init.single_init, src);
-
-        struct Val* addr = base_ptr;
-        if (cur_offset != 0) {
-          addr = make_temp(func_name, base_ptr->type);
-          struct TACInstr* add_instr = tac_instr_create(TACBINARY);
-          add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, base_ptr->type);
-          add_instr->instr.tac_binary.dst = addr;
-          add_instr->instr.tac_binary.src1 = base_ptr;
-          add_instr->instr.tac_binary.src2 =
-              tac_make_const((uint64_t)cur_offset, base_ptr->type);
-          concat_TAC_instrs(&expr_instrs, add_instr);
-        }
-
-        struct TACInstr* store_instr = tac_instr_create(TACSTORE);
-        store_instr->instr.tac_store.dst_ptr = addr;
-        store_instr->instr.tac_store.src = src;
-        concat_TAC_instrs(&expr_instrs, store_instr);
-        concat_TAC_instrs(&instrs, expr_instrs);
-        break;
-      }
-      case COMPOUND_INIT: {
-        struct TACInstr* inner_instrs =
-            array_init_to_TAC_with_base(func_name, base_ptr,
-                                        cur->init->init.compound_init,
-                                        element_type, cur_offset);
-        concat_TAC_instrs(&instrs, inner_instrs);
-        break;
-      }
-      default:
-        tac_error_at(cur->init->loc, "unknown initializer type in array init");
-        return instrs;
-    }
-
-    cur_offset += element_size;
-  }
-
-  return instrs;
+  return (int)offset;
 }
 
-// Purpose: Lower a string literal initializer into TAC stores at a base address plus offset.
-// Inputs: func_name is the owning function; base_ptr is the base address; base_offset is the byte offset.
-// Outputs: Returns TAC instructions that write the string bytes into the target storage.
-// Invariants/Assumptions: type is ARRAY_TYPE with a char-like element type; base_ptr holds a byte address.
-static struct TACInstr* string_init_to_TAC_with_base(struct Slice* func_name,
-                                                     struct Val* base_ptr,
-                                                     size_t base_offset,
-                                                     struct StringExpr* str_expr,
-                                                     struct Type* type) {
+// Purpose: Lower a string literal initializer for a local char array into TAC stores.
+// Inputs: var_name is the array name; str_expr is the literal.
+// Outputs: Returns TAC instructions that write the string bytes into the array storage.
+// Invariants/Assumptions: type is ARRAY_TYPE with a char-like element type.
+static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
+                                           struct StringExpr* str_expr, struct Type* type, size_t offset) {
+  if (type == NULL || type->type != ARRAY_TYPE) {
+    tac_error_at(var_name ? var_name->start : NULL, "string init requires array type");
+    return NULL;
+  }
+
   if (type == NULL || type->type != ARRAY_TYPE) {
     tac_error_at(NULL, "string init requires array type");
     return NULL;
@@ -929,18 +935,6 @@ static struct TACInstr* string_init_to_TAC_with_base(struct Slice* func_name,
   }
 
   struct TACInstr* instrs = NULL;
-  struct Val* elem_base = base_ptr;
-  if (base_offset != 0) {
-    elem_base = make_temp(func_name, base_ptr->type);
-    struct TACInstr* add_instr = tac_instr_create(TACBINARY);
-    add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, base_ptr->type);
-    add_instr->instr.tac_binary.dst = elem_base;
-    add_instr->instr.tac_binary.src1 = base_ptr;
-    add_instr->instr.tac_binary.src2 =
-        tac_make_const((uint64_t)base_offset, base_ptr->type);
-    instrs = add_instr;
-  }
-
   size_t element_size = get_type_size(element_type);
   for (size_t i = 0; i < array_len; i++) {
     uint64_t byte = 0;
@@ -949,55 +943,39 @@ static struct TACInstr* string_init_to_TAC_with_base(struct Slice* func_name,
     }
 
     struct Val* src = tac_make_const(byte, element_type);
-    size_t byte_offset = i * element_size;
-    struct Val* addr = elem_base;
-    struct TACInstr* store_chain = NULL;
-    if (byte_offset != 0) {
-      addr = make_temp(func_name, base_ptr->type);
-      struct TACInstr* add_instr = tac_instr_create(TACBINARY);
-      add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, base_ptr->type);
-      add_instr->instr.tac_binary.dst = addr;
-      add_instr->instr.tac_binary.src1 = elem_base;
-      add_instr->instr.tac_binary.src2 =
-          tac_make_const((uint64_t)byte_offset, base_ptr->type);
-      store_chain = add_instr;
-    }
-
-    struct TACInstr* store_instr = tac_instr_create(TACSTORE);
-    store_instr->instr.tac_store.dst_ptr = addr;
-    store_instr->instr.tac_store.src = src;
-    if (store_chain != NULL) {
-      concat_TAC_instrs(&store_chain, store_instr);
-    } else {
-      store_chain = store_instr;
-    }
-    concat_TAC_instrs(&instrs, store_chain);
+    size_t byte_offset = offset + (i * element_size);
+    struct TACInstr* store_instr = tac_instr_create(TACCOPY_TO_OFFSET);
+    store_instr->instr.tac_copy_to_offset.dst = var_name;
+    store_instr->instr.tac_copy_to_offset.src = src;
+    store_instr->instr.tac_copy_to_offset.offset =
+        init_offset_to_int(byte_offset, str_expr->string->start);
+    concat_TAC_instrs(&instrs, store_instr);
   }
 
   return instrs;
 }
 
-// Purpose: Lower a string literal initializer for a local char array into TAC stores.
-// Inputs: func_name is the owning function; var_name is the array name; str_expr is the literal.
-// Outputs: Returns TAC instructions that write the string bytes into the array storage.
-// Invariants/Assumptions: type is ARRAY_TYPE with a char-like element type.
-static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
-                                           struct StringExpr* str_expr, struct Type* type) {
-  if (type == NULL || type->type != ARRAY_TYPE) {
-    tac_error_at(var_name ? var_name->start : NULL, "string init requires array type");
+static struct TACInstr* struct_init_to_TAC(struct Slice* func_name, struct Slice* base,
+                                           struct InitializerList* inits,
+                                           struct Type* type,
+                                           size_t offset){
+  if (inits == NULL) {
     return NULL;
   }
+  if (type == NULL || (type->type != STRUCT_TYPE && type->type != UNION_TYPE)) {
+    tac_error_at(base ? base->start : NULL, "struct init requires struct/union type");
+    return NULL;  
+  }
+  struct TACInstr* instrs = NULL;
+  struct TypeEntry* type_entry = type_table_get(global_type_table, type->type_data.struct_type.name);
+  struct MemberEntry* members = type_entry->data.struct_entry->members;
+  struct InitializerList* cur_init = inits;
 
-  struct Val* base_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
-  struct Val* array_val = tac_make_var(var_name, type);
-  struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
-  addr_instr->instr.tac_get_address.dst = base_ptr;
-  addr_instr->instr.tac_get_address.src = array_val;
-
-  struct TACInstr* store_instrs =
-      string_init_to_TAC_with_base(func_name, base_ptr, 0, str_expr, type);
-  concat_TAC_instrs(&addr_instr, store_instrs);
-  return addr_instr;
+  for (struct MemberEntry* cur_member = members; cur_member != NULL && cur_init != NULL; cur_member = cur_member->next, cur_init = cur_init->next) {
+    size_t mem_offset = offset + cur_member->offset;
+    concat_TAC_instrs(&instrs, init_to_TAC(func_name, base, cur_init->init, cur_member->type, mem_offset));
+  }
+  return instrs;
 }
 
 // Purpose: Lower a compound array initializer into TAC CopyToOffset instructions.
@@ -1014,16 +992,31 @@ static struct TACInstr* array_init_to_TAC(struct Slice* func_name, struct Slice*
     return NULL;
   }
 
-  struct Val* base_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
-  struct Val* array_val = tac_make_var(var_name, type);
-  struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
-  addr_instr->instr.tac_get_address.dst = base_ptr;
-  addr_instr->instr.tac_get_address.src = array_val;
+  if (inits == NULL) {
+    return NULL;
+  }
+  if (type == NULL || type->type != ARRAY_TYPE) {
+    tac_error_at(NULL, "array init requires array type");
+    return NULL;
+  }
 
-  struct TACInstr* init_instrs =
-      array_init_to_TAC_with_base(func_name, base_ptr, inits, type, offset);
-  concat_TAC_instrs(&addr_instr, init_instrs);
-  return addr_instr;
+  struct Type* element_type = type->type_data.array_type.element_type;
+  size_t element_size = get_type_size(element_type);
+  size_t cur_offset = offset;
+  struct TACInstr* instrs = NULL;
+
+  for (struct InitializerList* cur = inits; cur != NULL; cur = cur->next) {
+    if (cur->init == NULL) {
+      tac_error_at(NULL, "missing initializer in array init");
+      return instrs;
+    }
+
+    concat_TAC_instrs(&instrs, init_to_TAC(func_name, var_name, cur->init, element_type, cur_offset));
+
+    cur_offset += element_size;
+  }
+
+  return instrs;
 }
 
 // Purpose: Lower a statement into a TAC instruction list.
@@ -1720,35 +1713,56 @@ struct TACInstr* relational_to_TAC(struct Slice* func_name,
 // Inputs: func_name is the owning function; expr is the expression to lower.
 // Outputs: Returns TAC instructions; out_val receives the computed value if provided.
 // Invariants/Assumptions: Loads are emitted when an lvalue is dereferenced.
-struct TACInstr* expr_to_TAC_convert(struct Slice* func_name, struct Expr* expr, struct Val* out_val) {
+struct TACInstr* expr_to_TAC_convert(struct Slice* func_name, struct Expr* expr, struct Val* dst) {
   struct ExprResult raw_result;
   struct TACInstr* instrs = expr_to_TAC(func_name, expr, &raw_result);
 
-  if (raw_result.type == PLAIN_OPERAND) {
-    if (out_val != NULL) {
-      tac_copy_val(out_val, raw_result.val);
+  switch (raw_result.type) {
+    case PLAIN_OPERAND: {
+      // AST:
+      // expression used as value
+      // TAC:
+      // (no-op)
+      if (dst != NULL) {
+        tac_copy_val(dst, raw_result.val);
+      }
+      return instrs;
     }
-    return instrs;
+    case DEREFERENCED_POINTER: {
+      struct Val* tmp = make_temp(func_name, expr->value_type);
+      tac_copy_val(dst, tmp);
+    
+      // AST:
+      // lvalue expression used as value
+      // TAC:
+      // Load dst, [ptr]
+      struct TACInstr* load_instr = tac_instr_create(TACLOAD);
+      load_instr->instr.tac_load.dst = dst;
+      load_instr->instr.tac_load.src_ptr = raw_result.val;
+      concat_TAC_instrs(&instrs, load_instr);
+    
+      return instrs;
+    }
+    case SUB_OBJECT: {
+      struct Val* tmp = make_temp(func_name, expr->value_type);
+      tac_copy_val(dst, tmp);
+      // AST:
+      // struct.field or ptr->field used as value
+      // TAC:
+      // CopyFromOffset dst, base_ptr, offset
+
+      struct TACInstr* copy_instr = tac_instr_create(TACCOPY_FROM_OFFSET);
+      copy_instr->instr.tac_copy_from_offset.dst = dst;
+      copy_instr->instr.tac_copy_from_offset.src = raw_result.sub_object_base;
+      copy_instr->instr.tac_copy_from_offset.offset = raw_result.sub_object_offset;
+      concat_TAC_instrs(&instrs, copy_instr);
+
+      return instrs;
+    }
+    default:
+      tac_error_at(expr ? expr->loc : NULL, "unsupported ExprResult type in expr_to_TAC_convert");
+      return NULL;
   }
-
-  struct Val* dst = out_val;
-  if (dst == NULL) {
-    dst = make_temp(func_name, expr->value_type);
-  } else {
-    struct Val* tmp = make_temp(func_name, expr->value_type);
-    tac_copy_val(dst, tmp);
-  }
-
-  // AST:
-  // lvalue expression used as value
-  // TAC:
-  // Load dst, [ptr]
-  struct TACInstr* load_instr = tac_instr_create(TACLOAD);
-  load_instr->instr.tac_load.dst = dst;
-  load_instr->instr.tac_load.src_ptr = raw_result.val;
-  concat_TAC_instrs(&instrs, load_instr);
-
-  return instrs;
 }
 
 // Purpose: Lower an expression into TAC instructions and an ExprResult.
@@ -2211,6 +2225,24 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
         return instrs;
       }
 
+      if (lhs_result.type == SUB_OBJECT) {
+        // AST:
+        // struct.field = rhs  OR  ptr->field = rhs
+        // TAC:
+        // <base_ptr>
+        // <rhs>
+        // CopyToOffset base_ptr, offset, rhs
+        struct TACInstr* copy_instr = tac_instr_create(TACCOPY_TO_OFFSET);
+        copy_instr->instr.tac_copy_to_offset.dst = lhs_result.sub_object_base;
+        copy_instr->instr.tac_copy_to_offset.offset = lhs_result.sub_object_offset;
+        copy_instr->instr.tac_copy_to_offset.src = rhs_val;
+        concat_TAC_instrs(&instrs, copy_instr);
+
+        result->type = PLAIN_OPERAND;
+        result->val = rhs_val;
+        return instrs;
+      }
+
       tac_error_at(expr->loc, "invalid assignment target");
       return NULL;
     }
@@ -2655,6 +2687,36 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
         return instrs;
       }
 
+      if (inner_result.type == SUB_OBJECT) {
+        struct Val* dst = make_temp(func_name, expr->value_type);
+        // AST:
+        // &struct.field  OR  &ptr->field
+        // TAC:
+        // <base_ptr>
+        // GetAddress dst, base_ptr
+        // Binary Add dst, dst, offset
+        struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
+        addr_instr->instr.tac_get_address.dst = dst;
+        addr_instr->instr.tac_get_address.src = tac_make_var(inner_result.sub_object_base, 
+          tac_builtin_type(UINT_TYPE));
+
+        
+
+        struct TACInstr* offset_instr = tac_instr_create(TACBINARY);
+        offset_instr->instr.tac_binary.alu_op = ADD_OP;
+        offset_instr->instr.tac_binary.dst = dst;
+        offset_instr->instr.tac_binary.src1 = dst;
+        offset_instr->instr.tac_binary.src2 = tac_make_const((uint64_t)inner_result.sub_object_offset, 
+          tac_builtin_type(UINT_TYPE));
+
+        concat_TAC_instrs(&instrs, addr_instr);
+        concat_TAC_instrs(&instrs, offset_instr);
+
+        result->type = PLAIN_OPERAND;
+        result->val = dst;
+        return instrs;
+      }
+
       tac_error_at(expr->loc, "invalid address-of operand");
       return NULL;
     }
@@ -2835,6 +2897,104 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
         concat_TAC_instrs(&instrs, item_instrs);
       }
 
+      return instrs;
+    }
+    case DOT_EXPR: {
+      struct DotExpr* dot_expr = &expr->expr.dot_expr;
+      struct ExprResult* base_result = (struct ExprResult*)arena_alloc(sizeof(struct ExprResult));
+      struct TACInstr* base_instrs = expr_to_TAC(func_name, dot_expr->struct_expr, base_result);
+
+      struct Type* base_type = dot_expr->struct_expr->value_type;
+      struct MemberEntry* field_entry = get_struct_member(base_type, dot_expr->member);
+      if (field_entry == NULL) {
+        tac_error_at(expr->loc, "struct/union has no field named '%.*s'", (int)dot_expr->member->len, dot_expr->member->start);
+        return NULL;
+      }
+
+      size_t field_offset = field_entry->offset;
+
+      struct TACInstr* instrs = base_instrs;
+
+      switch (base_result->type) {
+        case PLAIN_OPERAND:
+          // AST:
+          // base.field
+          // TAC:
+          // <base>
+          // Binary Add addr = base + offset
+          if (base_result->val->val_type != VARIABLE) {
+            tac_error_at(expr->loc, "invalid base expression for dot operator");
+            return NULL;
+          }
+          result->type = SUB_OBJECT;  
+          result->sub_object_base = base_result->val->val.var_name;
+          result->sub_object_offset = field_offset;
+          return instrs;
+        case DEREFERENCED_POINTER:
+          struct Val* dst_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
+          // AST:
+          // (base_ptr)->field
+          // TAC:
+          // <base_ptr>
+          // Binary Add dst_ptr = base_ptr + offset
+          struct TACInstr* add_instr = tac_instr_create(TACBINARY);
+          add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, dst_ptr->type);
+          add_instr->instr.tac_binary.dst = dst_ptr;
+          add_instr->instr.tac_binary.src1 = base_result->val;
+          add_instr->instr.tac_binary.src2 =
+              tac_make_const((uint64_t)field_offset, tac_builtin_type(UINT_TYPE));
+          concat_TAC_instrs(&instrs, add_instr);
+
+          result->type = DEREFERENCED_POINTER;
+          result->val = dst_ptr;
+          return instrs;
+        case SUB_OBJECT:
+          // AST:
+          // base.sub_object.field
+          // TAC:
+          // <base.field>
+          result->type = SUB_OBJECT;
+          result->sub_object_base = base_result->sub_object_base;
+          result->sub_object_offset = base_result->sub_object_offset + field_offset;
+          return instrs;
+        default:
+          tac_error_at(expr->loc, "invalid base expression for dot operator");
+          return NULL;
+      }
+    }
+    case ARROW_EXPR: {
+      // AST:
+      // base_ptr->field
+      // TAC:
+      // <base_ptr>
+      // Binary Add dst_ptr = base_ptr + offset
+      struct ArrowExpr* arrow_expr = &expr->expr.arrow_expr;
+      struct Val* base_ptr_val = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct TACInstr* base_ptr_instrs = expr_to_TAC_convert(func_name, arrow_expr->pointer_expr, base_ptr_val);
+      struct Type* base_type = arrow_expr->pointer_expr->value_type;
+      if (base_type->type != POINTER_TYPE) {
+        tac_error_at(expr->loc, "arrow operator requires pointer to struct/union");
+        return NULL;
+      }
+      base_type = base_type->type_data.pointer_type.referenced_type;
+      struct MemberEntry* field_entry = get_struct_member(base_type, arrow_expr->member);
+      if (field_entry == NULL) {
+        tac_error_at(expr->loc, "struct/union has no field named '%.*s'", (int)arrow_expr->member->len, arrow_expr->member->start);
+        return NULL;
+      }
+      size_t field_offset = field_entry->offset;
+      struct TACInstr* instrs = base_ptr_instrs;
+      struct Val* dst_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
+      
+      struct TACInstr* add_instr = tac_instr_create(TACBINARY);
+      add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, dst_ptr->type);
+      add_instr->instr.tac_binary.dst = dst_ptr;
+      add_instr->instr.tac_binary.src1 = base_ptr_val;
+      add_instr->instr.tac_binary.src2 =
+          tac_make_const((uint64_t)field_offset, tac_builtin_type(UINT_TYPE));
+      concat_TAC_instrs(&instrs, add_instr);
+      result->type = DEREFERENCED_POINTER;
+      result->val = dst_ptr;
       return instrs;
     }
     default:

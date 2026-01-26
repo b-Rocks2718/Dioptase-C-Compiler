@@ -3252,3 +3252,22 @@ struct InitList* is_init_const(struct Type* type, struct Initializer* init) {
       return NULL;
   }
 }
+
+struct MemberEntry* get_struct_member(struct Type* type, struct Slice* member_name){
+  if (type->type != STRUCT_TYPE && type->type != UNION_TYPE){
+    return NULL;
+  }
+
+  struct TypeEntry* struct_entry = type_table_get(global_type_table, type->type_data.struct_type.name);
+  if (struct_entry == NULL){
+    return NULL;
+  }
+
+  for (struct MemberEntry* member = struct_entry->data.struct_entry->members;
+       member != NULL; member = member->next){
+    if (compare_slice_to_slice(member->key, member_name)){
+      return member;
+    }
+  }
+  return NULL;
+}

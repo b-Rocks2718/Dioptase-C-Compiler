@@ -74,6 +74,24 @@ struct TacBindings {
   size_t capacity;
 };
 
+// Purpose: Track required storage for CopyTo/FromOffset base variables.
+// Inputs: name is the variable name; bytes is the max byte span needed.
+// Outputs: Used to pre-allocate local storage before executing a function.
+// Invariants/Assumptions: bytes counts from offset 0 up to the highest accessed byte.
+struct TacCopyOffsetRequirement {
+  struct Slice* name;
+  size_t bytes;
+};
+
+// Purpose: Hold a dynamic list of CopyTo/FromOffset storage requirements.
+// Inputs/Outputs: entries stores the requirements; count/capacity track usage.
+// Invariants/Assumptions: Names are unique within the map.
+struct TacCopyOffsetMap {
+  struct TacCopyOffsetRequirement* entries;
+  size_t count;
+  size_t capacity;
+};
+
 // Purpose: Map a function name to a synthetic address for function pointers.
 // Inputs: name is the function identifier; func is the top-level node; address is the pointer value.
 // Outputs: Used to resolve function-pointer calls and address-of operations.
@@ -338,6 +356,185 @@ static struct TacBinding* tac_bindings_get_or_add(struct TacBindings* bindings,
   return tac_bindings_get_or_add_range(bindings, mem, name, kTacInterpSingleSlot);
 }
 
+// Purpose: Convert a byte span into the number of word slots required.
+// Inputs: bytes is the total byte count to cover.
+// Outputs: Returns the number of word slots to reserve.
+// Invariants/Assumptions: bytes is non-zero and slots are 4-byte words.
+static size_t tac_slots_for_bytes(size_t bytes) {
+  if (bytes == 0) {
+    tac_interp_error("zero-sized copy offset allocation");
+  }
+  size_t slots = (bytes + (size_t)kTacInterpWordBytes - 1) / (size_t)kTacInterpWordBytes;
+  return (slots > 0) ? slots : kTacInterpSingleSlot;
+}
+
+// Purpose: Initialize a CopyTo/FromOffset requirement map.
+// Inputs: map is the map to initialize.
+// Outputs: Resets the map to an empty state.
+// Invariants/Assumptions: map is non-NULL.
+static void tac_copy_offset_map_init(struct TacCopyOffsetMap* map) {
+  map->entries = NULL;
+  map->count = 0;
+  map->capacity = 0;
+}
+
+// Purpose: Release resources held by a CopyTo/FromOffset requirement map.
+// Inputs: map is the map to destroy.
+// Outputs: Frees map storage and resets metadata.
+// Invariants/Assumptions: map was initialized with tac_copy_offset_map_init.
+static void tac_copy_offset_map_destroy(struct TacCopyOffsetMap* map) {
+  free(map->entries);
+  map->entries = NULL;
+  map->count = 0;
+  map->capacity = 0;
+}
+
+// Purpose: Grow the CopyTo/FromOffset requirement map if needed.
+// Inputs: map is the map to grow.
+// Outputs: Ensures capacity for one additional entry.
+// Invariants/Assumptions: map is non-NULL.
+static void tac_copy_offset_map_reserve(struct TacCopyOffsetMap* map) {
+  if (map->count < map->capacity) {
+    return;
+  }
+  size_t new_capacity = (map->capacity == 0)
+                            ? kTacInterpInitialBindingCapacity
+                            : map->capacity * kTacInterpGrowthFactor;
+  struct TacCopyOffsetRequirement* next =
+      (struct TacCopyOffsetRequirement*)realloc(map->entries,
+                                                new_capacity * sizeof(struct TacCopyOffsetRequirement));
+  if (next == NULL) {
+    tac_interp_error("memory allocation failed while growing copy offset map");
+  }
+  map->entries = next;
+  map->capacity = new_capacity;
+}
+
+// Purpose: Find an existing CopyTo/FromOffset requirement by name.
+// Inputs: map is the requirement map; name is the variable name.
+// Outputs: Returns the entry pointer or NULL if not found.
+// Invariants/Assumptions: Name comparisons use slice equality.
+static struct TacCopyOffsetRequirement* tac_copy_offset_map_find(struct TacCopyOffsetMap* map,
+                                                                 const struct Slice* name) {
+  for (size_t i = 0; i < map->count; i++) {
+    if (compare_slice_to_slice(map->entries[i].name, name)) {
+      return &map->entries[i];
+    }
+  }
+  return NULL;
+}
+
+// Purpose: Record the maximum byte span required for a CopyTo/FromOffset base.
+// Inputs: map is the requirement map; name is the variable name; bytes is required span.
+// Outputs: Updates or inserts the requirement entry for the name.
+// Invariants/Assumptions: bytes counts from offset 0 and fits in size_t.
+static void tac_copy_offset_map_update(struct TacCopyOffsetMap* map,
+                                       struct Slice* name,
+                                       size_t bytes) {
+  if (name == NULL) {
+    tac_interp_error("copy offset requirement missing base name");
+  }
+  struct TacCopyOffsetRequirement* entry = tac_copy_offset_map_find(map, name);
+  if (entry != NULL) {
+    if (bytes > entry->bytes) {
+      entry->bytes = bytes;
+    }
+    return;
+  }
+  tac_copy_offset_map_reserve(map);
+  map->entries[map->count].name = name;
+  map->entries[map->count].bytes = bytes;
+  map->count++;
+}
+
+// Purpose: Compute the byte span required for a CopyTo/FromOffset access.
+// Inputs: op_name labels the operation; offset is the byte offset; type describes the value size.
+// Outputs: Returns the byte span needed to cover the access.
+// Invariants/Assumptions: offset is non-negative and type has a non-zero size.
+static size_t tac_copy_offset_required_bytes(const char* op_name,
+                                             int offset,
+                                             const struct Type* type,
+                                             const struct Slice* base_name) {
+  if (offset < 0) {
+    tac_interp_error("%s uses negative offset %d", op_name, offset);
+  }
+  if (type == NULL) {
+    tac_interp_error("%s missing type information", op_name);
+  }
+  size_t size = get_type_size((struct Type*)type);
+  if (size == 0) {
+    tac_interp_error("%s has zero-sized type", op_name);
+  }
+  size_t base = (size_t)offset;
+  if (size > SIZE_MAX - base) {
+    tac_interp_error("%s size overflow for %.*s",
+                     op_name,
+                     base_name ? (int)base_name->len : 0,
+                     base_name ? base_name->start : "<unknown>");
+  }
+  return base + size;
+}
+
+// Purpose: Collect CopyTo/FromOffset storage requirements for a TAC function body.
+// Inputs: map is the requirement map; body is the TAC instruction list.
+// Outputs: Populates map with max byte spans for each base variable.
+// Invariants/Assumptions: TAC instruction list links are acyclic.
+static void tac_collect_copy_offset_requirements(struct TacCopyOffsetMap* map,
+                                                 const struct TACInstr* body) {
+  for (const struct TACInstr* cur = body; cur != NULL; cur = cur->next) {
+    switch (cur->type) {
+      case TACCOPY_TO_OFFSET: {
+        struct Slice* base = cur->instr.tac_copy_to_offset.dst;
+        struct Val* src = cur->instr.tac_copy_to_offset.src;
+        size_t bytes = tac_copy_offset_required_bytes("copy-to-offset",
+                                                      cur->instr.tac_copy_to_offset.offset,
+                                                      src ? src->type : NULL,
+                                                      base);
+        tac_copy_offset_map_update(map, base, bytes);
+        break;
+      }
+      case TACCOPY_FROM_OFFSET: {
+        struct Slice* base = cur->instr.tac_copy_from_offset.src;
+        struct Val* dst = cur->instr.tac_copy_from_offset.dst;
+        size_t bytes = tac_copy_offset_required_bytes("copy-from-offset",
+                                                      cur->instr.tac_copy_from_offset.offset,
+                                                      dst ? dst->type : NULL,
+                                                      base);
+        tac_copy_offset_map_update(map, base, bytes);
+        break;
+      }
+      default:
+        break;
+    }
+  }
+}
+
+// Purpose: Pre-allocate local storage for CopyTo/FromOffset base variables.
+// Inputs: frame is the current frame; interp is the interpreter state; body is the TAC list.
+// Outputs: Ensures local bindings exist for each CopyTo/FromOffset base variable.
+// Invariants/Assumptions: Globals are allocated separately before function execution.
+static void tac_preallocate_copy_offsets(struct TacFrame* frame,
+                                         struct TacInterpreter* interp,
+                                         const struct TACInstr* body) {
+  struct TacCopyOffsetMap map;
+  tac_copy_offset_map_init(&map);
+  tac_collect_copy_offset_requirements(&map, body);
+
+  for (size_t i = 0; i < map.count; i++) {
+    struct Slice* name = map.entries[i].name;
+    if (name == NULL) {
+      continue;
+    }
+    if (tac_bindings_find(&interp->globals, name) != NULL) {
+      continue;
+    }
+    size_t slots = tac_slots_for_bytes(map.entries[i].bytes);
+    (void)tac_bindings_get_or_add_range(&frame->locals, &interp->memory, name, slots);
+  }
+
+  tac_copy_offset_map_destroy(&map);
+}
+
 // Purpose: Initialize a TacFunctionTable structure.
 // Inputs: table points to the function table to initialize.
 // Outputs: Resets the table to empty and sets the first synthetic address.
@@ -535,14 +732,16 @@ static size_t tac_static_init_size(enum StaticInitType init_type) {
 // Purpose: Determine the slot count needed for an addressable type.
 // Inputs: type is the TAC value type for the address-of source.
 // Outputs: Returns the number of word slots to reserve.
-// Invariants/Assumptions: Array sizes are rounded up to word slots.
+// Invariants/Assumptions: Allocates enough space for the full type size.
 static size_t tac_slots_for_type(const struct Type* type) {
-  if (type == NULL || type->type != ARRAY_TYPE) {
+  if (type == NULL) {
     return kTacInterpSingleSlot;
   }
   size_t bytes = get_type_size((struct Type*)type);
-  size_t slots = (bytes + (size_t)kTacInterpWordBytes - 1) / (size_t)kTacInterpWordBytes;
-  return (slots > 0) ? slots : kTacInterpSingleSlot;
+  if (bytes == 0 || bytes == (size_t)-1) {
+    tac_interp_error("invalid type size %zu for slot allocation", bytes);
+  }
+  return tac_slots_for_bytes(bytes);
 }
 
 // Purpose: Resolve the address associated with a variable name.
@@ -573,6 +772,11 @@ static uint64_t tac_eval_val(struct TacInterpreter* interp,
     case CONSTANT:
       return val->val.const_value;
     case VARIABLE:
+      if (val->type != NULL && val->type->type == ARRAY_TYPE) {
+        size_t slots = tac_slots_for_type(val->type);
+        int addr = tac_address_of(interp, frame, val->val.var_name, slots);
+        return (uint64_t)addr;
+      }
       return tac_read_var(interp, frame, val->val.var_name);
     default:
       tac_interp_error("unknown TAC value type %d", (int)val->val_type);
@@ -797,7 +1001,7 @@ static void tac_frame_init(struct TacFrame* frame, struct TacInterpreter* interp
   frame->cmp_left = 0;
   frame->cmp_right = 0;
   tac_collect_labels(frame, body);
-  (void)interp;
+  tac_preallocate_copy_offsets(frame, interp, body);
 }
 
 // Purpose: Release resources associated with a function frame.
@@ -1033,10 +1237,48 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
         break;
       }
       case TACCOPY_TO_OFFSET: {
-        int base = (int)tac_eval_val(interp, &frame, pc->instr.tac_copy_to_offset.dst);
+        struct Slice* dst = pc->instr.tac_copy_to_offset.dst;
+        if (dst == NULL) {
+          tac_interp_error("copy-to-offset missing destination");
+        }
+        struct TacBinding* binding = tac_bindings_find(&interp->globals, dst);
+        if (binding == NULL) {
+          binding = tac_bindings_find(&frame.locals, dst);
+        }
+        if (binding == NULL) {
+          tac_interp_error("copy-to-offset unknown base %.*s",
+                           (int)dst->len, dst->start);
+        }
+        if (pc->instr.tac_copy_to_offset.offset < 0) {
+          tac_interp_error("copy-to-offset negative offset %d",
+                           pc->instr.tac_copy_to_offset.offset);
+        }
         uint64_t value = tac_eval_val(interp, &frame, pc->instr.tac_copy_to_offset.src);
-        int addr = base + pc->instr.tac_copy_to_offset.offset;
+        int addr = binding->address + pc->instr.tac_copy_to_offset.offset;
         tac_memory_store(&interp->memory, addr, value);
+        break;
+      }
+      case TACCOPY_FROM_OFFSET: {
+        struct Slice* src = pc->instr.tac_copy_from_offset.src;
+        struct Val* dst = pc->instr.tac_copy_from_offset.dst;
+        if (src == NULL || dst == NULL) {
+          tac_interp_error("copy-from-offset missing source or destination");
+        }
+        struct TacBinding* binding = tac_bindings_find(&interp->globals, src);
+        if (binding == NULL) {
+          binding = tac_bindings_find(&frame.locals, src);
+        }
+        if (binding == NULL) {
+          tac_interp_error("copy-from-offset unknown base %.*s",
+                           (int)src->len, src->start);
+        }
+        if (pc->instr.tac_copy_from_offset.offset < 0) {
+          tac_interp_error("copy-from-offset negative offset %d",
+                           pc->instr.tac_copy_from_offset.offset);
+        }
+        int addr = binding->address + pc->instr.tac_copy_from_offset.offset;
+        uint64_t value = tac_memory_load(&interp->memory, addr);
+        tac_assign_val(interp, &frame, dst, value);
         break;
       }
       case TACBOUNDARY:

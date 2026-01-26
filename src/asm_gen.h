@@ -174,7 +174,7 @@ struct Operand {
   struct AsmType* asm_type;
   
   enum Reg reg;          // for Reg / Memory
-  int lit_value;        // for Lit / PsuedoMem / Memory
+  int lit_value;        // for Lit / PsuedoMem / Memory / Data
   struct Slice* pseudo;  // for Pseudo
 };
 
@@ -203,7 +203,7 @@ struct AsmInstr* params_to_asm(struct Slice** params, size_t num_params);
 
 struct Operand* tac_val_to_asm(struct Val* val);
 
-struct Operand* make_pseudo_mem(struct Val* val, int offset);
+struct Operand* make_pseudo_mem(struct Slice* var_name, struct AsmType* asm_type, int offset);
 
 struct Operand** get_ops(struct AsmInstr* asm_instr, size_t* out_count);
 

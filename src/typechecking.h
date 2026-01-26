@@ -162,6 +162,7 @@ struct IdentAttr {
 // Outputs: Used for symbol lookup across the translation unit.
 // Invariants/Assumptions: Only one typechecking pass runs at a time.
 extern struct SymbolTable* global_symbol_table;
+extern struct TypeTable* global_type_table;
 extern struct Type kCharType;
 
 // ------------------------- Typechecking Functions ------------------------- //
@@ -412,6 +413,8 @@ bool type_table_contains(struct TypeTable* hmap, struct Slice* key);
 // Outputs: Writes a human-readable dump to stdout.
 // Invariants/Assumptions: Intended for debugging only.
 void print_type_table(struct TypeTable* hmap);
+
+struct MemberEntry* get_struct_member(struct Type* type, struct Slice* member_name);
 
 // Purpose: Print identifier attributes in a readable format.
 // Inputs: attrs is the attribute structure to print.

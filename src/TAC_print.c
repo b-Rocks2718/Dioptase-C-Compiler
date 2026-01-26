@@ -348,10 +348,17 @@ static void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
       break;
     case TACCOPY_TO_OFFSET:
       printf("CopyToOffset ");
-      print_tac_val(instr->instr.tac_copy_to_offset.dst);
+      print_slice(instr->instr.tac_copy_to_offset.dst);
       printf(", ");
       print_tac_val(instr->instr.tac_copy_to_offset.src);
       printf(", %d\n", instr->instr.tac_copy_to_offset.offset);
+      break;
+    case TACCOPY_FROM_OFFSET:
+      printf("CopyFromOffset ");
+      print_tac_val(instr->instr.tac_copy_from_offset.dst);
+      printf(", ");
+      print_slice(instr->instr.tac_copy_from_offset.src);
+      printf(", %d\n", instr->instr.tac_copy_from_offset.offset);
       break;
     case TACBOUNDARY:
       struct SourceLocation loc = source_location_from_ptr(instr->instr.tac_boundary.loc);
