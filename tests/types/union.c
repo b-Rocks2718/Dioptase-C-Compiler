@@ -2,18 +2,21 @@
 union Test;
 
 union Test {
-  int a;
+  int a[3];
   short b;
 };
 
+union Test g = { {0, 1} };
+
 int main(){
-  union Test t = { 0 };
+  union Test t = { {3} };
   union Test* p = &t;
-  p->a = 5;
+  union Test u = t;
+  p->a[0] = 5;
   p->b = 10;
-  t.a = 5;
+  t.a[0] = 5;
   t.b = 10;
-  int sum = t.a + t.b;
+  int sum = t.a[0] + t.b;
   return sum;
 }
 

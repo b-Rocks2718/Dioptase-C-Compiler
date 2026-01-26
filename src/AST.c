@@ -880,7 +880,15 @@ bool compare_types(struct Type* a, struct Type* b) {
       // both should reach the end
       return param_a == NULL && param_b == NULL;
     }
-
+    case STRUCT_TYPE:
+      return compare_slice_to_slice(a->type_data.struct_type.name,
+                         b->type_data.struct_type.name);
+    case UNION_TYPE:
+      return compare_slice_to_slice(a->type_data.union_type.name,
+                         b->type_data.union_type.name);
+    case ENUM_TYPE:
+      return compare_slice_to_slice(a->type_data.enum_type.name,
+                         b->type_data.enum_type.name);
     default:
       printf("Type error: Unknown type in compare_types\n");
       return false; // unknown type

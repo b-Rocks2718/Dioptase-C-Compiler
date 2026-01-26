@@ -23,6 +23,47 @@ struct SymbolEntry{
   struct SymbolEntry* next;
 };
 
+enum TypeEntryType {
+  STRUCT_ENTRY,
+  UNION_ENTRY,
+  ENUM_ENTRY,
+};
+
+struct MemberEntry{
+  struct Slice* key;
+  struct Type* type;
+  size_t offset;
+  struct MemberEntry* next;
+};
+
+struct StructEntry{
+  struct Slice* key;
+  unsigned alignment;
+  unsigned size;
+  struct MemberEntry* members;
+};
+
+union TypeEntryVariant {
+  struct StructEntry* struct_entry;
+  struct StructEntry* union_entry;
+};
+
+struct TypeEntry{
+  struct Slice* key;
+  enum TypeEntryType type;
+  union TypeEntryVariant data;
+  struct TypeEntry* next;
+};
+
+// Purpose: Hash table mapping type names to type entries.
+// Inputs: size is bucket count; arr holds bucket chains.
+// Outputs: Used as a type table in typechecking.
+// Invariants/Assumptions: size is non-zero; arr length equals size.
+struct TypeTable{
+  size_t size;
+  struct TypeEntry** arr;
+};
+
 // Purpose: Hash table mapping identifier names to symbol entries.
 // Inputs: size is bucket count; arr holds bucket chains.
 // Outputs: Used as the global symbol table in typechecking.
@@ -305,6 +346,8 @@ enum StaticInitType get_var_init(struct Type* var_dclr);
 // Invariants/Assumptions: Uses target-specific sizes for integers/pointers.
 size_t get_type_size(struct Type* type);
 
+size_t get_type_alignment(struct Type* type);
+
 // ------------------------- Symbol Table Functions ------------------------- //
 
 // Purpose: Allocate a symbol table with a given bucket count.
@@ -336,6 +379,39 @@ bool symbol_table_contains(struct SymbolTable* hmap, struct Slice* key);
 // Outputs: Writes a human-readable dump to stdout.
 // Invariants/Assumptions: Intended for debugging only.
 void print_symbol_table(struct SymbolTable* hmap);
+
+// ------------------------- Type Table Functions ------------------------- //
+
+// Purpose: Allocate a type table with a given bucket count.
+// Inputs: numBuckets is the number of hash buckets.
+// Outputs: Returns an allocated TypeTable.
+// Invariants/Assumptions: Caller must not free entries individually.
+struct TypeTable* create_type_table(size_t numBuckets);
+
+// Purpose: Insert a type entry into the table.
+// Inputs: hmap is the type table; key/type/data define the entry.
+// Outputs: Updates the table in place.
+// Invariants/Assumptions: key pointers remain valid.
+void type_table_insert(struct TypeTable* hmap, struct Slice* key,
+    enum TypeEntryType type, union TypeEntryVariant data);
+
+// Purpose: Look up a type entry by name.
+// Inputs: hmap is the type table; key is the identifier name.
+// Outputs: Returns the TypeEntry or NULL if missing.
+// Invariants/Assumptions: hash_slice is consistent with insertions.
+struct TypeEntry* type_table_get(struct TypeTable* hmap, struct Slice* key);
+
+// Purpose: Check whether a type entry exists in the table.
+// Inputs: hmap is the type table; key is the identifier name.
+// Outputs: Returns true if the entry is present.
+// Invariants/Assumptions: Does not distinguish between shadowing entries.
+bool type_table_contains(struct TypeTable* hmap, struct Slice* key);
+
+// Purpose: Print the contents of the type table to stdout.
+// Inputs: hmap is the type table.
+// Outputs: Writes a human-readable dump to stdout.
+// Invariants/Assumptions: Intended for debugging only.
+void print_type_table(struct TypeTable* hmap);
 
 // Purpose: Print identifier attributes in a readable format.
 // Inputs: attrs is the attribute structure to print.

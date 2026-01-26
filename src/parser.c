@@ -1902,30 +1902,26 @@ struct Statement* parse_statement(){
   else return NULL;
 }
 
-struct Initializer* parse_var_init(struct Type* type){
+// Purpose: Parse an initializer without relying on type information.
+// Inputs: Consumes tokens from the current cursor.
+// Outputs: Returns an Initializer node or NULL on failure.
+// Invariants/Assumptions: Does not enforce type validity; caller must validate.
+static struct Initializer* parse_initializer_any(void) {
   struct Token* old_current = current;
 
-  // attempt to parse single init
   struct Expr* expr = parse_assignment_expr();
-  if (expr != NULL){
+  if (expr != NULL) {
     struct Initializer* init = arena_alloc(sizeof(struct Initializer));
     init->init_type = SINGLE_INIT;
     init->init.single_init = expr;
     init->loc = expr->loc;
-    init->type = type;
+    init->type = NULL;
     return init;
   }
   current = old_current;
 
-  // attempt to parse compound init
-  if (!consume(OPEN_B)){
+  if (!consume(OPEN_B)) {
     current = old_current;
-    return NULL;
-  }
-
-  if (type->type != ARRAY_TYPE && type->type != STRUCT_TYPE && type->type != UNION_TYPE){
-    // error, compound init only valid for arrays currently
-    parse_error_at(parser_error_ptr(), "Compound initializers are only supported for array, struct, and union types.");
     return NULL;
   }
 
@@ -1933,11 +1929,11 @@ struct Initializer* parse_var_init(struct Type* type){
   struct InitializerList* init_list = NULL;
   struct InitializerList* prev_init = NULL;
   struct Initializer* init = NULL;
-  while ((init = parse_var_init(type->type_data.array_type.element_type))){
+  while ((init = parse_initializer_any()) != NULL) {
     struct InitializerList* next_init = arena_alloc(sizeof(struct InitializerList));
     next_init->init = init;
     next_init->next = NULL;
-    if (init_list == NULL){
+    if (init_list == NULL) {
       init_list = next_init;
     } else {
       prev_init->next = next_init;
@@ -1950,7 +1946,7 @@ struct Initializer* parse_var_init(struct Type* type){
     current = old_current;
     return NULL;
   }
-  if (!consume(CLOSE_B)){
+  if (!consume(CLOSE_B)) {
     current = old_current;
     return NULL;
   }
@@ -1959,9 +1955,33 @@ struct Initializer* parse_var_init(struct Type* type){
   compound_init->init_type = COMPOUND_INIT;
   compound_init->init.compound_init = init_list;
   compound_init->loc = init_loc;
-  compound_init->type = type;
+  compound_init->type = NULL;
 
   return compound_init;
+}
+
+// Purpose: Parse a variable initializer with a known target type.
+// Inputs: type is the target type for the initializer.
+// Outputs: Returns an Initializer node or NULL on failure.
+// Invariants/Assumptions: Only array/struct/union types allow compound initializers.
+struct Initializer* parse_var_init(struct Type* type){
+  struct Token* old_current = current;
+  struct Initializer* init = parse_initializer_any();
+  if (init == NULL) {
+    current = old_current;
+    return NULL;
+  }
+
+  if (init->init_type == COMPOUND_INIT &&
+      type->type != ARRAY_TYPE && type->type != STRUCT_TYPE && type->type != UNION_TYPE) {
+    parse_error_at(init->loc,
+                   "Compound initializers are only supported for array, struct, and union types.");
+    current = old_current;
+    return NULL;
+  }
+
+  init->type = type;
+  return init;
 }
 
 // Purpose: Parse a variable declarator with optional initializer.
@@ -2508,7 +2528,7 @@ struct MemberDclr* parse_member_declarations(){
       parse_error_at(parser_error_ptr(), "failed to process member declarator");
       return NULL;
     }
-    if (params != NULL){
+    if (decl_type->type == FUN_TYPE){
       parse_error_at(parser_error_ptr(), "member cannot be a function");
       return NULL;
     }
@@ -2535,8 +2555,7 @@ struct EnumMemberDclr* parse_enumerator_list(){
   while (true){
     union TokenVariant* data = consume_with_data(IDENT);
     if (data == NULL){
-      parse_error_at(parser_error_ptr(), "expected enumerator identifier");
-      return NULL;
+      break;
     }
     if (consume(EQUALS)){
       struct LitExpr value_expr = parse_lit_expr();
@@ -2651,6 +2670,8 @@ struct Declaration* parse_declaration(){
     result->dclr.enum_dclr.members = NULL;
 
     if (consume(OPEN_B)){
+      // require definition for enum
+
       // parse enumerator list
       struct EnumMemberDclr* enumerators = parse_enumerator_list();
       if (enumerators == NULL){
@@ -2663,14 +2684,16 @@ struct Declaration* parse_declaration(){
         parse_error_at(parser_error_ptr(), "expected '}' after enumerator list");
         return NULL;
       }
-    }
 
-    if (!consume(SEMI)){
-      // may be a variable declaration of enum type, so don't error yet
-      current = old_current;
+      if (!consume(SEMI)){
+        // may be a variable declaration of enum type, so don't error yet
+        current = old_current;
+      } else {
+        // type declaration successfully parsed
+        return result;
+      } 
     } else {
-      // type declaration successfully parsed
-      return result;
+      current = old_current;
     }
   }
 

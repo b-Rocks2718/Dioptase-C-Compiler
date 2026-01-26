@@ -1,32 +1,98 @@
+Key: sum.4
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: p.2
+  Type: union Test.0*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: g
+  Type: union Test.0
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Initial [INT: 0] [INT: 1] [ZERO: 4] 
+    Is Defined: true
+    Storage Class: None
+
+Key: func
+  Type: func(ret_type=void, param_types=[union Test.0, union Test.0*, ])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: t.1
+  Type: union Test.0
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: u.3
+  Type: union Test.0
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: u.5
+  Type: union Test.0
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: v.6
+  Type: union Test.0*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
 Program(
     
-    UnionDclr(name=Test);
+    UnionDclr(name=Test.0);
     
-    UnionDclr(name=Test, members=[
-        MemberDclr(name=a, type=int), 
+    UnionDclr(name=Test.0, members=[
+        MemberDclr(name=a, type=int[3]), 
         MemberDclr(name=b, type=short), 
     ]);
+    VarDclr(none, union Test.0, g, CompoundInit(CompoundInit(SingleInit(LitExpr(int, 0):int), SingleInit(LitExpr(int, 1):int), SingleInit(LitExpr(uint, 0):int))));
     FunDclr(
         main,
         storage=none
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            VarDclr(none, union Test, t, CompoundInit(SingleInit(LitExpr(int, 0):untyped)));
-            VarDclr(none, union Test*, p, SingleInit(AddrOf(Var(t):untyped):untyped));
-            ExprStmt(Assign(ArrowExpr(Var(p):untyped, a):untyped, LitExpr(int, 5):untyped):untyped);
-            ExprStmt(Assign(ArrowExpr(Var(p):untyped, b):untyped, LitExpr(int, 10):untyped):untyped);
-            ExprStmt(Assign(DotExpr(Var(t):untyped, a):untyped, LitExpr(int, 5):untyped):untyped);
-            ExprStmt(Assign(DotExpr(Var(t):untyped, b):untyped, LitExpr(int, 10):untyped):untyped);
-            VarDclr(none, int, sum, SingleInit(AddOp(DotExpr(Var(t):untyped, a):untyped, DotExpr(Var(t):untyped, b):untyped):untyped));
-            Return(Var(sum):untyped);
+            VarDclr(none, union Test.0, t.1, CompoundInit(CompoundInit(SingleInit(LitExpr(int, 3):int), SingleInit(LitExpr(uint, 0):int), SingleInit(LitExpr(uint, 0):int))));
+            VarDclr(none, union Test.0*, p.2, SingleInit(AddrOf(Var(t.1):union Test.0):union Test.0*));
+            VarDclr(none, union Test.0, u.3, SingleInit(Var(t.1):union Test.0));
+            ExprStmt(Assign(Subscript(AddrOf(ArrowExpr(Var(p.2):union Test.0*, a):int[3]):int*, LitExpr(int, 0):int):int, LitExpr(int, 5):int):int);
+            ExprStmt(Assign(ArrowExpr(Var(p.2):union Test.0*, b):short, Cast(short, LitExpr(int, 10):int):short):short);
+            ExprStmt(Assign(Subscript(AddrOf(DotExpr(Var(t.1):union Test.0, a):int[3]):int*, LitExpr(int, 0):int):int, LitExpr(int, 5):int):int);
+            ExprStmt(Assign(DotExpr(Var(t.1):union Test.0, b):short, Cast(short, LitExpr(int, 10):int):short):short);
+            VarDclr(none, int, sum.4, SingleInit(AddOp(Subscript(AddrOf(DotExpr(Var(t.1):union Test.0, a):int[3]):int*, LitExpr(int, 0):int):int, Cast(int, DotExpr(Var(t.1):union Test.0, b):short):int):int));
+            Return(Var(sum.4):int, main);
     );
     FunDclr(
         func,
         storage=none
-        params=[VarDclr(none, union Test, u), VarDclr(none, union Test*, v), ]
-        type=func(ret_type=void, param_types=[union Test, union Test*, ]),
+        params=[VarDclr(none, union Test.0, u.5), VarDclr(none, union Test.0*, v.6), ]
+        type=func(ret_type=void, param_types=[union Test.0, union Test.0*, ]),
         body=
-            Return(void);
+            Return(void, func);
     );
 )

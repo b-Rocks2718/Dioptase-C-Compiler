@@ -1,6 +1,4 @@
 
-enum Test;
-
 enum Test {
   VALUE_ONE,
   VALUE_TWO = 1,

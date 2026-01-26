@@ -1,6 +1,4 @@
 
-enum Test;
-
 enum Test {
   VALUE_ONE,
   VALUE_TWO = 1,
@@ -8,8 +6,11 @@ enum Test {
   VALUE_FOUR
 };
 
+enum Test g = VALUE_THREE;
+
 int main(){
   enum Test value = VALUE_TWO;
+  enum Test next_value = value + 1;
   if (value == VALUE_ONE) return 1;
   if (value == VALUE_TWO) return 2;
   if (value == VALUE_THREE) return 3;

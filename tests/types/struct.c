@@ -2,18 +2,21 @@
 struct Test;
 
 struct Test {
-  int a;
+  int a[3];
   short b;
 };
 
+struct Test g = {{0, 1} };
+
 int main(){
-  struct Test t = {0, 1};
+  struct Test t = {{0} , 1};
+  struct Test s = t;
   struct Test* p = &t;
-  p->a = 5;
+  p->a[1] = 5;
   p->b = 10;
-  t.a = 5;
+  t.a[1] = 5;
   t.b = 10;
-  int sum = t.a + t.b;
+  int sum = t.a[1] + t.b;
   return sum;
 }
 

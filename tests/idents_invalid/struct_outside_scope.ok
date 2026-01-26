@@ -1,5 +1,5 @@
 Identifier resolution failed
-Identifier Resolution Error: unknown declaration type
+Identifier Resolution Error: specified an undeclared struct/union/enum type
+Identifier Resolution Error at tests/idents_invalid/struct_outside_scope.c:8:15: failed to resolve variable type
 Identifier Resolution Error: failed to resolve declaration in block
-Identifier Resolution Error at tests/idents_invalid/struct_outside_scope.c:3:3: failed to resolve statement in block
 Identifier Resolution Error: failed to resolve declaration

@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/enum_assign_to_pointer.c:6:12: cannot convert type for assignment

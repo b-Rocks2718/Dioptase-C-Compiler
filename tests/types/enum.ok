@@ -1,67 +1,118 @@
+Key: value.5
+  Type: enum Test.0
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: g
+  Type: enum Test.0
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Initial [UINT: 10] 
+    Is Defined: true
+    Storage Class: None
+
+Key: s.7
+  Type: enum Test.0
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: func
+  Type: func(ret_type=void, param_types=[enum Test.0, enum Test.0*, ])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: t.8
+  Type: enum Test.0*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: next_value.6
+  Type: enum Test.0
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
 Program(
     
-    EnumDclr(name=Test);
-    
-    EnumDclr(name=Test, values=[
-        EnumValue(name=VALUE_ONE, value=0), 
-        EnumValue(name=VALUE_TWO, value=1), 
-        EnumValue(name=VALUE_THREE, value=10), 
-        EnumValue(name=VALUE_FOUR, value=11), 
+    EnumDclr(name=Test.0, values=[
+        EnumValue(name=VALUE_ONE.1, value=0), 
+        EnumValue(name=VALUE_TWO.2, value=1), 
+        EnumValue(name=VALUE_THREE.3, value=10), 
+        EnumValue(name=VALUE_FOUR.4, value=11), 
     ]);
+    VarDclr(none, enum Test.0, g, SingleInit(Cast(enum Test.0, LitExpr(uint, 10):uint):enum Test.0));
     FunDclr(
         main,
         storage=none
         params=[]
         type=func(ret_type=int, param_types=[]),
         body=
-            VarDclr(none, enum Test, value, SingleInit(Var(VALUE_TWO):untyped));
+            VarDclr(none, enum Test.0, value.5, SingleInit(Cast(enum Test.0, LitExpr(uint, 1):uint):enum Test.0));
+            VarDclr(none, enum Test.0, next_value.6, SingleInit(AddOp(Var(value.5):enum Test.0, Cast(enum Test.0, LitExpr(int, 1):int):enum Test.0):enum Test.0));
             IfStmt(
-                c=BoolEq(Var(value):untyped, Var(VALUE_ONE):untyped):untyped, 
+                c=BoolEq(Var(value.5):enum Test.0, Cast(enum Test.0, LitExpr(uint, 0):uint):enum Test.0):int, 
                 left=
-                    Return(LitExpr(int, 1):untyped);
+                    Return(LitExpr(int, 1):int, main);
             );
             IfStmt(
-                c=BoolEq(Var(value):untyped, Var(VALUE_TWO):untyped):untyped, 
+                c=BoolEq(Var(value.5):enum Test.0, Cast(enum Test.0, LitExpr(uint, 1):uint):enum Test.0):int, 
                 left=
-                    Return(LitExpr(int, 2):untyped);
+                    Return(LitExpr(int, 2):int, main);
             );
             IfStmt(
-                c=BoolEq(Var(value):untyped, Var(VALUE_THREE):untyped):untyped, 
+                c=BoolEq(Var(value.5):enum Test.0, Cast(enum Test.0, LitExpr(uint, 10):uint):enum Test.0):int, 
                 left=
-                    Return(LitExpr(int, 3):untyped);
+                    Return(LitExpr(int, 3):int, main);
             );
             IfStmt(
-                c=BoolEq(Var(value):untyped, Var(VALUE_FOUR):untyped):untyped, 
+                c=BoolEq(Var(value.5):enum Test.0, Cast(enum Test.0, LitExpr(uint, 11):uint):enum Test.0):int, 
                 left=
-                    Return(LitExpr(int, 4):untyped);
+                    Return(LitExpr(int, 4):int, main);
             );
-            Return(LitExpr(int, 0):untyped);
+            Return(LitExpr(int, 0):int, main);
     );
     FunDclr(
         func,
         storage=none
-        params=[VarDclr(none, enum Test, s), VarDclr(none, enum Test*, t), ]
-        type=func(ret_type=void, param_types=[enum Test, enum Test*, ]),
+        params=[VarDclr(none, enum Test.0, s.7), VarDclr(none, enum Test.0*, t.8), ]
+        type=func(ret_type=void, param_types=[enum Test.0, enum Test.0*, ]),
         body=
             SwitchStmt(
-                label=null
-                Var(s):untyped,
+                label=func.switch.9
+                cases=[IntCase 11, IntCase 10, IntCase 1, IntCase 0, ]
+                Var(s.7):enum Test.0,
                 CompoundStmt(
                     CaseStmt(
-                        Var(VALUE_ONE):untyped,
-                        BreakStmt(label=null);
+                        LitExpr(uint, 0):uint,
+                        BreakStmt(label=func.switch.9);
                     );
                     CaseStmt(
-                        Var(VALUE_TWO):untyped,
-                        BreakStmt(label=null);
+                        LitExpr(uint, 1):uint,
+                        BreakStmt(label=func.switch.9);
                     );
                     CaseStmt(
-                        Var(VALUE_THREE):untyped,
-                        BreakStmt(label=null);
+                        LitExpr(uint, 10):uint,
+                        BreakStmt(label=func.switch.9);
                     );
                     CaseStmt(
-                        Var(VALUE_FOUR):untyped,
-                        BreakStmt(label=null);
+                        LitExpr(uint, 11):uint,
+                        BreakStmt(label=func.switch.9);
                     );
                 );
             );

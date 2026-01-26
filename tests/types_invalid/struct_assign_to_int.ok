@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/struct_assign_to_int.c:7:11: cannot convert type for assignment

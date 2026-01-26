@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/struct_duplicate_member.c:3:7: duplicate member name a in struct S.0

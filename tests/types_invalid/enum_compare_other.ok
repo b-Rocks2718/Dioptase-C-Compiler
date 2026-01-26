@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/enum_compare_other.c:7:12: cannot convert type for assignment

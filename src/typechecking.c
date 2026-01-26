@@ -18,6 +18,7 @@
 // Outputs: Stores symbol entries for declarations and lookups.
 // Invariants/Assumptions: Only one typechecking pass runs at a time.
 struct SymbolTable* global_symbol_table = NULL;
+struct TypeTable* global_type_table = NULL;
 
 struct Type kIntType = { .type = INT_TYPE };
 struct Type kUIntType = { .type = UINT_TYPE };
@@ -119,6 +120,7 @@ static enum StorageClass merge_storage_class(enum StorageClass existing,
 // Invariants/Assumptions: Initializes global_symbol_table for this pass.
 bool typecheck_program(struct Program* program) {
   global_symbol_table = create_symbol_table(1024);
+  global_type_table = create_type_table(1024);
 
   // typecheck each declaration in the program
   for (struct DeclarationList* cur = program->dclrs; cur != NULL; cur = cur->next){
@@ -249,25 +251,211 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
   return true;
 }
 
+// works for unions as well
+bool validate_struct_definition(struct Slice* struct_name, struct MemberDclr* first_member){
+  // ensure struct has not been defined before
+  struct TypeEntry* entry = type_table_get(global_type_table, struct_name);
+  if (entry != NULL){
+    type_error_at(struct_name->start,
+                  "redefinition of struct/union %.*s",
+                  (int)struct_name->len, struct_name->start);
+    return false;
+  }
+
+  // ensure no duplicate member names
+  struct MemberDclr* member_cur = first_member;
+  while (member_cur != NULL){
+    struct MemberDclr* member_check = member_cur->next;
+
+    if (!is_valid_type_specifier(member_cur->type)){
+      type_error_at(member_cur->name->start,
+                    "incomplete type for member %.*s in struct %.*s",
+                    (int)member_cur->name->len, member_cur->name->start,
+                    (int)struct_name->len, struct_name->start);
+      return false;
+    }
+
+    while (member_check != NULL){
+      if (compare_slice_to_slice(member_cur->name, member_check->name)){
+        type_error_at(member_check->name->start,
+                      "duplicate member name %.*s in struct %.*s",
+                      (int)member_check->name->len, member_check->name->start,
+                      (int)struct_name->len, struct_name->start);
+        return false;
+      }
+      member_check = member_check->next;
+    }
+    member_cur = member_cur->next;
+  }
+
+  return true;
+}
+
 bool typecheck_struct(struct StructDclr* struct_dclr){
-  printf("TODO: add structs\n");
-  return false;
+  if (struct_dclr->members == NULL){
+    // forward declaration, nothing to typecheck
+    return true;
+  }
+
+  if (!validate_struct_definition(struct_dclr->name, struct_dclr->members)){
+    return false;
+  }
+
+  struct MemberEntry* member_entries = NULL;
+  struct MemberEntry* member_entries_tail = NULL;
+  size_t offset = 0;
+  size_t alignment = 1;
+
+  for (struct MemberDclr* member_cur = struct_dclr->members; member_cur != NULL; member_cur = member_cur->next){
+    size_t member_alignment = get_type_alignment(member_cur->type);
+    if (member_alignment == -1){
+      type_error_at(member_cur->name->start,
+                    "incomplete type for member %.*s in struct %.*s",
+                    (int)member_cur->name->len, member_cur->name->start,
+                    (int)struct_dclr->name->len, struct_dclr->name->start);
+      return false;
+    }
+
+    // align current offset to member size
+    if (offset % member_alignment != 0){
+      offset += member_alignment - (offset % member_alignment);
+    }
+
+    struct MemberEntry* member_entry = arena_alloc(sizeof(struct MemberEntry));
+    member_entry->key = member_cur->name;
+    member_entry->type = member_cur->type;
+    member_entry->offset = offset;
+    member_entry->next = NULL;
+    if (member_entries == NULL){
+      member_entries = member_entry;
+      member_entries_tail = member_entry;
+    } else {
+      member_entries_tail->next = member_entry;
+      member_entries_tail = member_entry;
+    }
+
+    offset += get_type_size(member_cur->type);
+
+    // alignment of struct is max of member alignments
+    if (member_alignment > alignment){
+      alignment = member_alignment;
+    }
+  }
+
+  // round offset to struct alignment
+  if (offset % alignment != 0){
+    offset += alignment - (offset % alignment);
+  }
+
+  struct StructEntry* struct_entry = arena_alloc(sizeof(struct StructEntry));
+  struct_entry->key = struct_dclr->name;
+  struct_entry->alignment = alignment;
+  struct_entry->size = offset;
+  struct_entry->members = member_entries;
+
+  union TypeEntryVariant entry_data;
+  entry_data.struct_entry = struct_entry;
+
+  type_table_insert(global_type_table, struct_dclr->name, STRUCT_ENTRY, entry_data);
+
+  return true;
 }
 
 bool typecheck_union(struct UnionDclr* union_dclr){
-  printf("TODO: add unions\n");
-  return false;
+  if (union_dclr->members == NULL){
+    // forward declaration, nothing to typecheck
+    return true;
+  }
+
+  if (!validate_struct_definition(union_dclr->name, union_dclr->members)){
+    return false;
+  }
+
+  struct MemberEntry* member_entries = NULL;
+  struct MemberEntry* member_entries_tail = NULL;
+  size_t size = 0;
+  size_t alignment = 1;
+
+  for (struct MemberDclr* member_cur = union_dclr->members; member_cur != NULL; member_cur = member_cur->next){
+    size_t member_alignment = get_type_alignment(member_cur->type);
+    if (member_alignment == -1){
+      type_error_at(member_cur->name->start,
+                    "incomplete type for member %.*s in struct %.*s",
+                    (int)member_cur->name->len, member_cur->name->start,
+                    (int)union_dclr->name->len, union_dclr->name->start);
+      return false;
+    }
+
+    struct MemberEntry* member_entry = arena_alloc(sizeof(struct MemberEntry));
+    member_entry->key = member_cur->name;
+    member_entry->type = member_cur->type;
+    member_entry->offset = 0; // all members at offset 0 in union
+    member_entry->next = NULL;
+    if (member_entries == NULL){
+      member_entries = member_entry;
+      member_entries_tail = member_entry;
+    } else {
+      member_entries_tail->next = member_entry;
+      member_entries_tail = member_entry;
+    }
+
+    // union size is max of member sizes
+    size_t member_size = get_type_size(member_cur->type);
+    if (member_size > size){
+      size = member_size;
+    }
+
+    // alignment of union is max of member alignments
+    if (member_alignment > alignment){
+      alignment = member_alignment;
+    }
+  }
+
+  // round size to union alignment
+  if (size % alignment != 0){
+    size += alignment - (size % alignment);
+  }
+
+  struct StructEntry* union_entry = arena_alloc(sizeof(struct StructEntry));
+  union_entry->key = union_dclr->name;
+  union_entry->alignment = alignment;
+  union_entry->size = size;
+  union_entry->members = member_entries;
+  union TypeEntryVariant entry_data;
+  entry_data.union_entry = union_entry;
+
+  type_table_insert(global_type_table, union_dclr->name, UNION_ENTRY, entry_data);
+
+  return true;
 }
 
 bool typecheck_enum(struct EnumDclr* enum_dclr){
-  printf("TODO: add enums\n");
-  return false;
+  if (enum_dclr->members == NULL){
+    // no forward declarations for enums
+    type_error_at(NULL, "enum forward declarations are not supported");
+    return false;
+  }
+
+  // ensure enum has not been defined before
+  struct TypeEntry* entry = type_table_get(global_type_table, enum_dclr->name);
+  if (entry != NULL){
+    type_error_at(enum_dclr->name->start,
+                  "redefinition of enum %.*s",
+                  (int)enum_dclr->name->len, enum_dclr->name->start);
+    return false;
+  }
+
+  struct TypeEntry* enum_entry = arena_alloc(sizeof(struct TypeEntry));
+  enum_entry->key = enum_dclr->name;
+  enum_entry->type = ENUM_ENTRY;
+  enum_entry->next = NULL;
+
+  union TypeEntryVariant entry_data;
+  type_table_insert(global_type_table, enum_dclr->name, ENUM_ENTRY, entry_data);
+
+  return true;
 }
-  
-// Purpose: Typecheck a function declaration or definition.
-// Inputs: func_dclr is the function declaration node.
-// Outputs: Returns true on success; false on any type error.
-// Invariants/Assumptions: Parameters and body share the global symbol table.
+
 // Purpose: Apply array-to-pointer decay to function parameter types.
 // Inputs: func_dclr is the function declaration to update.
 // Outputs: Updates both parameter lists in-place.
@@ -302,6 +490,10 @@ static void decay_param_array_types(struct FunctionDclr* func_dclr) {
   }
 }
 
+// Purpose: Typecheck a function declaration or definition.
+// Inputs: func_dclr is the function declaration node.
+// Outputs: Returns true on success; false on any type error.
+// Invariants/Assumptions: Parameters and body share the global symbol table.
 bool typecheck_func(struct FunctionDclr* func_dclr) {
   // Parameters share the same symbol table as the body in this pass.
   // typecheck them before decaying array types, so that incomplete array
@@ -914,6 +1106,137 @@ bool typecheck_convert_expr(struct Expr** expr) {
     addr_expr->value_type = make_pointer_type((*expr)->value_type);
     *expr = addr_expr;
   }
+  if ((*expr)->value_type->type == STRUCT_TYPE ||
+      (*expr)->value_type->type == UNION_TYPE) {
+    // Struct/union values must be complete
+    struct TypeEntry* entry = type_table_get(global_type_table,
+                                              (*expr)->value_type->type_data.struct_type.name);
+    if (entry == NULL) {
+      type_error_at((*expr)->loc,
+                    "incomplete type for struct/union %.*s",
+                    (int)(*expr)->value_type->type_data.struct_type.name->len,
+                    (*expr)->value_type->type_data.struct_type.name->start);
+      return false;
+    }
+  }
+  return true;
+}
+
+bool typecheck_array_init(struct Initializer* init, struct Type* type) {
+  struct InitializerList* cur_init = init->init.compound_init;
+  struct InitializerList* prev_init = NULL;
+  struct Type* element_type = type->type_data.array_type.element_type;
+  size_t expected_elements = type->type_data.array_type.size;
+
+  size_t count = 0;
+  while (cur_init != NULL) {
+    if (!typecheck_init(cur_init->init, element_type)) {
+      return false;
+    }
+    count++;
+    prev_init = cur_init;
+    cur_init = cur_init->next;
+  }
+
+  if (count > expected_elements) {
+    type_error_at(init->loc, "too many initializers, got %zu, expected %zu", count, expected_elements);
+    return false;
+  }
+
+  while (count < expected_elements) {
+    // pad with zero initializers
+    struct Initializer* zero_init = make_zero_initializer(element_type);
+    struct InitializerList* new_init = arena_alloc(sizeof(struct InitializerList));
+    new_init->init = zero_init;
+    new_init->next = NULL;
+    if (prev_init == NULL) {
+      prev_init = new_init;
+      init->init.compound_init = new_init;
+    } else {
+      prev_init->next = new_init;
+      prev_init = new_init;
+    }
+
+    count++;
+  }
+
+  init->type = type;
+
+  return true;
+}
+
+bool typecheck_struct_init(struct Initializer* init, struct Type* type) {
+  struct InitializerList* cur_init = init->init.compound_init;
+  struct InitializerList* prev_init = NULL;
+  struct MemberEntry* member_entry = type_table_get(global_type_table, type->type_data.struct_type.name)->data.struct_entry->members;
+
+  while (cur_init != NULL && member_entry != NULL) {
+    if (!typecheck_init(cur_init->init, member_entry->type)) {
+      return false;
+    }
+    prev_init = cur_init;
+    cur_init = cur_init->next;
+    member_entry = member_entry->next;
+  }
+
+  if (cur_init != NULL) {
+    type_error_at(init->loc, "too many initializers for struct %.*s", 
+                  (int)type->type_data.struct_type.name->len,
+                  type->type_data.struct_type.name->start);
+    return false;
+  }
+
+  while (member_entry != NULL) {
+    // pad with zero initializers
+    struct Initializer* zero_init = make_zero_initializer(member_entry->type);
+    struct InitializerList* new_init = arena_alloc(sizeof(struct InitializerList));
+    new_init->init = zero_init;
+    new_init->next = NULL;
+
+    if (prev_init == NULL) {
+      prev_init = new_init;
+      init->init.compound_init = new_init;
+    } else {
+      prev_init->next = new_init;
+      prev_init = new_init;
+    }
+
+    member_entry = member_entry->next;
+  }
+
+  init->type = type;
+
+  return true;
+}
+
+bool typecheck_union_init(struct Initializer* init, struct Type* type) {
+  struct InitializerList* cur_init = init->init.compound_init;
+
+  if (cur_init == NULL) {
+    type_error_at(init->loc, "union initializer requires at least one initializer");
+    return false;
+  }
+
+  struct MemberEntry* member_entry = type_table_get(global_type_table, type->type_data.union_type.name)->data.union_entry->members;
+
+  if (member_entry == NULL) {
+    type_error_at(init->loc, "no matching member type found for union initializer");
+    return false;
+  }
+
+  if (!typecheck_init(cur_init->init, member_entry->type)) {
+    return false;
+  }
+
+  if (cur_init->next != NULL) {
+    type_error_at(init->loc, "too many initializers for union %.*s", 
+                  (int)type->type_data.union_type.name->len,
+                  type->type_data.union_type.name->start);
+    return false;
+  }
+
+  init->type = type;
+
   return true;
 }
 
@@ -958,51 +1281,20 @@ bool typecheck_init(struct Initializer* init, struct Type* type) {
       }
     }
     case COMPOUND_INIT: {
-      if (type->type != ARRAY_TYPE) {
-        type_error_at(init->loc, "compound initializer requires array type");
+      if (type->type == ARRAY_TYPE) {
+        // array initializer
+        return typecheck_array_init(init, type);
+      } else if (type->type == STRUCT_TYPE) {
+        // struct initializer
+        return typecheck_struct_init(init, type);
+      } else if (type->type == UNION_TYPE) {
+        // union initializer
+        return typecheck_union_init(init, type);
+      }
+      else {
+        type_error_at(init->loc, "compound initializer requires array, struct, or union type");
         return false;
       }
-
-      struct InitializerList* cur_init = init->init.compound_init;
-      struct InitializerList* prev_init = NULL;
-      struct Type* element_type = type->type_data.array_type.element_type;
-      size_t expected_elements = type->type_data.array_type.size;
-
-      size_t count = 0;
-      while (cur_init != NULL) {
-        if (!typecheck_init(cur_init->init, element_type)) {
-          return false;
-        }
-        count++;
-        prev_init = cur_init;
-        cur_init = cur_init->next;
-      }
-
-      if (count > expected_elements) {
-        type_error_at(init->loc, "too many initializers, got %zu, expected %zu", count, expected_elements);
-        return false;
-      }
-
-      while (count < expected_elements) {
-        // pad with zero initializers
-        struct Initializer* zero_init = make_zero_initializer(element_type);
-        struct InitializerList* new_init = arena_alloc(sizeof(struct InitializerList));
-        new_init->init = zero_init;
-        new_init->next = NULL;
-        if (prev_init == NULL) {
-          prev_init = new_init;
-          init->init.compound_init = new_init;
-        } else {
-          prev_init->next = new_init;
-          prev_init = new_init;
-        }
-
-        count++;
-      }
-
-      init->type = type;
-
-      return true;
     }
     default:
       type_error_at(NULL, "unknown initializer type in typecheck_init");
@@ -1057,6 +1349,52 @@ struct Initializer* make_zero_initializer(struct Type* type) {
         prev_init = new_init;
       }
 
+      init->type = type;
+      break;
+    }
+    // TODO: verify these
+    case STRUCT_TYPE: {
+      init->init_type = COMPOUND_INIT;
+      init->init.compound_init = NULL;
+
+      struct TypeEntry* type_entry = type_table_get(global_type_table, type->type_data.struct_type.name);
+      struct MemberEntry* member_entry = type_entry->data.struct_entry->members;
+
+      struct InitializerList* prev_init = NULL;
+      while (member_entry != NULL) {
+        struct Initializer* member_init = make_zero_initializer(member_entry->type);
+        struct InitializerList* new_init = arena_alloc(sizeof(struct InitializerList));
+        new_init->init = member_init;
+        new_init->next = NULL;
+
+        if (prev_init == NULL) {
+          init->init.compound_init = new_init;
+        } else {
+          prev_init->next = new_init;
+        }
+        prev_init = new_init;
+
+        member_entry = member_entry->next;
+      }
+
+      init->type = type;
+      break;
+    }
+    case UNION_TYPE: {
+      init->init_type = COMPOUND_INIT;
+      init->init.compound_init = NULL;
+      break;
+    }
+    case ENUM_TYPE: {
+      struct Expr* lit_expr = arena_alloc(sizeof(struct Expr));
+      lit_expr->type = LIT;
+      lit_expr->loc = NULL;
+      lit_expr->expr.lit_expr.value.int_val = 0;
+      lit_expr->value_type = type;
+      lit_expr->expr.lit_expr.type = UINT_CONST;
+
+      init->init_type = SINGLE_INIT;
+      init->init.single_init = lit_expr;
       init->type = type;
       break;
     }
@@ -1286,6 +1624,24 @@ bool typecheck_expr(struct Expr* expr) {
       }
       if (!typecheck_convert_expr(&cond_expr->right)) {
         return false;
+      }
+
+      if (cond_expr->left->value_type->type == STRUCT_TYPE ||
+          cond_expr->right->value_type->type == STRUCT_TYPE){
+        // both must be struct type and identical
+        if (!compare_types(cond_expr->left->value_type, cond_expr->right->value_type)) {
+          type_error_at(expr->loc, "incompatible struct types in conditional expression");
+          return false;
+        }
+      }
+
+      if (cond_expr->left->value_type->type == UNION_TYPE ||
+          cond_expr->right->value_type->type == UNION_TYPE){
+        // both must be union type and identical
+        if (!compare_types(cond_expr->left->value_type, cond_expr->right->value_type)) {
+          type_error_at(expr->loc, "incompatible struct types in conditional expression");
+          return false;
+        }
       }
 
       if (!is_scalar_type(cond_expr->condition->value_type)) {
@@ -1578,6 +1934,85 @@ bool typecheck_expr(struct Expr* expr) {
       }
       return true;
     }
+    case DOT_EXPR: {
+      if (!typecheck_convert_expr(&expr->expr.dot_expr.struct_expr)) {
+        return false;
+      }
+      struct Type* struct_type = expr->expr.dot_expr.struct_expr->value_type;
+      if (struct_type->type != STRUCT_TYPE && struct_type->type != UNION_TYPE) {
+        type_error_at(expr->loc, "dot operator requires struct or union type");
+        return false;
+      }
+      struct Slice* type_name = NULL;
+      if (struct_type->type == STRUCT_TYPE) {
+        type_name = struct_type->type_data.struct_type.name;
+      } else {
+        type_name = struct_type->type_data.union_type.name;
+      }
+      struct TypeEntry* type_entry = type_table_get(global_type_table, type_name);
+      if (type_entry == NULL) {
+        type_error_at(expr->loc, "incomplete struct/union type in dot expression");
+        return false;
+      }
+
+      struct MemberEntry* member = NULL;
+      if (struct_type->type == STRUCT_TYPE) {
+        member = type_entry->data.struct_entry->members;
+      } else {
+        member = type_entry->data.union_entry->members;
+      }
+      while (member != NULL) {
+        if (compare_slice_to_slice(member->key, expr->expr.dot_expr.member)) {
+          expr->value_type = member->type;
+          return true;   
+        }
+        member = member->next;
+      }
+      type_error_at(expr->loc, "no such member in struct/union for dot expression");
+      return false;
+    }
+    case ARROW_EXPR: {
+      if (!typecheck_convert_expr(&expr->expr.arrow_expr.pointer_expr)) {
+        return false;
+      }
+      struct Type* ptr_type = expr->expr.arrow_expr.pointer_expr->value_type;
+      if (!is_pointer_type(ptr_type)) {
+        type_error_at(expr->loc, "arrow operator requires pointer type");
+        return false;
+      }
+      struct Type* struct_type = ptr_type->type_data.pointer_type.referenced_type;
+      if (struct_type->type != STRUCT_TYPE && struct_type->type != UNION_TYPE) {
+        type_error_at(expr->loc, "arrow operator requires pointer to struct or union type");
+        return false;
+      }
+      struct Slice* type_name = NULL;
+      if (struct_type->type == STRUCT_TYPE) {
+        type_name = struct_type->type_data.struct_type.name;
+      } else {
+        type_name = struct_type->type_data.union_type.name;
+      }
+      struct TypeEntry* type_entry = type_table_get(global_type_table, type_name);
+      if (type_entry == NULL) {
+        type_error_at(expr->loc, "incomplete struct/union type in arrow expression");
+        return false;
+      }
+
+      struct MemberEntry* member = NULL;
+      if (struct_type->type == STRUCT_TYPE) {
+        member = type_entry->data.struct_entry->members;
+      } else {
+        member = type_entry->data.union_entry->members;
+      }
+      while (member != NULL) {
+        if (compare_slice_to_slice(member->key, expr->expr.arrow_expr.member)) {
+          expr->value_type = member->type;
+          return true;   
+        }
+        member = member->next;
+      }
+      type_error_at(expr->loc, "no such member in struct/union for arrow expression");
+      return false;
+    }
     default: {
       type_error_at(expr->loc, "unknown expression type in typecheck_expr");
       return false; // Unknown expression type
@@ -1623,6 +2058,7 @@ bool is_arithmetic_type(struct Type* type) {
     case CHAR_TYPE:
     case SCHAR_TYPE:
     case UCHAR_TYPE:
+    case ENUM_TYPE: 
       return true;
     default:
       return false;
@@ -1636,6 +2072,8 @@ bool is_unsigned_type(struct Type* type) {
     case USHORT_TYPE:
     case POINTER_TYPE:
     case UCHAR_TYPE:
+    case UNION_TYPE:
+    case ENUM_TYPE:
       return true;
     default:
       return false;
@@ -1647,6 +2085,8 @@ bool is_scalar_type(struct Type* type) {
     case VOID_TYPE:
     case ARRAY_TYPE:
     case FUN_TYPE:
+    case STRUCT_TYPE:
+    case UNION_TYPE:
       return false;
     default:
       return true;
@@ -1722,9 +2162,57 @@ size_t get_type_size(struct Type* type) {
     case ARRAY_TYPE:
       return type->type_data.array_type.size *
              get_type_size(type->type_data.array_type.element_type);
+    case STRUCT_TYPE: {
+      struct TypeEntry* entry = type_table_get(global_type_table, type->type_data.struct_type.name);
+      return entry->data.struct_entry->size;
+    }
+    case UNION_TYPE: {
+      struct TypeEntry* entry = type_table_get(global_type_table, type->type_data.union_type.name);
+      return entry->data.union_entry->size;
+    }
+    case ENUM_TYPE: {
+      return 4; // enums are treated as int
+    }
+    case VOID_TYPE: {
+      type_error_at(NULL, "cannot get size of void type");
+      return -1;
+    }
     default:
       type_error_at(NULL, "unknown type size in get_type_size");
-      return 0; // unknown type size
+      return -1; // unknown type size
+  }
+}
+
+size_t get_type_alignment(struct Type* type) {
+  switch (type->type){
+    case ARRAY_TYPE:
+      return get_type_alignment(type->type_data.array_type.element_type);
+    case STRUCT_TYPE: {
+      struct TypeEntry* entry = type_table_get(global_type_table, type->type_data.struct_type.name);
+      return entry->data.struct_entry->alignment;
+    }
+    case UNION_TYPE: {
+      struct TypeEntry* entry = type_table_get(global_type_table, type->type_data.union_type.name);
+      return entry->data.union_entry->alignment;
+    }
+    case ENUM_TYPE:
+      return 4; // enums are treated as int
+    case VOID_TYPE: {
+      type_error_at(NULL, "cannot get alignment of void type");
+      return -1;
+    }
+    default: {
+      size_t size = get_type_size(type);
+      if (size >= 4) {
+        return 4;
+      } else if (size == 3 || size == 0) {
+        // 1) what
+        type_error_at(NULL, "invalid type size in get_type_alignment");
+        return -1;
+      } else {
+        return size;
+      }
+    }
   }
 }
 
@@ -1772,6 +2260,10 @@ bool is_lvalue(struct Expr* expr) {
       return true;
     case STRING:
       return true; // string literals can be treated as lvalues for address-of
+    case DOT_EXPR:
+      return is_lvalue(expr->expr.dot_expr.struct_expr);
+    case ARROW_EXPR:
+      return true;
     default:
       return false;
   }
@@ -1808,7 +2300,21 @@ bool is_void_pointer_type(struct Type* type) {
 }
 
 bool is_complete_type(struct Type* type) {
-  return type->type != VOID_TYPE && type->type != FUN_TYPE;
+  switch (type->type) {
+    case STRUCT_TYPE: {
+      struct TypeEntry* entry = type_table_get(global_type_table, type->type_data.struct_type.name);
+      return entry != NULL;
+    }
+    case UNION_TYPE: {
+      struct TypeEntry* entry = type_table_get(global_type_table, type->type_data.union_type.name);
+      return entry != NULL;
+    }
+    case FUN_TYPE:
+    case VOID_TYPE:
+      return false;
+    default:
+      return true;
+  }
 }
 
 bool is_pointer_to_complete_type(struct Type* type) {
@@ -1927,6 +2433,7 @@ enum StaticInitType get_var_init(struct Type* type) {
       return INT_INIT;
     case UINT_TYPE:
     case POINTER_TYPE:
+    case ENUM_TYPE:
       return UINT_INIT;
     case LONG_TYPE:
       return LONG_INIT;
@@ -2028,6 +2535,130 @@ void print_symbol_table(struct SymbolTable* hmap){
       printf("  Attributes:\n");
       print_ident_attr(cur->attrs);
       printf("\n");
+      cur = cur->next;
+    }
+  }
+}
+
+// ------------------------- Type Table Functions ------------------------- //
+
+// Purpose: Allocate a type table with a given bucket count.
+// Inputs: numBuckets is the number of hash buckets.
+// Outputs: Returns a TypeTable allocated in the arena.
+// Invariants/Assumptions: Entries are arena-allocated and persist for the pass.
+struct TypeTable* create_type_table(size_t numBuckets){
+  struct TypeTable* table = arena_alloc(sizeof(struct TypeTable));
+  table->size = numBuckets;
+  table->arr = arena_alloc(sizeof(struct TypeEntry*) * numBuckets);
+  for (size_t i = 0; i < numBuckets; i++){
+    table->arr[i] = NULL;
+  }
+  return table;
+}
+
+// Purpose: Insert a type entry into the table.
+// Inputs: hmap is the table; key/type/data define the entry.
+// Outputs: Updates the table in place.
+// Invariants/Assumptions: Does not check for duplicates.
+void type_table_insert(struct TypeTable* hmap, struct Slice* key,
+    enum TypeEntryType type, union TypeEntryVariant data){
+  size_t label = hash_slice(key) % hmap->size;
+
+  struct TypeEntry* new_entry = arena_alloc(sizeof(struct TypeEntry));
+  new_entry->key = key;
+  new_entry->type = type;
+  new_entry->data = data;
+  new_entry->next = NULL;
+
+  if (hmap->arr[label] == NULL){
+    hmap->arr[label] = new_entry;
+  } else {
+    struct TypeEntry* cur = hmap->arr[label];
+    while (cur->next != NULL){
+      cur = cur->next;
+    }
+    cur->next = new_entry;
+  }
+}
+
+// Purpose: Look up a type entry by identifier name.
+// Inputs: hmap is the table; key is the identifier slice.
+// Outputs: Returns the entry or NULL if missing.
+// Invariants/Assumptions: hash_slice is consistent with insertions.
+struct TypeEntry* type_table_get(struct TypeTable* hmap, struct Slice* key){
+  size_t label = hash_slice(key) % hmap->size;
+
+  struct TypeEntry* cur = hmap->arr[label];
+  while (cur != NULL){
+    if (compare_slice_to_slice(cur->key, key)){
+      return cur;
+    }
+    cur = cur->next;
+  }
+  return NULL;
+}
+
+// Purpose: Check if a type entry exists in the table.
+// Inputs: hmap is the table; key is the identifier slice.
+// Outputs: Returns true if the entry is present.
+// Invariants/Assumptions: Performs a full lookup in the bucket chain.
+bool type_table_contains(struct TypeTable* hmap, struct Slice* key){
+  size_t label = hash_slice(key) % hmap->size;
+
+  struct TypeEntry* cur = hmap->arr[label];
+  while (cur != NULL){
+    if (compare_slice_to_slice(cur->key, key)){
+      return true;
+    }
+    cur = cur->next;
+  }
+  return false;
+}
+
+// Purpose: Print member entries for debugging.
+// Inputs: members is the member chain to print.
+// Outputs: Writes a human-readable dump to stdout.
+// Invariants/Assumptions: Intended for debugging only.
+static void print_member_entries(struct MemberEntry* members){
+  for (struct MemberEntry* cur = members; cur != NULL; cur = cur->next){
+    printf("    Member: %.*s offset=%zu type=",
+        (int)cur->key->len, cur->key->start, cur->offset);
+    print_type(cur->type);
+    printf("\n");
+  }
+}
+
+// Purpose: Print the type table contents for debugging.
+// Inputs: hmap is the table to print.
+// Outputs: Writes a human-readable dump to stdout.
+// Invariants/Assumptions: Intended for debugging only.
+void print_type_table(struct TypeTable* hmap){
+  for (size_t i = 0; i < hmap->size; i++){
+    struct TypeEntry* cur = hmap->arr[i];
+    while (cur != NULL){
+      printf("Type: %.*s\n", (int)cur->key->len, cur->key->start);
+      switch (cur->type){
+        case STRUCT_ENTRY:
+          printf("  Kind: struct\n");
+          if (cur->data.struct_entry != NULL){
+            printf("  Alignment: %u\n", cur->data.struct_entry->alignment);
+            print_member_entries(cur->data.struct_entry->members);
+          }
+          break;
+        case UNION_ENTRY:
+          printf("  Kind: union\n");
+          if (cur->data.union_entry != NULL){
+            printf("  Alignment: %u\n", cur->data.union_entry->alignment);
+            print_member_entries(cur->data.union_entry->members);
+          }
+          break;
+        case ENUM_ENTRY:
+          printf("  Kind: enum\n");
+          break;
+        default:
+          printf("  Kind: unknown\n");
+          break;
+      }
       cur = cur->next;
     }
   }
@@ -2427,59 +3058,195 @@ struct InitList* is_init_const(struct Type* type, struct Initializer* init) {
       }
     }
     case COMPOUND_INIT: {
-      if (type->type != ARRAY_TYPE) {
-        return NULL;
-      }
+      if (type->type == ARRAY_TYPE) {
+        // ensure each element is constant
+        struct InitList* flattened = NULL;
+        struct InitList* flattened_tail = NULL;
+        size_t outer_count = 0;
+        for (struct InitializerList* cur = init->init.compound_init; cur != NULL; cur = cur->next) {
+          struct InitList* inner_init = is_init_const(type->type_data.array_type.element_type, cur->init);
+          if (inner_init == NULL) {
+            return NULL;
+          }
 
-      // ensure each element is constant
-      struct InitList* flattened = NULL;
-      struct InitList* flattened_tail = NULL;
-      size_t outer_count = 0;
-      for (struct InitializerList* cur = init->init.compound_init; cur != NULL; cur = cur->next) {
-        struct InitList* inner_init = is_init_const(type->type_data.array_type.element_type, cur->init);
-        if (inner_init == NULL) {
+          // append each element to flattened
+          for (struct InitList* inner_cur = inner_init; inner_cur != NULL; inner_cur = inner_cur->next) {
+            struct InitList* new_node = arena_alloc(sizeof(struct InitList));
+            new_node->value = arena_alloc(sizeof(struct StaticInit));
+            new_node->value->int_type = inner_cur->value->int_type;
+            new_node->value->value = inner_cur->value->value;
+            new_node->next = NULL;
+
+            if (flattened == NULL) {
+              flattened = new_node;
+              flattened_tail = new_node;
+            } else {
+              flattened_tail->next = new_node;
+              flattened_tail = new_node;
+            }
+          }
+          outer_count++;
+        }
+
+        // pad to array length
+        size_t array_len = type->type_data.array_type.size;
+        size_t element_size = get_type_size(type->type_data.array_type.element_type);
+        if (outer_count < array_len) {
+          // append a zero_init node
+          struct InitList* pad_node = arena_alloc(sizeof(struct InitList));
+          pad_node->value = arena_alloc(sizeof(struct StaticInit));
+          pad_node->value->int_type = ZERO_INIT;
+          pad_node->value->value.num = (array_len - outer_count) * element_size;
+          pad_node->next = NULL;
+          if (flattened == NULL) {
+            flattened = pad_node;
+            flattened_tail = pad_node;
+          } else {
+            flattened_tail->next = pad_node;
+            flattened_tail = pad_node;
+          }
+        }
+
+        return flattened;
+      } else if (type->type == STRUCT_TYPE) {
+        if (init->init_type != COMPOUND_INIT) {
+          type_error_at(NULL, "expected compound initializer for struct type");
           return NULL;
         }
 
-        // append each element to flattened
-        for (struct InitList* inner_cur = inner_init; inner_cur != NULL; inner_cur = inner_cur->next) {
-          struct InitList* new_node = arena_alloc(sizeof(struct InitList));
-          new_node->value = arena_alloc(sizeof(struct StaticInit));
-          new_node->value->int_type = inner_cur->value->int_type;
-          new_node->value->value = inner_cur->value->value;
-          new_node->next = NULL;
+        struct TypeEntry* struct_entry = type_table_get(global_type_table, type->type_data.struct_type.name);
+        if (struct_entry == NULL) {
+          type_error_at(NULL, "incomplete struct type in initializer");
+          return NULL;
+        }
 
-          if (flattened == NULL) {
-            flattened = new_node;
-            flattened_tail = new_node;
+        struct MemberEntry* member = struct_entry->data.struct_entry->members;
+        struct InitializerList* init_cur = init->init.compound_init;
+
+        struct InitList* init_list = NULL;
+        struct InitList* init_list_tail = NULL;
+        size_t offset = 0;
+        while (member != NULL && init_cur != NULL) {
+          struct InitList* member_init = is_init_const(member->type, init_cur->init);
+          if (member_init == NULL) {
+            return NULL;
+          }
+
+          // add padding if needed
+          if (member->offset > offset) {
+            struct InitList* pad_node = arena_alloc(sizeof(struct InitList));
+            pad_node->value = arena_alloc(sizeof(struct StaticInit));
+            pad_node->value->int_type = ZERO_INIT;
+            pad_node->value->value.num = member->offset - offset;
+            pad_node->next = NULL;
+
+            if (init_list == NULL) {
+              init_list = pad_node;
+              init_list_tail = pad_node;
+            } else {
+              init_list_tail->next = pad_node;
+              init_list_tail = pad_node;
+            }
+            offset = member->offset;
+          }
+
+          // append member_init to init_list
+          struct InitList* more_inits = is_init_const(member->type, init_cur->init);
+          if (more_inits == NULL) {
+            return NULL;
+          }
+          if (init_list == NULL) {
+            init_list = more_inits;
+            init_list_tail = more_inits;
           } else {
-            flattened_tail->next = new_node;
-            flattened_tail = new_node;
+            init_list_tail->next = more_inits;
+          }
+          while (init_list_tail->next != NULL) {
+            init_list_tail = init_list_tail->next;
+          }
+          offset += get_type_size(member->type);
+
+          member = member->next;
+          init_cur = init_cur->next;
+        }
+
+        if (init_cur != NULL) {
+          type_error_at(NULL, "too many initializers for struct type");
+          return NULL;
+        }
+
+        // add final padding if needed
+        size_t struct_size = get_type_size(type);
+        if (offset < struct_size) {
+          struct InitList* pad_node = arena_alloc(sizeof(struct InitList));
+          pad_node->value = arena_alloc(sizeof(struct StaticInit));
+          pad_node->value->int_type = ZERO_INIT;
+          pad_node->value->value.num = struct_size - offset;
+          pad_node->next = NULL;
+
+          if (init_list == NULL) {
+            init_list = pad_node;
+            init_list_tail = pad_node;
+          } else {
+            init_list_tail->next = pad_node;
+            init_list_tail = pad_node;
           }
         }
-        outer_count++;
-      }
 
-      // pad to array length
-      size_t array_len = type->type_data.array_type.size;
-      size_t element_size = get_type_size(type->type_data.array_type.element_type);
-      if (outer_count < array_len) {
-        // append a zero_init node
-        struct InitList* pad_node = arena_alloc(sizeof(struct InitList));
-        pad_node->value = arena_alloc(sizeof(struct StaticInit));
-        pad_node->value->int_type = ZERO_INIT;
-        pad_node->value->value.num = (array_len - outer_count) * element_size;
-        pad_node->next = NULL;
-        if (flattened == NULL) {
-          flattened = pad_node;
-          flattened_tail = pad_node;
-        } else {
-          flattened_tail->next = pad_node;
-          flattened_tail = pad_node;
+        return init_list;
+      } else if (type->type == UNION_TYPE) {
+        if (init->init_type != COMPOUND_INIT) {
+          type_error_at(NULL, "expected compound initializer for union type");
+          return NULL;
         }
-      }
 
-      return flattened;
+        struct TypeEntry* union_entry = type_table_get(global_type_table, type->type_data.union_type.name);
+        if (union_entry == NULL) {
+          type_error_at(NULL, "incomplete union type in initializer");
+          return NULL;
+        }
+
+        // only the first initializer is used for unions
+        struct InitializerList* first_init = init->init.compound_init;
+        if (first_init == NULL) {
+          type_error_at(NULL, "empty initializer for union type");
+          return NULL;
+        }
+
+        if (first_init->next != NULL) {
+          type_error_at(NULL, "too many initializers for union type");
+          return NULL;
+        }
+
+        struct InitList* union_init = is_init_const(
+            union_entry->data.union_entry->members->type, first_init->init);
+        if (union_init == NULL) {
+          return NULL;
+        }
+
+        // pad to union size if needed
+        size_t union_size = get_type_size(type);
+        size_t init_size = get_type_size(
+            union_entry->data.union_entry->members->type);
+        if (init_size < union_size) {
+          struct InitList* pad_node = arena_alloc(sizeof(struct InitList));
+          pad_node->value = arena_alloc(sizeof(struct StaticInit));
+          pad_node->value->int_type = ZERO_INIT;
+          pad_node->value->value.num = union_size - init_size;
+          pad_node->next = NULL;
+
+          struct InitList* cur = union_init;
+          while (cur->next != NULL) {
+            cur = cur->next;
+          }
+          cur->next = pad_node;
+        }
+
+        return union_init;
+      } else {
+        // unsupported compound initializer type
+        return NULL;
+      }
     }
     default:
       return NULL;

@@ -1,0 +1,3 @@
+Parse error at tests/parser_invalid/struct_function_member.c:4:11: member cannot be a function
+Parse error at tests/parser_invalid/struct_function_member.c:4:11: expected at least one struct member declaration
+Parse error at tests/parser_invalid/struct_function_member.c:4:11: unexpected token

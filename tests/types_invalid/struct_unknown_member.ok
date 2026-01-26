@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/struct_unknown_member.c:9:4: no such member in struct/union for dot expression

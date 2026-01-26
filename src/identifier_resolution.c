@@ -527,6 +527,11 @@ bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
     return false;
   }
 
+  if (var_dclr->init != NULL && !resolve_var_init(var_dclr->init)) {
+    ident_error_at(var_dclr->name->start, "failed to resolve variable initializer");
+    return false;
+  }
+
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, var_dclr->name, &from_current_scope);
   if (entry != NULL) {

@@ -1,7 +1,5 @@
 Program(
     
-    EnumDclr(name=Test.0);
-    
     EnumDclr(name=Test.0, values=[
         EnumValue(name=VALUE_ONE.1, value=0), 
         EnumValue(name=VALUE_TWO.2, value=1), 

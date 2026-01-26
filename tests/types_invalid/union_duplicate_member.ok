@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/union_duplicate_member.c:3:9: duplicate member name a in struct U.0
