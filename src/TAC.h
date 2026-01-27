@@ -175,6 +175,7 @@ struct TACCopyToOffset {
   struct Slice* dst;
   struct Val* src;
   int offset;
+  struct Type* dst_type;
 };
 
 struct TACCopyFromOffset {

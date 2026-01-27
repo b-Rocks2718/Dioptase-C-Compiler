@@ -160,7 +160,8 @@ bool resolve_expr(struct Expr* expr) {
       return resolve_args(expr->expr.fun_call_expr.args);
     }
     case CAST:
-      return resolve_expr(expr->expr.cast_expr.expr);
+      return resolve_type(expr->expr.cast_expr.target) &&
+             resolve_expr(expr->expr.cast_expr.expr);
     case ADDR_OF:
       return resolve_expr(expr->expr.addr_of_expr.expr);
     case DEREFERENCE:
@@ -171,7 +172,7 @@ bool resolve_expr(struct Expr* expr) {
     case SIZEOF_EXPR:
       return resolve_expr(expr->expr.sizeof_expr.expr);
     case SIZEOF_T_EXPR:
-      return true;
+      return resolve_type(expr->expr.sizeof_t_expr.type);
     case STMT_EXPR:
       return resolve_block(expr->expr.stmt_expr.block);
     case DOT_EXPR:

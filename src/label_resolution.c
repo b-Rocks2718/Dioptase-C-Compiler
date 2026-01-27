@@ -259,6 +259,10 @@ static bool label_local_dclr(struct Slice* func_name, struct Declaration* dclr) 
       return label_initializer(func_name, dclr->dclr.var_dclr.init);
     case FUN_DCLR:
       return true;
+    case STRUCT_DCLR:
+    case UNION_DCLR:
+    case ENUM_DCLR:
+      return true;
     default:
       label_error_at("Loop Labeling Error", NULL,
                      "unknown declaration type");
@@ -674,6 +678,10 @@ static bool resolve_gotos_dclr(struct Declaration* dclr) {
       return resolve_gotos_initializer(dclr->dclr.var_dclr.init);
     case FUN_DCLR:
       return true;
+    case STRUCT_DCLR:
+    case UNION_DCLR:
+    case ENUM_DCLR:
+      return true;
     default:
       label_error_at("Goto Resolution Error", NULL,
                      "unknown declaration type");
@@ -912,6 +920,10 @@ static bool collect_cases_dclr(struct Declaration* dclr) {
     case VAR_DCLR:
       return collect_cases_initializer(dclr->dclr.var_dclr.init);
     case FUN_DCLR:
+      return true;
+    case STRUCT_DCLR:
+    case UNION_DCLR:
+    case ENUM_DCLR:
       return true;
     default:
       label_error_at("Case Collection Error", NULL,

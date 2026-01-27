@@ -758,6 +758,11 @@ struct TACInstr* local_dclr_to_TAC(struct Slice* func_name, struct Declaration* 
       // local function definitions should have been caught by now
       tac_error_at(NULL, "local function definition reached TAC lowering");
       return NULL;
+    case STRUCT_DCLR:
+    case UNION_DCLR:
+    case ENUM_DCLR:
+      // Local tag declarations only affect the type namespace.
+      return NULL;
     default:
       tac_error_at(NULL, "invalid declaration type in local scope");
       return NULL;
@@ -814,6 +819,7 @@ struct TACInstr* single_init_to_TAC(struct Slice* func_name,
     store_instr->instr.tac_copy_to_offset.src = src;
     store_instr->instr.tac_copy_to_offset.offset =
         init_offset_to_int(offset, init->loc);
+    store_instr->instr.tac_copy_to_offset.dst_type = type;
     concat_TAC_instrs(&expr_instrs, store_instr);
     return expr_instrs;
   }
@@ -949,6 +955,7 @@ static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice
     store_instr->instr.tac_copy_to_offset.src = src;
     store_instr->instr.tac_copy_to_offset.offset =
         init_offset_to_int(byte_offset, str_expr->string->start);
+    store_instr->instr.tac_copy_to_offset.dst_type = element_type;
     concat_TAC_instrs(&instrs, store_instr);
   }
 
@@ -2236,6 +2243,7 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
         copy_instr->instr.tac_copy_to_offset.dst = lhs_result.sub_object_base;
         copy_instr->instr.tac_copy_to_offset.offset = lhs_result.sub_object_offset;
         copy_instr->instr.tac_copy_to_offset.src = rhs_val;
+        copy_instr->instr.tac_copy_to_offset.dst_type = assign_expr->left->value_type;
         concat_TAC_instrs(&instrs, copy_instr);
 
         result->type = PLAIN_OPERAND;
@@ -2703,7 +2711,7 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
         
 
         struct TACInstr* offset_instr = tac_instr_create(TACBINARY);
-        offset_instr->instr.tac_binary.alu_op = ADD_OP;
+        offset_instr->instr.tac_binary.alu_op = ALU_ADD;
         offset_instr->instr.tac_binary.dst = dst;
         offset_instr->instr.tac_binary.src1 = dst;
         offset_instr->instr.tac_binary.src2 = tac_make_const((uint64_t)inner_result.sub_object_offset, 

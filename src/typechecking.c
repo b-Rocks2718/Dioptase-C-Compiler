@@ -168,6 +168,19 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
     init_type = NO_INIT;
   }
 
+  if (!is_complete_type(var_dclr->type)) {
+    type_error_at(var_dclr->name->start,
+                  "incomplete type for variable %.*s",
+                  (int)var_dclr->name->len, var_dclr->name->start);
+    return false;
+  }
+  if (!is_valid_type_specifier(var_dclr->type)) {
+    type_error_at(var_dclr->name->start,
+                  "invalid type for variable %.*s",
+                  (int)var_dclr->name->len, var_dclr->name->start);
+    return false;
+  }
+
   // if there is an initializer, typecheck it
   struct InitList* init_list = NULL;
   if (var_dclr->init != NULL) {
@@ -888,6 +901,12 @@ bool typecheck_local_dclr(struct Declaration* dclr) {
       return typecheck_local_var(&dclr->dclr.var_dclr);
     case FUN_DCLR:
       return typecheck_func(&dclr->dclr.fun_dclr);
+    case STRUCT_DCLR:
+      return typecheck_struct(&dclr->dclr.struct_dclr);
+    case UNION_DCLR:
+      return typecheck_union(&dclr->dclr.union_dclr);
+    case ENUM_DCLR:
+      return typecheck_enum(&dclr->dclr.enum_dclr);
     default:
       type_error_at(NULL, "unknown declaration type in typecheck_local_dclr");
       return false; // Unknown declaration type
@@ -899,6 +918,19 @@ bool typecheck_local_dclr(struct Declaration* dclr) {
 // Outputs: Returns true on success; false on any type error.
 // Invariants/Assumptions: Enforces extern/static/local linkage rules.
 bool typecheck_local_var(struct VariableDclr* var_dclr) {
+  if (!is_complete_type(var_dclr->type)) {
+    type_error_at(var_dclr->name->start,
+                  "incomplete type for variable %.*s",
+                  (int)var_dclr->name->len, var_dclr->name->start);
+    return false;
+  }
+  if (!is_valid_type_specifier(var_dclr->type)) {
+    type_error_at(var_dclr->name->start,
+                  "invalid type for variable %.*s",
+                  (int)var_dclr->name->len, var_dclr->name->start);
+    return false;
+  }
+
   if (var_dclr->storage == EXTERN) {
     // Local extern declarations just validate and/or introduce a global symbol.
     if (var_dclr->init != NULL) {
@@ -1327,6 +1359,25 @@ struct Initializer* make_zero_initializer(struct Type* type) {
       init->type = type;
       break;
     }
+    case LONG_TYPE:
+    case ULONG_TYPE: {
+      struct Expr* lit_expr = arena_alloc(sizeof(struct Expr));
+      lit_expr->type = LIT;
+      lit_expr->loc = NULL;
+      if (type->type == LONG_TYPE) {
+        lit_expr->expr.lit_expr.value.long_val = 0;
+        lit_expr->expr.lit_expr.type = LONG_CONST;
+      } else {
+        lit_expr->expr.lit_expr.value.ulong_val = 0;
+        lit_expr->expr.lit_expr.type = ULONG_CONST;
+      }
+      lit_expr->value_type = type;
+
+      init->init_type = SINGLE_INIT;
+      init->init.single_init = lit_expr;
+      init->type = type;
+      break;
+    }
     case ARRAY_TYPE: {
       init->init_type = COMPOUND_INIT;
       init->init.compound_init = NULL;
@@ -1486,6 +1537,21 @@ bool typecheck_expr(struct Expr* expr) {
         return true;
       } else if (bin_expr->op == BOOL_LE || bin_expr->op == BOOL_LEQ ||
                  bin_expr->op == BOOL_GE || bin_expr->op == BOOL_GEQ) {
+        if (is_pointer_type(left_type) || is_pointer_type(right_type)) {
+          if (!is_pointer_type(left_type) || !is_pointer_type(right_type)) {
+            type_error_at(expr->loc, "invalid types in relational comparison");
+            return false;
+          }
+          struct Type* common_type = get_common_pointer_type(bin_expr->left, bin_expr->right);
+          if (common_type == NULL) {
+            type_error_at(expr->loc, "incompatible pointer types in relational comparison");
+            return false;
+          }
+          convert_expr_type(&bin_expr->left, common_type);
+          convert_expr_type(&bin_expr->right, common_type);
+          expr->value_type = &kIntType;
+          return true;
+        }
         if (!is_arithmetic_type(left_type) || !is_arithmetic_type(right_type)) {
           type_error_at(expr->loc, "invalid types in relational comparison");
           return false;
@@ -1633,6 +1699,8 @@ bool typecheck_expr(struct Expr* expr) {
           type_error_at(expr->loc, "incompatible struct types in conditional expression");
           return false;
         }
+        expr->value_type = cond_expr->left->value_type;
+        return true;
       }
 
       if (cond_expr->left->value_type->type == UNION_TYPE ||
@@ -1642,6 +1710,8 @@ bool typecheck_expr(struct Expr* expr) {
           type_error_at(expr->loc, "incompatible struct types in conditional expression");
           return false;
         }
+        expr->value_type = cond_expr->left->value_type;
+        return true;
       }
 
       if (!is_scalar_type(cond_expr->condition->value_type)) {
@@ -2164,10 +2234,12 @@ size_t get_type_size(struct Type* type) {
              get_type_size(type->type_data.array_type.element_type);
     case STRUCT_TYPE: {
       struct TypeEntry* entry = type_table_get(global_type_table, type->type_data.struct_type.name);
+      if (entry == NULL) return -1; // incomplete type (don't error because sometimes this is valid)
       return entry->data.struct_entry->size;
     }
     case UNION_TYPE: {
       struct TypeEntry* entry = type_table_get(global_type_table, type->type_data.union_type.name);
+      if (entry == NULL) return -1; // incomplete type
       return entry->data.union_entry->size;
     }
     case ENUM_TYPE: {
@@ -2189,10 +2261,12 @@ size_t get_type_alignment(struct Type* type) {
       return get_type_alignment(type->type_data.array_type.element_type);
     case STRUCT_TYPE: {
       struct TypeEntry* entry = type_table_get(global_type_table, type->type_data.struct_type.name);
+      if (entry == NULL) return -1; // incomplete type (don't error because sometimes this is valid)
       return entry->data.struct_entry->alignment;
     }
     case UNION_TYPE: {
       struct TypeEntry* entry = type_table_get(global_type_table, type->type_data.union_type.name);
+      if (entry == NULL) return -1; // incomplete type
       return entry->data.union_entry->alignment;
     }
     case ENUM_TYPE:
@@ -2301,6 +2375,8 @@ bool is_void_pointer_type(struct Type* type) {
 
 bool is_complete_type(struct Type* type) {
   switch (type->type) {
+    case ARRAY_TYPE:
+      return is_complete_type(type->type_data.array_type.element_type);
     case STRUCT_TYPE: {
       struct TypeEntry* entry = type_table_get(global_type_table, type->type_data.struct_type.name);
       return entry != NULL;
@@ -2368,10 +2444,6 @@ struct Type* get_common_pointer_type(struct Expr* expr1, struct Expr* expr2) {
     return t2;
   } else if (is_null_pointer_constant(expr2)) {
     return t1;
-  } else if (is_void_pointer_type(t1) && is_pointer_type(t2)) {
-    return t1;
-  } else if (is_void_pointer_type(t2) && is_pointer_type(t1)) {
-    return t2;
   }
   return NULL;
 }

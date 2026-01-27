@@ -34,6 +34,7 @@ struct AsmSymbolEntry{
   struct AsmType* type; // for data
   bool is_static;  // for data
   bool is_defined; // for functions
+  bool return_on_stack; // for functions
 
   struct AsmSymbolEntry* next;
 };
@@ -189,6 +190,26 @@ struct PseudoMap{
   struct PseudoEntry** arr;
 };
 
+enum VarClass {
+  MEMORY_CLASS,
+  INTEGER_CLASS,
+};
+
+struct VarClassList {
+  enum VarClass var_class;
+  struct VarClassList* next;
+};
+
+struct OperandList {
+  struct Operand* opr;
+  struct OperandList* next;
+};
+
+// Use caller-saved registers that are not argument registers for codegen scratch work.
+extern const enum Reg kScratchRegA;
+extern const enum Reg kScratchRegB;
+extern const enum Reg kScratchRegC;
+
 // Purpose: Lower TAC into ASM, optionally emitting section directives.
 // Inputs: tac_prog is the TAC program; emit_sections controls .data/.text emission.
 // Outputs: Returns the ASM program or exits on internal error.
@@ -199,9 +220,14 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top);
 
 struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_instr);
 
-struct AsmInstr* params_to_asm(struct Slice** params, size_t num_params);
+struct AsmInstr* set_up_params(struct Slice* func_name,
+                               struct Slice** params,
+                               size_t num_params,
+                               bool return_in_memory);
 
 struct Operand* tac_val_to_asm(struct Val* val);
+
+struct Operand* make_pseudo(struct Slice* var_name, struct AsmType* asm_type);
 
 struct Operand* make_pseudo_mem(struct Slice* var_name, struct AsmType* asm_type, int offset);
 
@@ -211,7 +237,11 @@ struct Operand** get_srcs(struct AsmInstr* asm_instr, size_t* out_count);
 
 struct Operand* get_dst(struct AsmInstr* asm_instr);
 
-size_t create_maps(struct AsmInstr* asm_instr);
+// Purpose: Build stack slot mappings for pseudo operands.
+// Inputs: asm_instr is the function body; reserved_bytes is preallocated frame space.
+// Outputs: Returns the total stack allocation in bytes (including reserved + padding).
+// Invariants/Assumptions: reserved_bytes preserves ABI-mandated slots (e.g., return pointer).
+size_t create_maps(struct AsmInstr* asm_instr, size_t reserved_bytes);
 
 void replace_pseudo(struct AsmInstr* asm_instr);
 
@@ -262,12 +292,19 @@ size_t get_stack_size(struct Val* args, size_t num_args);
 // Invariants/Assumptions: pseudo_map is initialized before use.
 void replace_operand_if_pseudo(struct Operand** field);
 
+// classify function parameters into register and stack arguments
+void classify_params(struct Val* params, size_t num_params, bool return_in_memory,
+                     struct OperandList** reg_args, struct OperandList** stack_args);
+
+// classify function return value into operand list of reg or pseudo mem
+void classify_return_val(struct Val* ret_val, struct OperandList** ret_var_list, bool* return_in_memory);
+
 size_t asm_type_alignment(struct AsmType* type);
 
 struct AsmSymbolTable* create_asm_symbol_table(size_t numBuckets);
 
 void asm_symbol_table_insert(struct AsmSymbolTable* hmap, struct Slice* key, 
-    struct AsmType* type, bool is_static, bool is_defined);
+    struct AsmType* type, bool is_static, bool is_defined, bool return_on_stack);
 
 struct AsmSymbolEntry* asm_symbol_table_get(struct AsmSymbolTable* hmap, struct Slice* key);
 

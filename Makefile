@@ -71,7 +71,7 @@ WACC_TEST_DIR := tests/writing-a-c-compiler-tests
 WACC_TEST_RUNNER := $(WACC_TEST_DIR)/test_compiler
 WACC_TAC_WRAPPER := tests/wacc_tac_compiler.py
 WACC_CORE_CHAPTER ?= 10
-WACC_EXTRA_CHAPTERS ?= 12 14 15 16 17
+WACC_EXTRA_CHAPTERS ?= 12 14 15 16 17 18
 WACC_ARGS ?=
 WACC_EXTRA_CREDIT ?= --bitwise --compound --increment --goto --switch --nan --union
 # Skip tests that exercise types or libraries the compiler does not support.

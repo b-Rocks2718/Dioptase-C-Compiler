@@ -795,7 +795,7 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       return true;
     case MACHINE_PUSHD:
       write_tab(out);
-      fputs("pushd ", out);
+      fputs("pshd ", out);
       write_reg(out, instr->ra);
       fputc('\n', out);
       return true;
@@ -807,7 +807,7 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       return true;
     case MACHINE_PUSHB:
       write_tab(out);
-      fputs("pushb ", out);
+      fputs("pshb ", out);
       write_reg(out, instr->ra);
       fputc('\n', out);
       return true;

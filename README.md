@@ -1,6 +1,6 @@
 # Dioptase C Compiler
 
-My implementation of of the compiler described in [Writing a C Compiler](https://nostarch.com/writing-c-compiler) by Nora Sandler.
+My implementation of of the compiler described in [Writing a C Compiler](https://nostarch.com/writing-c-compiler) by Nora Sandler. Targets the [Dioptase architecture](https://github.com/b-Rocks2718/Dioptase) and relies on the [Dioptase assembler](). The generated machine code can be run with the [Dioptase emulator]().
 
 ## Usage
 
@@ -52,29 +52,32 @@ Flags can be combined to dump multiple stages. `-preprocess` exits early unless 
 
 Supported:
 
-- Types: `signed`/`unsigned` `int` and `short`, `void`, `char` types, arrays, functions, strings, and pointers to these types
+- Types: `signed`/`unsigned` `int` and `short`, `void`, `char` types, arrays, functions, strings, structs, unions, enums, and pointers to these types
 - Storage classes: `static`, `extern`
 - Declarations: global and local variables, function declarations/definitions
 - Expressions:
   - literals: decimal and `0x` hex integers
   - variables, assignments (`=`, compound assignments)
   - unary: `-`, `~`, `!`, `&`, `*`, `+`, pre/post `++` and `--`
-  - binary: `+`, `-`, `*`, `/`, `%`, shifts, bitwise ops, comparisons, `&&`, `||`, and `,`  
+  - binary: `+`, `-`, `*`, `/`, `%`, shifts, bitwise ops, boolean ops, comparisons, and member access operators  
   - ternary `?:`
   - function calls
   - `sizeof` types and expressions
   - statement expressions
-  - cleanup attribute
 - Statements: expression statements, `return`, blocks, `if`/`else`, `while`, `do`/`while`,
   `for`, `break`, `continue`, `switch`/`case`/`default`, labels and `goto`
+- Attributes: just `cleanup` for now, but I will likely add more
 
 Limitations:
-- No structs/unions, enums, or floating-point
-- No `long` integers
+- No floating-point
+- No `long` or `long long` integers
 - No `typedef`, `const`, `volatile`, `inline`, or `restrict`
 - No multiple declarators per declaration (e.g., `int a, b;`)
 - No variadic functions
 - No inline assembly
+- No optimizations or register allocation
+
+In the future I plan to fix most of these limitations. I'd also like to add a few extensions to C, like classes, templates, and lambdas.  
 
 ## Tests
 

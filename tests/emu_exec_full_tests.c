@@ -536,6 +536,7 @@ static bool emu_exec_full_compile_with_bcc_to_asm(const char* source_path,
 // Inputs: asm_path is the compiled test assembly; out_path is the output hex path.
 // Outputs: Returns true if assembly succeeds; exit_code receives the process status.
 // Invariants/Assumptions: Assembles with kernel init and arithmetic support sources.
+// The init file must be first so its .origin establishes the kernel entry point.
 static bool emu_exec_full_assemble_kernel_image(const char* asm_path,
                                                 const char* out_path,
                                                 int* exit_code) {
@@ -551,8 +552,8 @@ static bool emu_exec_full_assemble_kernel_image(const char* asm_path,
     return false;
   }
   const char* argv[] = {assembler, "-kernel", "-o", out_path,
-                        asm_path, kEmuExecFullKernelArithmeticPath,
-                        kEmuExecFullKernelInitPath, NULL};
+                        kEmuExecFullKernelInitPath, asm_path,
+                        kEmuExecFullKernelArithmeticPath, NULL};
   int local_exit = 0;
   if (!emu_exec_full_run_process(argv, true, &local_exit)) {
     if (exit_code != NULL) {

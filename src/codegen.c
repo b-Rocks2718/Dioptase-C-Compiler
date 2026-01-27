@@ -3,6 +3,7 @@
 #include "arena.h"
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <stdarg.h>
 
 // Purpose: Allocate a machine instruction node with predictable defaults.
@@ -41,6 +42,46 @@ static void append_instr(struct MachineInstr** head,
   *tail = instr;
 }
 
+// Purpose: Materialize a data label address into a register, optionally with a byte offset.
+// Inputs: addr_reg receives the absolute address; pc_reg is a scratch for PC; label is the data symbol.
+// Outputs: Appends machine instructions to compute the address.
+// Invariants/Assumptions: addr_reg and pc_reg are distinct scratch registers.
+static void emit_label_address(struct MachineInstr** head,
+                               struct MachineInstr** tail,
+                               enum Reg addr_reg,
+                               enum Reg pc_reg,
+                               struct Slice* label,
+                               int offset) {
+  struct MachineInstr* movi = alloc_machine_instr(MACHINE_MOVI);
+  movi->ra = addr_reg;
+  movi->label = label;
+  append_instr(head, tail, movi);
+
+  struct MachineInstr* br = alloc_machine_instr(MACHINE_BR);
+  br->ra = pc_reg;
+  br->rb = R0;
+  append_instr(head, tail, br);
+
+  struct MachineInstr* add_pc = alloc_machine_instr(MACHINE_ADD);
+  add_pc->ra = addr_reg;
+  add_pc->rb = addr_reg;
+  add_pc->rc = pc_reg;
+  append_instr(head, tail, add_pc);
+
+  if (offset != 0) {
+    struct MachineInstr* add_off = alloc_machine_instr(MACHINE_ADD);
+    add_off->ra = addr_reg;
+    add_off->rb = addr_reg;
+    add_off->rc = R0;
+    add_off->imm = offset;
+    append_instr(head, tail, add_off);
+  }
+}
+
+// Purpose: Load from a data label (optionally with an offset) into a register.
+// Inputs: dst_reg receives the loaded value; data is the label operand.
+// Outputs: Appends the appropriate load sequence.
+// Invariants/Assumptions: data->type is OPERAND_DATA.
 // Purpose: Find the first source location marker in a function body.
 // Inputs: instrs is the ASM instruction list for the function body.
 // Outputs: Returns the loc pointer for the first ASM_BOUNDARY, or NULL if none.
@@ -76,6 +117,28 @@ static void codegen_errorf(const struct Slice* func_name,
   exit(1);
 }
 
+// Purpose: Select a scratch register that avoids two disallowed registers.
+// Inputs: avoid_a/avoid_b are registers that must not be selected.
+// Outputs: Returns a scratch register distinct from avoid_a and avoid_b.
+// Invariants/Assumptions: At least one scratch register remains available.
+static enum Reg pick_scratch_reg(const struct Slice* func_name,
+                                 enum AsmInstrType instr_type,
+                                 enum Reg avoid_a,
+                                 enum Reg avoid_b) {
+  if (kScratchRegA != avoid_a && kScratchRegA != avoid_b) {
+    return kScratchRegA;
+  }
+  if (kScratchRegB != avoid_a && kScratchRegB != avoid_b) {
+    return kScratchRegB;
+  }
+  if (kScratchRegC != avoid_a && kScratchRegC != avoid_b) {
+    return kScratchRegC;
+  }
+  codegen_errorf(func_name, instr_type,
+                 "no scratch register available (avoid=%d,%d)", (int)avoid_a, (int)avoid_b);
+  return kScratchRegA;
+}
+
 // Builtin helper names referenced by codegen-generated call sequences.
 static struct Slice kBuiltinSmul = {"smul", 4};
 static struct Slice kBuiltinSdiv = {"sdiv", 4};
@@ -90,10 +153,6 @@ static struct Slice kBuiltinURightShift = {"uright_shift", 12};
 static struct Slice kFunctionEpilogueLabel = {"Function Epilogue", 17};
 static struct Slice kFunctionPrologueLabel = {"Function Prologue", 17};
 static struct Slice kFunctionBodyLabel = {"Function Body", 13};
-
-// Use caller-saved registers that are not argument registers for codegen scratch work.
-static const enum Reg kScratchRegA = R9;
-static const enum Reg kScratchRegB = R10;
 
 // Purpose: Emit a call sequence for a binary builtin that expects args in R1/R2.
 // Inputs: head/tail are the instruction list; label identifies the builtin entry.
@@ -130,10 +189,68 @@ static const int kSavedBpOffset = 0;
 static const int kSavedRaOffset = 4;
 static const int kEpilogueStackBytes = 8;
 
+// Purpose: Load from a data label (optionally with an offset) into a register.
+// Inputs: dst_reg receives the loaded value; data is the label operand.
+// Outputs: Appends the appropriate load sequence.
+// Invariants/Assumptions: data->type is OPERAND_DATA.
+static void emit_data_load(struct MachineInstr** head,
+                           struct MachineInstr** tail,
+                           const struct Slice* func_name,
+                           enum AsmInstrType instr_type,
+                           enum Reg dst_reg,
+                           const struct Operand* data) {
+  if (data->lit_value != 0) {
+    enum Reg pc_reg = (dst_reg == kScratchRegA) ? kScratchRegB : kScratchRegA;
+    emit_label_address(head, tail, dst_reg, pc_reg, data->pseudo, data->lit_value);
+    struct MachineInstr* load;
+    switch (data->asm_type->type) {
+      case BYTE:
+        load = alloc_machine_instr(MACHINE_LBA);
+        break;
+      case DOUBLE:
+        load = alloc_machine_instr(MACHINE_LDA);
+        break;
+      case WORD:
+        load = alloc_machine_instr(MACHINE_LWA);
+        break;
+      default:
+        codegen_errorf(func_name, instr_type,
+                       "unsupported asm type %d for data operand load", (int)data->asm_type->type);
+        return;
+    }
+    load->ra = dst_reg;
+    load->rb = dst_reg;
+    load->imm = 0;
+    append_instr(head, tail, load);
+  } else {
+    struct MachineInstr* load;
+    switch (data->asm_type->type) {
+      case BYTE:
+        load = alloc_machine_instr(MACHINE_LB);
+        break;
+      case DOUBLE:
+        load = alloc_machine_instr(MACHINE_LD);
+        break;
+      case WORD:
+        load = alloc_machine_instr(MACHINE_LW);
+        break;
+      default:
+        codegen_errorf(func_name, instr_type,
+                       "unsupported asm type %d for data operand load", (int)data->asm_type->type);
+        return;
+    }
+    load->ra = dst_reg;
+    load->rb = R0;
+    load->imm = kZeroOffset;
+    load->label = data->pseudo;
+    append_instr(head, tail, load);
+  }
+}
+
 static struct MachineInstr* make_data(struct InitList* init, struct AsmType* type);
 
 struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* instr){
-  // Uses R9/R10 as scratch registers to avoid clobbering argument registers.
+  // Uses R9/R10/R11 as scratch registers to avoid clobbering argument registers.
   struct MachineProg* machine_prog = arena_alloc(sizeof(struct MachineProg));
   machine_prog->head = NULL;
   machine_prog->tail = NULL;
@@ -185,30 +302,163 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
         append_instr(&head, &tail, store);
         handled = true;
       } else if (cur->dst->type == OPERAND_DATA && cur->src1->type == OPERAND_REG) {
-        // Machine: Store rSrc, [label]
+        if (cur->dst->lit_value != 0) {
+          // Store through a computed absolute address for label+offset.
+          emit_label_address(&head, &tail, kScratchRegB, kScratchRegA,
+                             cur->dst->pseudo, cur->dst->lit_value);
+          struct MachineInstr* store;
+          switch (cur->dst->asm_type->type) {
+            case BYTE:
+              store = alloc_machine_instr(MACHINE_SBA);
+              break;
+            case DOUBLE:
+              store = alloc_machine_instr(MACHINE_SDA);
+              break;
+            case WORD:
+              store = alloc_machine_instr(MACHINE_SWA);
+              break;
+            default:
+              codegen_errorf(func_name, cur->type,
+                             "unsupported asm type %d for data operand store", (int)cur->dst->asm_type->type);
+              break;
+          }
+          store->ra = cur->src1->reg;
+          store->rb = kScratchRegB;
+          store->imm = 0;
+          append_instr(&head, &tail, store);
+        } else {
+          // Machine: Store rSrc, [label]
+          struct MachineInstr* store;
+          switch (cur->dst->asm_type->type) {
+            case BYTE:
+              // byte store
+              store = alloc_machine_instr(MACHINE_SB);
+              break;
+            case DOUBLE:
+              // double store
+              store = alloc_machine_instr(MACHINE_SD);
+              break;
+            case WORD:
+              // word store
+              store = alloc_machine_instr(MACHINE_SW);
+              break;
+            default:
+              codegen_errorf(func_name, cur->type,
+                             "unsupported asm type %d for data operand store", (int)cur->dst->asm_type->type);
+              break;
+          }
+          store->ra = cur->src1->reg;
+          store->rb = R0;
+          store->imm = kZeroOffset;
+          store->label = cur->dst->pseudo;
+          append_instr(&head, &tail, store);
+        }
+        handled = true;
+      } else if (cur->dst->type == OPERAND_MEMORY &&
+                 (cur->src1->type == OPERAND_DATA ||
+                  cur->src1->type == OPERAND_LIT ||
+                  cur->src1->type == OPERAND_MEMORY)) {
+        enum Reg value_reg = kScratchRegA;
+        if (cur->src1->type == OPERAND_MEMORY) {
+          value_reg = pick_scratch_reg(func_name, cur->type, cur->dst->reg, cur->src1->reg);
+        } else {
+          value_reg = pick_scratch_reg(func_name, cur->type, cur->dst->reg, R0);
+        }
+        if (cur->src1->type == OPERAND_DATA) {
+          if (cur->src1->lit_value == 0) {
+            struct MachineInstr* load;
+            switch (cur->src1->asm_type->type) {
+              case BYTE:
+                load = alloc_machine_instr(MACHINE_LB);
+                break;
+              case DOUBLE:
+                load = alloc_machine_instr(MACHINE_LD);
+                break;
+              case WORD:
+                load = alloc_machine_instr(MACHINE_LW);
+                break;
+              default:
+                codegen_errorf(func_name, cur->type,
+                               "unsupported asm type %d for data operand load", (int)cur->src1->asm_type->type);
+                break;
+            }
+            load->ra = value_reg;
+            load->rb = R0;
+            load->imm = kZeroOffset;
+            load->label = cur->src1->pseudo;
+            append_instr(&head, &tail, load);
+          } else {
+            enum Reg pc_reg = pick_scratch_reg(func_name, cur->type, cur->dst->reg, value_reg);
+            emit_label_address(&head, &tail, value_reg, pc_reg,
+                               cur->src1->pseudo, cur->src1->lit_value);
+            struct MachineInstr* load;
+            switch (cur->src1->asm_type->type) {
+              case BYTE:
+                load = alloc_machine_instr(MACHINE_LBA);
+                break;
+              case DOUBLE:
+                load = alloc_machine_instr(MACHINE_LDA);
+                break;
+              case WORD:
+                load = alloc_machine_instr(MACHINE_LWA);
+                break;
+              default:
+                codegen_errorf(func_name, cur->type,
+                               "unsupported asm type %d for data operand load", (int)cur->src1->asm_type->type);
+                break;
+            }
+            load->ra = value_reg;
+            load->rb = value_reg;
+            load->imm = 0;
+            append_instr(&head, &tail, load);
+          }
+        } else if (cur->src1->type == OPERAND_LIT) {
+          struct MachineInstr* movi = alloc_machine_instr(MACHINE_MOVI);
+          movi->ra = value_reg;
+          movi->imm = cur->src1->lit_value;
+          append_instr(&head, &tail, movi);
+        } else if (cur->src1->type == OPERAND_MEMORY) {
+          struct MachineInstr* load;
+          switch (cur->src1->asm_type->type) {
+            case BYTE:
+              load = alloc_machine_instr(MACHINE_LBA);
+              break;
+            case DOUBLE:
+              load = alloc_machine_instr(MACHINE_LDA);
+              break;
+            case WORD:
+              load = alloc_machine_instr(MACHINE_LWA);
+              break;
+            default:
+              codegen_errorf(func_name, cur->type,
+                             "unsupported asm type %d for memory operand load", (int)cur->src1->asm_type->type);
+              break;
+          }
+          load->ra = value_reg;
+          load->rb = cur->src1->reg;
+          load->imm = cur->src1->lit_value;
+          append_instr(&head, &tail, load);
+        }
+
         struct MachineInstr* store;
         switch (cur->dst->asm_type->type) {
           case BYTE:
-            // byte store
-            store = alloc_machine_instr(MACHINE_SB);
+            store = alloc_machine_instr(MACHINE_SBA);
             break;
           case DOUBLE:
-            // double store
-            store = alloc_machine_instr(MACHINE_SD);
+            store = alloc_machine_instr(MACHINE_SDA);
             break;
           case WORD:
-            // word store
-            store = alloc_machine_instr(MACHINE_SW);
+            store = alloc_machine_instr(MACHINE_SWA);
             break;
           default:
             codegen_errorf(func_name, cur->type,
-                           "unsupported asm type %d for data operand store", (int)cur->dst->asm_type->type);
+                           "unsupported asm type %d for memory operand store", (int)cur->dst->asm_type->type);
             break;
         }
-        store->ra = cur->src1->reg;
-        store->rb = R0;
-        store->imm = kZeroOffset;
-        store->label = cur->dst->pseudo;
+        store->ra = value_reg;
+        store->rb = cur->dst->reg;
+        store->imm = cur->dst->lit_value;
         append_instr(&head, &tail, store);
         handled = true;
       } 
@@ -240,31 +490,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
          handled = true;
        } 
       else if (cur->dst->type == OPERAND_REG && cur->src1->type == OPERAND_DATA) {
-        // Machine: Lw rDst, [label]
-        struct MachineInstr* load;
-        switch (cur->src1->asm_type->type) {
-          case BYTE:
-            // byte load
-            load = alloc_machine_instr(MACHINE_LB);
-            break;
-          case DOUBLE:
-            // double load
-            load = alloc_machine_instr(MACHINE_LD);
-            break;
-          case WORD:
-            // word load
-            load = alloc_machine_instr(MACHINE_LW);
-            break;
-          default:
-            codegen_errorf(func_name, cur->type,
-                           "unsupported asm type %d for data operand load", (int)cur->src1->asm_type->type);
-            break;
-        }
-        load->ra = cur->dst->reg;
-        load->rb = R0;
-        load->imm = kZeroOffset;
-        load->label = cur->src1->pseudo;
-        append_instr(&head, &tail, load);
+        emit_data_load(&head, &tail, func_name, cur->type, cur->dst->reg, cur->src1);
         handled = true;
       }
       
@@ -294,26 +520,25 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
         append_instr(&head, &tail, sw);
         handled = true;
       } else if (cur->dst->type == OPERAND_MEMORY && cur->src1->type == OPERAND_DATA) {
-        // Super cursed way to convert relative data label to absolute address in memory.
-        // Machine: movi rTmp, label; br rTmpPc, r0; add rTmp, rTmp, rTmpPc; swa rTmp, [dst]
-        struct MachineInstr* movi = alloc_machine_instr(MACHINE_MOVI);
-        movi->ra = kScratchRegB;
-        movi->label = cur->src1->pseudo;
-        append_instr(&head, &tail, movi);
-        struct MachineInstr* br = alloc_machine_instr(MACHINE_BR);
-        br->ra = kScratchRegA;
-        br->rb = R0;
-        append_instr(&head, &tail, br);
-        struct MachineInstr* add = alloc_machine_instr(MACHINE_ADD);
-        add->ra = kScratchRegB;
-        add->rb = kScratchRegB;
-        add->rc = kScratchRegA;
-        append_instr(&head, &tail, add);
+        emit_label_address(&head, &tail, kScratchRegB, kScratchRegA,
+                           cur->src1->pseudo, cur->src1->lit_value);
         struct MachineInstr* sw = alloc_machine_instr(MACHINE_SWA);
         sw->ra = kScratchRegB;
         sw->rb = cur->dst->reg;
         sw->imm = cur->dst->lit_value;
         append_instr(&head, &tail, sw);
+        handled = true;
+      } else if (cur->dst->type == OPERAND_REG && cur->src1->type == OPERAND_MEMORY) {
+        struct MachineInstr* add = alloc_machine_instr(MACHINE_ADD);
+        add->ra = cur->dst->reg;
+        add->rb = cur->src1->reg;
+        add->imm = cur->src1->lit_value;
+        append_instr(&head, &tail, add);
+        handled = true;
+      } else if (cur->dst->type == OPERAND_REG && cur->src1->type == OPERAND_DATA) {
+        enum Reg pc_reg = (cur->dst->reg == kScratchRegA) ? kScratchRegB : kScratchRegA;
+        emit_label_address(&head, &tail, cur->dst->reg, pc_reg,
+                           cur->src1->pseudo, cur->src1->lit_value);
         handled = true;
       }
     }
@@ -360,28 +585,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
           movi->imm = a->lit_value;
           append_instr(&head, &tail, movi);
         } else if (a->type == OPERAND_DATA) {
-          // Machine: Load rScratchA, [label]
-          struct MachineInstr* load;
-          switch (a->asm_type->type) {
-            case BYTE:
-              load = alloc_machine_instr(MACHINE_LB);
-              break;
-            case DOUBLE:
-              load = alloc_machine_instr(MACHINE_LD);
-              break;
-            case WORD:
-              load = alloc_machine_instr(MACHINE_LW);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for source operand", (int)cur->src1->asm_type->type);
-              break;
-          }
-          load->ra = kScratchRegA;
-          load->rb = R0;
-          load->imm = kZeroOffset;
-          load->label = a->pseudo;
-          append_instr(&head, &tail, load);
+          emit_data_load(&head, &tail, func_name, cur->type, kScratchRegA, a);
         } else {
           codegen_errorf(func_name, cur->type,
                          "invalid first source operand type %d; expected Reg, Memory, Lit, or Data",
@@ -423,28 +627,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
           movi->imm = b->lit_value;
           append_instr(&head, &tail, movi);
         } else if (b->type == OPERAND_DATA) {
-          // Machine: Load rScratchB, [label]
-          struct MachineInstr* load;
-          switch (b->asm_type->type) {
-            case BYTE:
-              load = alloc_machine_instr(MACHINE_LB);
-              break;
-            case DOUBLE:
-              load = alloc_machine_instr(MACHINE_LD);
-              break;
-            case WORD:
-              load = alloc_machine_instr(MACHINE_LW);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for source operand", (int)cur->src2->asm_type->type);
-              break;
-          }
-          load->ra = kScratchRegB;
-          load->rb = R0;
-          load->imm = kZeroOffset;
-          load->label = b->pseudo;
-          append_instr(&head, &tail, load);
+          emit_data_load(&head, &tail, func_name, cur->type, kScratchRegB, b);
         } else {
           codegen_errorf(func_name, cur->type,
                          "invalid second source operand type %d; expected Reg, Memory, Lit, or Data",
@@ -487,28 +670,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
           movi->imm = a->lit_value;
           append_instr(&head, &tail, movi);
         } else if (a->type == OPERAND_DATA) {
-          // Machine: Load rScratchA, [label]
-          struct MachineInstr* load;
-          switch (a->asm_type->type) {
-            case BYTE:
-              load = alloc_machine_instr(MACHINE_LB);
-              break;
-            case DOUBLE:
-              load = alloc_machine_instr(MACHINE_LD);
-              break;
-            case WORD:
-              load = alloc_machine_instr(MACHINE_LW);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for source operand", (int)cur->src1->asm_type->type);
-              break;
-          }
-          load->ra = kScratchRegA;
-          load->rb = R0;
-          load->imm = kZeroOffset;
-          load->label = a->pseudo;
-          append_instr(&head, &tail, load);
+          emit_data_load(&head, &tail, func_name, cur->type, kScratchRegA, a);
         } else {
           codegen_errorf(func_name, cur->type,
                          "invalid source operand type %d; expected Reg, Memory, Lit, or Data",
@@ -944,28 +1106,63 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
           store->imm = dst->lit_value;
           append_instr(&head, &tail, store);
         } else if (dst->type == OPERAND_DATA) {
-          // Machine: Sw rScratchA, [label]
-          struct MachineInstr* store;
-          switch (dst->asm_type->type) {
-            case BYTE:
-              store = alloc_machine_instr(MACHINE_SB);
-              break;
-            case DOUBLE:
-              store = alloc_machine_instr(MACHINE_SD);
-              break;
-            case WORD:
-              store = alloc_machine_instr(MACHINE_SW);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for destination operand", (int)dst->asm_type->type);
-              break;
+          if (dst->lit_value != 0) {
+            // Preserve scratch A while computing address for label+offset.
+            struct MachineInstr* push = alloc_machine_instr(MACHINE_PUSH);
+            push->ra = kScratchRegA;
+            append_instr(&head, &tail, push);
+
+            emit_label_address(&head, &tail, kScratchRegB, kScratchRegA,
+                               dst->pseudo, dst->lit_value);
+
+            struct MachineInstr* pop = alloc_machine_instr(MACHINE_POP);
+            pop->ra = kScratchRegA;
+            append_instr(&head, &tail, pop);
+
+            struct MachineInstr* store;
+            switch (dst->asm_type->type) {
+              case BYTE:
+                store = alloc_machine_instr(MACHINE_SBA);
+                break;
+              case DOUBLE:
+                store = alloc_machine_instr(MACHINE_SDA);
+                break;
+              case WORD:
+                store = alloc_machine_instr(MACHINE_SWA);
+                break;
+              default:
+                codegen_errorf(func_name, cur->type,
+                               "unsupported asm type %d for destination operand", (int)dst->asm_type->type);
+                break;
+            }
+            store->ra = kScratchRegA;
+            store->rb = kScratchRegB;
+            store->imm = 0;
+            append_instr(&head, &tail, store);
+          } else {
+            // Machine: Sw rScratchA, [label]
+            struct MachineInstr* store;
+            switch (dst->asm_type->type) {
+              case BYTE:
+                store = alloc_machine_instr(MACHINE_SB);
+                break;
+              case DOUBLE:
+                store = alloc_machine_instr(MACHINE_SD);
+                break;
+              case WORD:
+                store = alloc_machine_instr(MACHINE_SW);
+                break;
+              default:
+                codegen_errorf(func_name, cur->type,
+                               "unsupported asm type %d for destination operand", (int)dst->asm_type->type);
+                break;
+            }
+            store->ra = kScratchRegA;
+            store->rb = R0;
+            store->imm = kZeroOffset;
+            store->label = dst->pseudo;
+            append_instr(&head, &tail, store);
           }
-          store->ra = kScratchRegA;
-          store->rb = R0;
-          store->imm = kZeroOffset;
-          store->label = dst->pseudo;
-          append_instr(&head, &tail, store);
         } else {
           codegen_errorf(func_name, cur->type,
                          "invalid destination operand type %d; expected Reg, Memory, or Data",
@@ -1203,9 +1400,29 @@ static struct MachineInstr* make_data(struct InitList* init, struct AsmType* typ
         break;
       case LONG_INIT:
       case ULONG_INIT:
-        codegen_errorf(NULL, 0,
-                       "64-bit static initializers are not supported");
-        break;
+        {
+          uint64_t raw = cur->value->value.num;
+          uint32_t low = (uint32_t)(raw & 0xFFFFFFFFu);
+          uint32_t high = (uint32_t)((raw >> 32) & 0xFFFFFFFFu);
+
+          struct MachineInstr* low_instr = alloc_machine_instr(MACHINE_FILL);
+          low_instr->imm = (int32_t)low;
+
+          struct MachineInstr* high_instr = alloc_machine_instr(MACHINE_FILL);
+          high_instr->imm = (int32_t)high;
+
+          if (instr == NULL) {
+            instr = low_instr;
+            tail = low_instr;
+          } else {
+            tail->next = low_instr;
+            tail = low_instr;
+          }
+          tail->next = high_instr;
+          tail = high_instr;
+          was_string = true;
+          break;
+        }
       case ZERO_INIT:
         cur_instr->type = MACHINE_SPACE;
         break;

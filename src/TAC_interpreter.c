@@ -486,9 +486,10 @@ static void tac_collect_copy_offset_requirements(struct TacCopyOffsetMap* map,
       case TACCOPY_TO_OFFSET: {
         struct Slice* base = cur->instr.tac_copy_to_offset.dst;
         struct Val* src = cur->instr.tac_copy_to_offset.src;
+        struct Type* dst_type = cur->instr.tac_copy_to_offset.dst_type;
         size_t bytes = tac_copy_offset_required_bytes("copy-to-offset",
                                                       cur->instr.tac_copy_to_offset.offset,
-                                                      src ? src->type : NULL,
+                                                      dst_type != NULL ? dst_type : (src ? src->type : NULL),
                                                       base);
         tac_copy_offset_map_update(map, base, bytes);
         break;
