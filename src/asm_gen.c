@@ -1932,6 +1932,10 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
       // Line marker
       asm_instr->type = ASM_BOUNDARY;
       asm_instr->loc = tac_instr->instr.tac_boundary.loc;
+      asm_instr->dst = NULL;
+      asm_instr->src1 = NULL;
+      asm_instr->src2 = NULL;
+      asm_instr->next = NULL;
       return asm_instr;
     }
     case TACTRUNC: {

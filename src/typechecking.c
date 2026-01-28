@@ -2854,6 +2854,9 @@ void print_ident_init(struct IdentInit* init){
 }
 
 bool eval_const(struct Expr* expr, uint64_t* out_value) {
+  if (expr == NULL || out_value == NULL) {
+    return false;
+  }
   switch (expr->type) {
     case LIT: {
       struct LitExpr* lit_expr = &expr->expr.lit_expr;
@@ -2886,8 +2889,12 @@ bool eval_const(struct Expr* expr, uint64_t* out_value) {
     }
     case BINARY: {
       struct BinaryExpr* bin_expr = &expr->expr.bin_expr;
-      struct Type* expr_type = expr->value_type;
-      bool is_signed = is_signed_type(expr_type);
+      if (expr->value_type == NULL) {
+        if (!typecheck_expr(expr)) {
+          return false;
+        }
+      }
+      bool is_signed = is_signed_type(expr->value_type);
       uint64_t left_value, right_value;
       if (!eval_const(bin_expr->left, &left_value) ||
           !eval_const(bin_expr->right, &right_value)) {
@@ -2995,6 +3002,11 @@ bool eval_const(struct Expr* expr, uint64_t* out_value) {
     }
     case UNARY: {
       struct UnaryExpr* unary_expr = &expr->expr.un_expr;
+      if (expr->value_type == NULL) {
+        if (!typecheck_expr(expr)) {
+          return false;
+        }
+      }
       uint64_t inner_value;
       if (!eval_const(unary_expr->expr, &inner_value)) {
         return false;
@@ -3016,6 +3028,33 @@ bool eval_const(struct Expr* expr, uint64_t* out_value) {
         default:
           return false; // Unsupported unary operation for constant evaluation
       }
+    }
+    case SIZEOF_EXPR: {
+      struct Expr* inner = expr->expr.sizeof_expr.expr;
+      if (inner == NULL) {
+        return false;
+      }
+      if (inner->value_type == NULL) {
+        if (!typecheck_expr(inner)) {
+          return false;
+        }
+      }
+      if (!is_complete_type(inner->value_type)) {
+        return false;
+      }
+      *out_value = (uint64_t)get_type_size(inner->value_type);
+      return true;
+    }
+    case SIZEOF_T_EXPR: {
+      struct Type* type = expr->expr.sizeof_t_expr.type;
+      if (type == NULL) {
+        return false;
+      }
+      if (!is_complete_type(type)) {
+        return false;
+      }
+      *out_value = (uint64_t)get_type_size(type);
+      return true;
     }
     case CONDITIONAL: {
       struct ConditionalExpr* cond_expr = &expr->expr.conditional_expr;
