@@ -37,6 +37,11 @@ static const char* kDefaultAsmOutputPath = "a.s";
 // Invariants/Assumptions: Relative to the current working directory.
 static const char* kDefaultHexOutputPath = "a.hex";
 
+// Purpose: Default output path for assembled binary emission.
+// Inputs/Outputs: Used when -bin is set and no -o is provided.
+// Invariants/Assumptions: Relative to the current working directory.
+static const char* kDefaultBinOutputPath = "a.bin";
+
 // Purpose: Environment variable that overrides the assembler path.
 // Inputs/Outputs: Read via getenv when invoking the assembler.
 // Invariants/Assumptions: If set, must point to an executable binary.
@@ -149,15 +154,17 @@ static char* make_temp_asm_path(const char* output_path) {
     return temp_path;
 }
 
-// Purpose: Invoke the assembler with -crt to emit the final hex file.
+// Purpose: Invoke the assembler to emit the final hex or binary file.
 // Inputs: assembler_path is the executable path, asm_path is the input assembly,
-//         output_path is the desired output file, kernel_mode forwards -kernel.
+//         output_path is the desired output file, kernel_mode forwards -kernel,
+//         emit_binary requests -bin output.
 // Outputs: Returns true on success and false on failure.
 // Invariants/Assumptions: Uses fork/exec to avoid shell interpretation.
 static bool run_assembler(const char* assembler_path,
                                    const char* asm_path,
                                    const char* output_path,
                                    bool kernel_mode,
+                                   bool emit_binary,
                                    int emit_debug_info) {
     if (assembler_path == NULL || asm_path == NULL || output_path == NULL) {
         fprintf(stderr, "Compiler Error: assembler invocation missing required paths\n");
@@ -171,13 +178,16 @@ static bool run_assembler(const char* assembler_path,
     }
 
     if (pid == 0) {
-        const char* args[7];
+        const char* args[8];
         int arg_idx = 0;
         args[arg_idx++] = assembler_path;
         if (kernel_mode) {
             args[arg_idx++] = "-kernel";
         } else {
             args[arg_idx++] = "-crt";
+        }
+        if (emit_binary) {
+            args[arg_idx++] = "-bin";
         }
         args[arg_idx++] = "-o";
         args[arg_idx++] = output_path;
@@ -237,6 +247,7 @@ int main(int argc, const char *const *const argv) {
     int print_asm = 0;
     int interpret_tac = 0;
     int kernel_mode = 0;
+    int emit_binary = 0;
     const char *filename = NULL;
     const char *output_path = NULL;
     int output_path_set = 0;
@@ -287,6 +298,10 @@ int main(int argc, const char *const *const argv) {
             emit_asm_file = 1;
             continue;
         }
+        if (strcmp(arg, "-bin") == 0) {
+            emit_binary = 1;
+            continue;
+        }
         if (strcmp(arg, "-g") == 0) {
             emit_debug_info = 1;
             continue;
@@ -317,7 +332,7 @@ int main(int argc, const char *const *const argv) {
         }
         if (arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-g] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
             free(cli_defines);
             exit(1);
         }
@@ -326,19 +341,25 @@ int main(int argc, const char *const *const argv) {
             continue;
         }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-g] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
 
     if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-g] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
 
     if (!output_path_set) {
-        output_path = emit_asm_file ? kDefaultAsmOutputPath : kDefaultHexOutputPath;
+        if (emit_asm_file) {
+            output_path = kDefaultAsmOutputPath;
+        } else if (emit_binary) {
+            output_path = kDefaultBinOutputPath;
+        } else {
+            output_path = kDefaultHexOutputPath;
+        }
     }
 
     // open the file
@@ -600,7 +621,12 @@ int main(int argc, const char *const *const argv) {
                 arena_destroy();
                 return 6;
             }
-            bool assembled = run_assembler(assembler_path, asm_output_path, output_path, kernel_mode, emit_debug_info);
+            bool assembled = run_assembler(assembler_path,
+                                           asm_output_path,
+                                           output_path,
+                                           kernel_mode,
+                                           emit_binary,
+                                           emit_debug_info);
             free(assembler_path);
             if (!assembled) {
                 remove_temp_asm(asm_output_path);

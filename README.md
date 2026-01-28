@@ -30,9 +30,10 @@ Accepted flags:
 -tac                  print the generated TAC
 -interp               run the TAC interpreter and print the result
 -s                    emit assembly instead of assembling to hex
+-bin                  pass -bin to the assembler to emit a raw binary output
 -kernel               omit section directives and pass -kernel to the assembler
 -g                    include debug info
--o <file>             set the output file path (defaults to a.hex, or a.s with -s)
+-o <file>             set the output file path (defaults to a.hex, a.bin with -bin, or a.s with -s)
 -DNAME[=value]        define a preprocessor macro (repeatable)
 ```
 
