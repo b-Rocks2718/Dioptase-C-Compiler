@@ -149,7 +149,8 @@ bool resolve_expr(struct Expr* expr) {
         }
         return true;
       } else {
-        ident_error_at(expr->loc, "no declaration for variable");
+        struct Slice* var = expr->expr.var_expr.name;
+        ident_error_at(expr->loc, "no declaration for variable %.*s", (int)var->len, var->start);
         return false;
       }
     }
