@@ -478,6 +478,10 @@ bool resolve_local_func(struct FunctionDclr* func_dclr) {
 // Invariants/Assumptions: Parameters are resolved as local variables.
 bool resolve_params(struct ParamList* params){
   for (struct ParamList* param = params; param != NULL; param = param->next) {
+    if (param->param.name == NULL) {
+      ident_error_at(NULL, "unnamed function parameter not supported");
+      return false;
+    }
     if (!resolve_local_var_dclr(&param->param)) {
       ident_error_at(param->param.name->start, "failed to resolve parameter");
       return false;
