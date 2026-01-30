@@ -550,9 +550,8 @@ int main(int argc, const char *const *const argv) {
     }
 
     if (run_full || print_asm) {
-        // Kernel-mode assembly is linear; omit user-mode section directives.
-        const bool emit_sections = !kernel_mode;
-        asm_prog = prog_to_asm(tac_prog, emit_sections);
+        // Always emit section directives so kernel/user outputs share layout markers.
+        asm_prog = prog_to_asm(tac_prog, true);
         if (asm_prog == NULL) {
             fprintf(stderr, "ASM generation failed: asm_gen returned NULL\n");
             destroy_preprocess_result(&preprocessed);
