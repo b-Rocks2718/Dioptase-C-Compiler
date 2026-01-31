@@ -1194,9 +1194,8 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
     //  .global func         # optional global label
     //  func:
     //    # function prologue
-    //    swa  ra, [sp, -4]  # save return address
-    //    swa  bp, [sp, -8]  # save base pointer
-    //    add  sp, sp, -8    # make space on stack
+    //    push ra            # save return address
+    //    push bp            # save base pointer
     //    mov  bp, sp        # set base pointer to current stack pointer
     //    # function body
 
@@ -1235,36 +1234,24 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
       label->next = prologue_comment;
     }
     
-    // Machine: Swa ra, [sp, -4]
-    struct MachineInstr* save_ra = arena_alloc(sizeof(struct MachineInstr));
-    save_ra->type = MACHINE_SWA;
-    save_ra->ra = RA;
-    save_ra->rb = SP;
-    save_ra->imm = -4;
-    prologue_comment->next = save_ra;
+    // Machine: Push ra
+    struct MachineInstr* push_ra = arena_alloc(sizeof(struct MachineInstr));
+    push_ra->type = MACHINE_PUSH;
+    push_ra->ra = RA;
+    prologue_comment->next = push_ra;
 
-    // Machine: Swa bp, [sp, -8]
-    struct MachineInstr* save_bp = arena_alloc(sizeof(struct MachineInstr));
-    save_bp->type = MACHINE_SWA;
-    save_bp->ra = BP;
-    save_bp->rb = SP;
-    save_bp->imm = -8;
-    save_ra->next = save_bp;
-
-    // Machine: Addi sp, sp, -8
-    struct MachineInstr* adjust_sp = arena_alloc(sizeof(struct MachineInstr));
-    adjust_sp->type = MACHINE_ADD;
-    adjust_sp->ra = SP;
-    adjust_sp->rb = SP;
-    adjust_sp->imm = -8;
-    save_bp->next = adjust_sp;
+    // Machine: Push bp
+    struct MachineInstr* push_bp = arena_alloc(sizeof(struct MachineInstr));
+    push_bp->type = MACHINE_PUSH;
+    push_bp->ra = BP;
+    push_ra->next = push_bp;
 
     // Machine: Mov bp, sp
     struct MachineInstr* set_bp = arena_alloc(sizeof(struct MachineInstr));
     set_bp->type = MACHINE_MOV;
     set_bp->ra = BP;
     set_bp->rb = SP;
-    adjust_sp->next = set_bp;
+    push_bp->next = set_bp;
     set_bp->next = NULL;
 
     // Emit stack layout comments for user-visible locals (if debug markers exist).
