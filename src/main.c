@@ -61,6 +61,11 @@ static const char* const kDefaultAssemblerRelPaths[kDefaultAssemblerRelPathCount
     "Dioptase-Assembler/build/release/basm",
 };
 
+// Purpose: Default CRT directory under the repo root for user-mode compiler links.
+// Inputs/Outputs: Joined with DIOPTASE_ROOT when no explicit CRT dir is requested.
+// Invariants/Assumptions: This compiler-local CRT may differ from the OS copy.
+static const char* kDefaultCompilerCrtRelDir = "Dioptase-Languages/Dioptase-C-Compiler/crt";
+
 // Purpose: Suffix for temporary assembly files used during full compilation.
 // Inputs/Outputs: Appended to the output path to form a temp asm name.
 // Invariants/Assumptions: Resulting temp path should not collide with user files.
@@ -154,9 +159,23 @@ static char* make_temp_asm_path(const char* output_path) {
     return temp_path;
 }
 
+// Purpose: Choose the default CRT directory for user-mode compiler links.
+// Inputs: None.
+// Outputs: Returns a heap-allocated CRT directory path or NULL if none is available.
+// Invariants/Assumptions: Uses DIOPTASE_ROOT to find the compiler-local CRT.
+static char* select_default_crt_dir(void) {
+    const char* repo_root = getenv(kRepoRootEnvVar);
+    if (repo_root == NULL || repo_root[0] == '\0') {
+        return NULL;
+    }
+
+    return join_paths(repo_root, kDefaultCompilerCrtRelDir);
+}
+
 // Purpose: Invoke the assembler to emit the final hex or binary file.
 // Inputs: assembler_path is the executable path, asm_path is the input assembly,
 //         output_path is the desired output file, kernel_mode forwards -kernel,
+//         crt_dir provides the user-mode CRT directory when needed, and
 //         emit_binary requests -bin output.
 // Outputs: Returns true on success and false on failure.
 // Invariants/Assumptions: Uses fork/exec to avoid shell interpretation.
@@ -164,6 +183,7 @@ static bool run_assembler(const char* assembler_path,
                                    const char* asm_path,
                                    const char* output_path,
                                    bool kernel_mode,
+                                   const char* crt_dir,
                                    bool emit_binary,
                                    int emit_debug_info) {
     if (assembler_path == NULL || asm_path == NULL || output_path == NULL) {
@@ -178,13 +198,21 @@ static bool run_assembler(const char* assembler_path,
     }
 
     if (pid == 0) {
-        const char* args[8];
+        const char* args[11];
         int arg_idx = 0;
         args[arg_idx++] = assembler_path;
         if (kernel_mode) {
             args[arg_idx++] = "-kernel";
         } else {
+            if (crt_dir == NULL || crt_dir[0] == '\0') {
+                fprintf(stderr,
+                        "Compiler Error: user-mode links require a CRT directory. "
+                        "Pass -crt <dir> or set %s.\n",
+                        kRepoRootEnvVar);
+                _exit(127);
+            }
             args[arg_idx++] = "-crt";
+            args[arg_idx++] = crt_dir;
         }
         if (emit_binary) {
             args[arg_idx++] = "-bin";
@@ -250,6 +278,7 @@ int main(int argc, const char *const *const argv) {
     int emit_binary = 0;
     const char *filename = NULL;
     const char *output_path = NULL;
+    const char *crt_dir_option = NULL;
     int output_path_set = 0;
     int emit_debug_info = 0;
     int emit_asm_file = 0;
@@ -310,6 +339,15 @@ int main(int argc, const char *const *const argv) {
             kernel_mode = 1;
             continue;
         }
+        if (strcmp(arg, "-crt") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "option -crt requires a CRT directory path\n");
+                free(cli_defines);
+                exit(1);
+            }
+            crt_dir_option = argv[++i];
+            continue;
+        }
         if (strcmp(arg, "-o") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "option -o requires an output file path\n");
@@ -332,7 +370,7 @@ int main(int argc, const char *const *const argv) {
         }
         if (arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
             free(cli_defines);
             exit(1);
         }
@@ -341,13 +379,19 @@ int main(int argc, const char *const *const argv) {
             continue;
         }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
 
     if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+        free(cli_defines);
+        exit(1);
+    }
+
+    if (kernel_mode && crt_dir_option != NULL) {
+        fprintf(stderr, "option -crt is only valid for user-mode links\n");
         free(cli_defines);
         exit(1);
     }
@@ -608,6 +652,7 @@ int main(int argc, const char *const *const argv) {
 
         if (!emit_asm_file) {
             char* assembler_path = select_assembler_path();
+            char* crt_dir = NULL;
             if (assembler_path == NULL) {
                 fprintf(stderr,
                         "Compiler Error: unable to find assembler. Set %s or %s so basm can be located.\n",
@@ -620,13 +665,33 @@ int main(int argc, const char *const *const argv) {
                 arena_destroy();
                 return 6;
             }
+            if (!kernel_mode) {
+                crt_dir = (crt_dir_option != NULL)
+                    ? duplicate_string(crt_dir_option)
+                    : select_default_crt_dir();
+                if (crt_dir == NULL) {
+                    fprintf(stderr,
+                            "Compiler Error: unable to resolve a user CRT directory. "
+                            "Pass -crt <dir> or set %s.\n",
+                            kRepoRootEnvVar);
+                    free(assembler_path);
+                    remove_temp_asm(asm_output_path);
+                    free(asm_output_path_alloc);
+                    destroy_preprocess_result(&preprocessed);
+                    destroy_token_array(tokens);
+                    arena_destroy();
+                    return 6;
+                }
+            }
             bool assembled = run_assembler(assembler_path,
                                            asm_output_path,
                                            output_path,
                                            kernel_mode,
+                                           crt_dir,
                                            emit_binary,
                                            emit_debug_info);
             free(assembler_path);
+            free(crt_dir);
             if (!assembled) {
                 remove_temp_asm(asm_output_path);
                 free(asm_output_path_alloc);

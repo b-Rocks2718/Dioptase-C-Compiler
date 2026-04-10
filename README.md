@@ -32,12 +32,15 @@ Accepted flags:
 -s                    emit assembly instead of assembling to hex
 -bin                  pass -bin to the assembler to emit a raw binary output
 -kernel               pass -kernel to the assembler
+-crt <dir>            use CRT sources from <dir> for user-mode links
 -g                    include debug info
 -o <file>             set the output file path (defaults to a.hex, a.bin with -bin, or a.s with -s)
 -DNAME[=value]        define a preprocessor macro (repeatable)
 ```
 
 Flags can be combined to dump multiple stages. `-preprocess` exits early unless `-tokens` or `-ast` is also specified.
+
+For user-mode links, `bcc` always passes `-crt <dir>` through to the assembler. Without an explicit override, it prefers the compiler-local CRT under `Dioptase-Languages/Dioptase-C-Compiler/crt` when `DIOPTASE_ROOT` is set.
 
 ## Supported Features
 
