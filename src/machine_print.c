@@ -771,11 +771,8 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
       return true;
     case MACHINE_SYS:
       write_tab(out);
-      if (instr->exc == EXC_EXIT) {
-        fputs("sys EXIT\n", out);
-      } else {
-        fprintf(out, "sys %d\n", (int)instr->exc);
-      }
+      (void)instr;
+      fputs("trap\n", out);
       return true;
     case MACHINE_NOP:
       write_tab(out);
