@@ -1,5 +1,6 @@
 Program(
     VarDclr(static, char, x, SingleInit(LitExpr(int, 1):untyped));
+    VarDclr(static, char, esc, SingleInit(LitExpr(int, 27):untyped));
     FunDclr(
         main,
         storage=none
@@ -10,6 +11,7 @@ Program(
             VarDclr(none, schar, b, SingleInit(Var(a):untyped));
             VarDclr(none, uchar, c, SingleInit(LitExpr(int, 92):untyped));
             VarDclr(none, char, d, SingleInit(LitExpr(int, 65):untyped));
-            Return(Var(d):untyped);
+            VarDclr(none, char, e, SingleInit(LitExpr(int, 27):untyped));
+            Return(AddOp(AddOp(Var(d):untyped, Var(esc):untyped):untyped, Var(e):untyped):untyped);
     );
 )

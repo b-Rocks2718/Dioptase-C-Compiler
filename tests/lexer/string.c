@@ -1,3 +1,4 @@
 const char* str = "hello";
 const char* str = "\t\v\\abc";
 const char* str = "\"\"\"";
+const char* str = "\x1b[31m";

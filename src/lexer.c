@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <stdarg.h>
 
 #include "slice.h"
 #include "token.h"
@@ -27,6 +28,64 @@ static const uint64_t kUIntMax = (UINT64_C(1) << kIntBits) - 1;
 static const uint64_t kLongMax = (UINT64_C(1) << (kLongBits - 1)) - 1;
 static char const * last_token_start;
 static size_t last_token_len;
+
+// Purpose: Convert one hexadecimal digit into its numeric value.
+// Inputs: c is an ASCII character from source text.
+// Outputs: Returns 0-15 for hexadecimal digits, or -1 for any other character.
+// Invariants/Assumptions: Only ASCII hex escapes are supported in source code.
+static int hex_digit_value(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+  if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+  return -1;
+}
+
+// Purpose: Decode a byte-valued \x hexadecimal escape.
+// Inputs: digits points at the first character after \x.
+// Outputs: On success, writes the byte value to out_value, the number of consumed
+// hex digits to consumed_digits, and returns true.
+// Invariants/Assumptions: The Dioptase C compiler models \x escapes as single-byte
+// values, so anything above 0xff is rejected instead of silently truncating.
+static bool decode_hex_escape(const char* digits, size_t* consumed_digits,
+                              unsigned char* out_value) {
+  unsigned int value = 0;
+  size_t len = 0;
+  while (true) {
+    int digit = hex_digit_value(digits[len]);
+    if (digit < 0) break;
+
+    unsigned int next_value = (value << 4) | (unsigned int)digit;
+    if (next_value > 0xff) {
+      *consumed_digits = len;
+      return false;
+    }
+
+    value = next_value;
+    len += 1;
+  }
+
+  *consumed_digits = len;
+  if (len == 0) return false;
+
+  *out_value = (unsigned char)value;
+  return true;
+}
+
+// Purpose: Emit a lexer error diagnostic at an explicit source pointer.
+// Inputs: ptr identifies the source byte to report; fmt is printf-style.
+// Outputs: Writes an error message and the remaining source line to stdout.
+// Invariants/Assumptions: source context has been initialized for ptr.
+static void print_error_at(const char* ptr, const char* fmt, ...) {
+  struct SourceLocation loc = source_location_from_ptr(ptr);
+  const char* filename = source_filename_for_ptr(ptr);
+  printf("Lexer error at %s:%zu:%zu: ", filename, loc.line, loc.column);
+  va_list args;
+  va_start(args, fmt);
+  vprintf(fmt, args);
+  va_end(args);
+  printf("\n");
+  printf("%s\n", ptr);
+}
 
 // Purpose: Emit a lexer error diagnostic for the current cursor.
 // Inputs: current points to the byte where tokenization failed.
@@ -156,23 +215,6 @@ static bool consume_identifier(struct Token* token) {
 // Outputs: Returns true on success and advances current past the literal.
 // Invariants/Assumptions: Supports optional u/U and l/L suffixes; accepts .0
 // fractional forms as integer literals for integer-only parsing.
-// Purpose: Convert a hex digit character into its numeric value.
-// Inputs: ch is an ASCII hex digit.
-// Outputs: Returns the digit value or -1 for non-hex characters.
-// Invariants/Assumptions: Caller checks isxdigit before using this.
-static int hex_digit_value(int ch) {
-  if (ch >= '0' && ch <= '9') {
-    return ch - '0';
-  }
-  if (ch >= 'a' && ch <= 'f') {
-    return 10 + (ch - 'a');
-  }
-  if (ch >= 'A' && ch <= 'F') {
-    return 10 + (ch - 'A');
-  }
-  return -1;
-}
-
 static bool consume_literal(struct Token* token) {
   skip();
   if (isdigit((unsigned char)*current)) {
@@ -269,49 +311,66 @@ static bool consume_literal(struct Token* token) {
 
     // detect escape characters
     if (*current == '\\'){
-      switch (*(current + 1)){
-        case '\'':
-          token->data.char_val = '\'';
-          break;
-        case '\"':
-          token->data.char_val = '\"';
-          break;
-        case '\?':
-          token->data.char_val = '\?';
-          break;
-        case '\\':
-          token->data.char_val = '\\';
-          break;
-        case 'a':
-          token->data.char_val = '\a';
-          break;
-        case 'b':
-          token->data.char_val = '\b';
-          break;
-        case 'f':
-          token->data.char_val = '\f';
-          break;
-        case 'n':
-          token->data.char_val = '\n';
-          break;
-        case 'r':
-          token->data.char_val = '\r';
-          break;
-        case 't':
-          token->data.char_val = '\t';
-          break;
-        case 'v':
-          token->data.char_val = '\v';
-          break;
-        case '0':
-          token->data.char_val = '\0';
-          break;
-        default:
-          print_error();
+      if (*(current + 1) == 'x') {
+        size_t digits = 0;
+        unsigned char value = 0;
+        if (!decode_hex_escape(current + 2, &digits, &value)) {
+          if (digits == 0) {
+            print_error_at(current + 1,
+                           "expected at least one hexadecimal digit after \\x");
+          } else {
+            print_error_at(current + 2 + digits,
+                           "hex escape exceeds byte value 0xff");
+          }
           exit(1);
-      }
+        }
+        token->data.char_val = (char)value;
+        current += 2 + digits;
+      } else {
+        switch (*(current + 1)){
+          case '\'':
+            token->data.char_val = '\'';
+            break;
+          case '\"':
+            token->data.char_val = '\"';
+            break;
+          case '\?':
+            token->data.char_val = '\?';
+            break;
+          case '\\':
+            token->data.char_val = '\\';
+            break;
+          case 'a':
+            token->data.char_val = '\a';
+            break;
+          case 'b':
+            token->data.char_val = '\b';
+            break;
+          case 'f':
+            token->data.char_val = '\f';
+            break;
+          case 'n':
+            token->data.char_val = '\n';
+            break;
+          case 'r':
+            token->data.char_val = '\r';
+            break;
+          case 't':
+            token->data.char_val = '\t';
+            break;
+          case 'v':
+            token->data.char_val = '\v';
+            break;
+          case '0':
+            token->data.char_val = '\0';
+            break;
+          default:
+            print_error();
+            exit(1);
+        }
 
-      current += 2;
+        current += 2;
+      }
     } else {
       if (*current == '\'') {
         print_error();
@@ -356,6 +415,13 @@ static bool consume_literal(struct Token* token) {
           case 'v':
           case '0':
             // allowed escapes
+            break;
+          case 'x':
+            if (hex_digit_value(*(current + 1)) < 0) {
+              print_error_at(current,
+                             "expected at least one hexadecimal digit after \\x");
+              exit(1);
+            }
             break;
           default:
             // unrecognized escape

@@ -1,4 +1,5 @@
 Program(
     VarDclr(none, char*, str, SingleInit(String(hello):untyped));
     VarDclr(none, char[3], str2, SingleInit(String(\tb\n):untyped));
+    VarDclr(none, char*, color, SingleInit(String(\033[31m):untyped));
 )

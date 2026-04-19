@@ -71,6 +71,48 @@ static void print_error() {
   parse_error_at(parser_error_ptr(), "unexpected token");
 }
 
+// Purpose: Convert one hexadecimal digit into its numeric value.
+// Inputs: c is an ASCII character from source text.
+// Outputs: Returns 0-15 for hexadecimal digits, or -1 for any other character.
+// Invariants/Assumptions: String and character escapes are parsed from raw source bytes.
+static int hex_digit_value(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return 10 + (c - 'a');
+  if (c >= 'A' && c <= 'F') return 10 + (c - 'A');
+  return -1;
+}
+
+// Purpose: Decode a byte-valued \x hexadecimal escape from raw source text.
+// Inputs: digits points at the first character after \x in the source buffer.
+// Outputs: On success, writes the byte value to out_value, the number of consumed
+// hex digits to consumed_digits, and returns true.
+// Invariants/Assumptions: The compiler treats \x escapes in strings as single-byte
+// values and rejects anything above 0xff rather than truncating.
+static bool decode_hex_escape(const char* digits, size_t* consumed_digits,
+                              unsigned char* out_value) {
+  unsigned int value = 0;
+  size_t len = 0;
+  while (true) {
+    int digit = hex_digit_value(digits[len]);
+    if (digit < 0) break;
+
+    unsigned int next_value = (value << 4) | (unsigned int)digit;
+    if (next_value > 0xff) {
+      *consumed_digits = len;
+      return false;
+    }
+
+    value = next_value;
+    len += 1;
+  }
+
+  *consumed_digits = len;
+  if (len == 0) return false;
+
+  *out_value = (unsigned char)value;
+  return true;
+}
+
 // Purpose: Allocate a new expression node in the arena.
 // Inputs: type is the expression kind; loc is the source location pointer.
 // Outputs: Returns an initialized Expr with no type assigned yet.
@@ -921,7 +963,7 @@ struct LitExpr parse_lit_expr(void){
 // Outputs: Returns the updated out_index after appending the escaped characters.
 // Invariants/Assumptions: out has enough capacity for raw->len characters.
 static size_t append_escaped_string(char* out, size_t out_index,
-                                    const struct Slice* raw, const char* loc) {
+                                    const struct Slice* raw) {
   for (size_t i = 0; i < raw->len; i++) {
     if (raw->start[i] == '\\') {
       i++;
@@ -962,8 +1004,25 @@ static size_t append_escaped_string(char* out, size_t out_index,
         case '0':
           out[out_index++] = '\0';
           break;
+        case 'x': {
+          size_t digits = 0;
+          unsigned char value = 0;
+          if (!decode_hex_escape(raw->start + i + 1, &digits, &value)) {
+            if (digits == 0) {
+              parse_error_at(raw->start + i,
+                             "expected at least one hexadecimal digit after \\x");
+            } else {
+              parse_error_at(raw->start + i + 1 + digits,
+                             "hex escape exceeds byte value 0xff");
+            }
+            exit(1);
+          }
+          out[out_index++] = (char)value;
+          i += digits;
+          break;
+        }
         default:
-          parse_error_at(loc, "invalid escape sequence");
+          parse_error_at(raw->start + i, "invalid escape sequence");
           exit(1);
       }
     } else {
@@ -988,13 +1047,12 @@ struct Expr* parse_string(void){
 
     char* escaped_str = arena_alloc(total_raw_len + 1);
     size_t esc_index = 0;
-    esc_index = append_escaped_string(escaped_str, esc_index, data->string_val, str_loc);
+    esc_index = append_escaped_string(escaped_str, esc_index, data->string_val);
 
     while ((size_t)(current - program) < prog_size &&
            current->type == STRING_LIT) {
-      const char* next_loc = current->start;
       union TokenVariant* next_data = consume_with_data(STRING_LIT);
-      esc_index = append_escaped_string(escaped_str, esc_index, next_data->string_val, next_loc);
+      esc_index = append_escaped_string(escaped_str, esc_index, next_data->string_val);
     }
     escaped_str[esc_index] = '\0';
 

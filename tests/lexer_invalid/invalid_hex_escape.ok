@@ -1,0 +1,3 @@
+Lexer error at tests/lexer_invalid/invalid_hex_escape.c:1:21: expected at least one hexadecimal digit after \x
+x";
+

@@ -17,3 +17,4 @@ char x = '\r';
 char x = '\t';
 char x = '\v';
 char x = '\0';
+char x = '\x1b';

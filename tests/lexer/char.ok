@@ -8,5 +8,5 @@
     char, x, =, 8, ;, char, x, =, 12, ;, 
     char, x, =, 10, ;, char, x, =, 13, ;, 
     char, x, =, 9, ;, char, x, =, 11, ;, 
-    char, x, =, 0, ;
+    char, x, =, 0, ;, char, x, =, 27, ;
 ]
