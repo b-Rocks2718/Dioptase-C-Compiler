@@ -3036,3 +3036,91 @@ void concat_TAC_instrs(struct TACInstr** old_instrs, struct TACInstr* new_instrs
   (*old_instrs)->last->next = new_instrs;
   (*old_instrs)->last = new_instrs->last;
 }
+
+bool compare_instrs(struct TACInstr* instr1, struct TACInstr* instr2) {
+  if (instr1->type != instr2->type) {
+    return false;
+  }
+
+  switch (instr1->type) {
+    case TACRETURN:
+      return instr1->instr.tac_return.dst == instr2->instr.tac_return.dst;
+    case TACUNARY:
+      return (instr1->instr.tac_unary.op == instr2->instr.tac_unary.op &&
+              instr1->instr.tac_unary.dst == instr2->instr.tac_unary.dst &&
+              instr1->instr.tac_unary.src == instr2->instr.tac_unary.src);
+    case TACBINARY:
+      return (instr1->instr.tac_binary.alu_op == instr2->instr.tac_binary.alu_op &&
+              instr1->instr.tac_binary.dst == instr2->instr.tac_binary.dst &&
+              instr1->instr.tac_binary.src1 == instr2->instr.tac_binary.src1 &&
+              instr1->instr.tac_binary.src2 == instr2->instr.tac_binary.src2);
+    case TACCOND_JUMP:
+      return (instr1->instr.tac_cond_jump.condition == instr2->instr.tac_cond_jump.condition &&
+              instr1->instr.tac_cond_jump.label == instr2->instr.tac_cond_jump.label);
+    case TACCMP:
+      return (instr1->instr.tac_cmp.src1 == instr2->instr.tac_cmp.src1 &&
+              instr1->instr.tac_cmp.src2 == instr2->instr.tac_cmp.src2);
+    case TACJUMP:
+      return instr1->instr.tac_jump.label == instr2->instr.tac_jump.label;
+    case TACLABEL:
+      return instr1->instr.tac_label.label == instr2->instr.tac_label.label;
+    case TACCOPY:
+      return (instr1->instr.tac_copy.dst == instr2->instr.tac_copy.dst &&
+              instr1->instr.tac_copy.src == instr2->instr.tac_copy.src);
+    case TACCALL:
+      return (instr1->instr.tac_call.func_name == instr2->instr.tac_call.func_name &&
+              instr1->instr.tac_call.dst == instr2->instr.tac_call.dst &&
+              instr1->instr.tac_call.args == instr2->instr.tac_call.args &&
+              instr1->instr.tac_call.num_args == instr2->instr.tac_call.num_args);
+    case TACCALL_INDIRECT:
+      return (instr1->instr.tac_call_indirect.func == instr2->instr.tac_call_indirect.func &&
+              instr1->instr.tac_call_indirect.dst == instr2->instr.tac_call_indirect.dst &&
+              instr1->instr.tac_call_indirect.args == instr2->instr.tac_call_indirect.args &&
+              instr1->instr.tac_call_indirect.num_args == instr2->instr.tac_call_indirect.num_args);
+    case TACGET_ADDRESS:
+      return (instr1->instr.tac_get_address.dst == instr2->instr.tac_get_address.dst &&
+              instr1->instr.tac_get_address.src == instr2->instr.tac_get_address.src);
+    case TACLOAD:
+      return (instr1->instr.tac_load.dst == instr2->instr.tac_load.dst &&
+              instr1->instr.tac_load.src_ptr == instr2->instr.tac_load.src_ptr);
+    case TACSTORE:
+      return (instr1->instr.tac_store.dst_ptr == instr2->instr.tac_store.dst_ptr &&
+              instr1->instr.tac_store.src == instr2->instr.tac_store.src);
+    case TACCOPY_TO_OFFSET:
+      return (instr1->instr.tac_copy_to_offset.dst == instr2->instr.tac_copy_to_offset.dst &&
+              instr1->instr.tac_copy_to_offset.src == instr2->instr.tac_copy_to_offset.src &&
+              instr1->instr.tac_copy_to_offset.offset == instr2->instr.tac_copy_to_offset.offset &&
+              instr1->instr.tac_copy_to_offset.dst_type == instr2->instr.tac_copy_to_offset.dst_type);
+    case TACCOPY_FROM_OFFSET:
+      return (instr1->instr.tac_copy_from_offset.dst == instr2->instr.tac_copy_from_offset.dst &&
+              instr1->instr.tac_copy_from_offset.src == instr2->instr.tac_copy_from_offset.src &&
+              instr1->instr.tac_copy_from_offset.offset == instr2->instr.tac_copy_from_offset.offset);
+    case TACBOUNDARY:
+      return instr1->instr.tac_boundary.loc == instr2->instr.tac_boundary.loc;
+    case TACTRUNC:
+      return (instr1->instr.tac_trunc.dst == instr2->instr.tac_trunc.dst &&
+              instr1->instr.tac_trunc.src == instr2->instr.tac_trunc.src &&
+              instr1->instr.tac_trunc.target_size == instr2->instr.tac_trunc.target_size);
+    case TACEXTEND:
+      return (instr1->instr.tac_extend.dst == instr2->instr.tac_extend.dst &&
+              instr1->instr.tac_extend.src == instr2->instr.tac_extend.src &&
+              instr1->instr.tac_extend.src_size == instr2->instr.tac_extend.src_size);
+  }
+
+  return false;
+}
+
+bool compare_bodies(struct TACInstr* body1, struct TACInstr* body2) {
+  struct TACInstr* cur1 = body1;
+  struct TACInstr* cur2 = body2;
+
+  while (cur1 != NULL && cur2 != NULL) {
+    if (!compare_instrs(cur1, cur2)) {
+      return false;
+    }
+    cur1 = cur1->next;
+    cur2 = cur2->next;
+  }
+
+  return (cur1 == NULL && cur2 == NULL);
+}

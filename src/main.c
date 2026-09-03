@@ -16,65 +16,48 @@
 #include "label_resolution.h"
 #include "typechecking.h"
 #include "TAC.h"
+#include "optimization.h"
 #include "asm_gen.h"
 #include "codegen.h"
 #include "machine_print.h"
 #include "arena.h"
 #include "source_location.h"
 
-// Purpose: Control where TAC interpreter result is emitted.
-// Inputs/Outputs: When set, results are printed to stderr instead of stdout.
-// Invariants/Assumptions: Only used for interpreter-only execution.
+// When set, results are printed to stderr instead of stdout.
+// Only used for interpreter-only execution.
 static const char* kTacInterpResultStderrEnv = "DIOPTASE_TACC_RESULT_STDERR";
 
-// Purpose: Default output path for compiler-only assembly emission.
-// Inputs/Outputs: Used when -s is set and no -o is provided.
-// Invariants/Assumptions: Relative to the current working directory.
 static const char* kDefaultAsmOutputPath = "a.s";
-
-// Purpose: Default output path for assembled hex emission.
-// Inputs/Outputs: Used when -s is not set and no -o is provided.
-// Invariants/Assumptions: Relative to the current working directory.
 static const char* kDefaultHexOutputPath = "a.hex";
-
-// Purpose: Default output path for assembled binary emission.
-// Inputs/Outputs: Used when -bin is set and no -o is provided.
-// Invariants/Assumptions: Relative to the current working directory.
 static const char* kDefaultBinOutputPath = "a.bin";
 
-// Purpose: Environment variable that overrides the assembler path.
-// Inputs/Outputs: Read via getenv when invoking the assembler.
-// Invariants/Assumptions: If set, must point to an executable binary.
+// Environment variable that overrides the assembler path.
+// Read via getenv when invoking the assembler.
 static const char* kAssemblerEnvVar = "DIOPTASE_ASSEMBLER";
 
-// Purpose: Environment variable that points to the repo root for assembler lookup.
-// Inputs/Outputs: Read via getenv when DIOPTASE_ASSEMBLER is unset.
-// Invariants/Assumptions: Repo root contains Dioptase-Assembler/build.
+// Environment variable that points to the repo root for assembler lookup.
+// Read via getenv when DIOPTASE_ASSEMBLER is unset.
 static const char* kRepoRootEnvVar = "DIOPTASE_ROOT";
 
-// Purpose: Default assembler locations under the repo root.
-// Inputs/Outputs: Joined with DIOPTASE_ROOT when DIOPTASE_ASSEMBLER is unset.
-// Invariants/Assumptions: Uses '/' as the host path separator.
+// Default assembler locations under the repo root.
+// Joined with DIOPTASE_ROOT when DIOPTASE_ASSEMBLER is unset.
 enum { kDefaultAssemblerRelPathCount = 2 };
 static const char* const kDefaultAssemblerRelPaths[kDefaultAssemblerRelPathCount] = {
     "Dioptase-Assembler/build/debug/basm",
     "Dioptase-Assembler/build/release/basm",
 };
 
-// Purpose: Default CRT directory under the repo root for user-mode compiler links.
-// Inputs/Outputs: Joined with DIOPTASE_ROOT when no explicit CRT dir is requested.
-// Invariants/Assumptions: This compiler-local CRT may differ from the OS copy.
+// Default CRT directory under the repo root for user-mode compiler links.
+// Joined with DIOPTASE_ROOT when no explicit CRT dir is requested.
+// This compiler-local CRT may differ from the OS copy.
 static const char* kDefaultCompilerCrtRelDir = "Dioptase-Languages/Dioptase-C-Compiler/crt";
 
-// Purpose: Suffix for temporary assembly files used during full compilation.
-// Inputs/Outputs: Appended to the output path to form a temp asm name.
-// Invariants/Assumptions: Resulting temp path should not collide with user files.
+// Suffix for temporary assembly files used during full compilation.
+// Appended to the output path to form a temp asm name.
 static const char* kAsmTempSuffix = ".s.tmp";
 
-// Purpose: Copy a string into heap storage.
-// Inputs: src is a NUL-terminated string.
-// Outputs: Returns a heap-allocated copy or NULL on allocation failure.
-// Invariants/Assumptions: Caller must free the returned string.
+// Copy a string into heap storage.
+// Caller must free the returned string.
 static char* duplicate_string(const char* src) {
     if (src == NULL) return NULL;
     size_t len = strlen(src);
@@ -84,10 +67,7 @@ static char* duplicate_string(const char* src) {
     return copy;
 }
 
-// Purpose: Join two path components with a '/' separator when needed.
-// Inputs: left and right are path components.
-// Outputs: Returns a heap-allocated joined path or NULL on allocation failure.
-// Invariants/Assumptions: Uses '/' as the host path separator.
+// Join two path components with a '/' separator when needed.
 static char* join_paths(const char* left, const char* right) {
     if (left == NULL || right == NULL) return NULL;
     size_t left_len = strlen(left);
@@ -104,19 +84,14 @@ static char* join_paths(const char* left, const char* right) {
     return path;
 }
 
-// Purpose: Check whether a path is a runnable file.
-// Inputs: path is the filesystem path to probe.
-// Outputs: Returns true if path is executable, false otherwise.
-// Invariants/Assumptions: Uses access(2) and requires a POSIX-like host.
+// Check whether a path is a runnable file.
 static bool is_executable_path(const char* path) {
     if (path == NULL || path[0] == '\0') return false;
     return access(path, X_OK) == 0;
 }
 
-// Purpose: Choose the assembler binary path for full compilation.
-// Inputs: None.
-// Outputs: Returns a heap-allocated assembler path or NULL if none are available.
-// Invariants/Assumptions: Honors DIOPTASE_ASSEMBLER, falls back to DIOPTASE_ROOT.
+// Choose the assembler binary path for full compilation.
+// Returns a heap-allocated assembler path or NULL if none are available.
 static char* select_assembler_path(void) {
     const char* env = getenv(kAssemblerEnvVar);
     if (env != NULL && env[0] != '\0') {
@@ -142,10 +117,10 @@ static char* select_assembler_path(void) {
     return NULL;
 }
 
-// Purpose: Build a temporary assembly output path from the final output path.
-// Inputs: output_path is the final assembler output path (e.g., a.hex).
-// Outputs: Returns a heap-allocated path string or NULL on allocation failure.
-// Invariants/Assumptions: Caller must free the returned string.
+// Build a temporary assembly output path from the final output path.
+// output_path is the final assembler output path (e.g., a.hex).
+// Returns a heap-allocated path string or NULL on allocation failure.
+// Caller must free the returned string.
 static char* make_temp_asm_path(const char* output_path) {
     size_t output_len = strlen(output_path);
     size_t suffix_len = strlen(kAsmTempSuffix);
@@ -159,10 +134,8 @@ static char* make_temp_asm_path(const char* output_path) {
     return temp_path;
 }
 
-// Purpose: Choose the default CRT directory for user-mode compiler links.
-// Inputs: None.
-// Outputs: Returns a heap-allocated CRT directory path or NULL if none is available.
-// Invariants/Assumptions: Uses DIOPTASE_ROOT to find the compiler-local CRT.
+// Choose the default CRT directory for user-mode compiler links.
+// Returns a heap-allocated CRT directory path or NULL if none is available.
 static char* select_default_crt_dir(void) {
     const char* repo_root = getenv(kRepoRootEnvVar);
     if (repo_root == NULL || repo_root[0] == '\0') {
@@ -172,13 +145,12 @@ static char* select_default_crt_dir(void) {
     return join_paths(repo_root, kDefaultCompilerCrtRelDir);
 }
 
-// Purpose: Invoke the assembler to emit the final hex or binary file.
-// Inputs: assembler_path is the executable path, asm_path is the input assembly,
-//         output_path is the desired output file, kernel_mode forwards -kernel,
-//         crt_dir provides the user-mode CRT directory when needed, and
-//         emit_binary requests -bin output.
-// Outputs: Returns true on success and false on failure.
-// Invariants/Assumptions: Uses fork/exec to avoid shell interpretation.
+// Invoke the assembler to emit the final hex or binary file.
+// assembler_path is the executable path, asm_path is the input assembly,
+// output_path is the desired output file, kernel_mode forwards -kernel,
+// crt_dir provides the user-mode CRT directory when needed, and
+// emit_binary requests -bin output.
+// Returns true on success and false on failure.
 static bool run_assembler(const char* assembler_path,
                                    const char* asm_path,
                                    const char* output_path,
@@ -246,10 +218,8 @@ static bool run_assembler(const char* assembler_path,
     return true;
 }
 
-// Purpose: Remove a temporary assembly file once assembling completes.
-// Inputs: path is the temporary assembly file path.
-// Outputs: Returns true if the file was removed or did not exist.
-// Invariants/Assumptions: Uses unlink(2) and requires a POSIX-like host.
+// Remove a temporary assembly file once assembling completes.
+// Returns true if the file was removed or did not exist.
 static bool remove_temp_asm(const char* path) {
     if (path == NULL || path[0] == '\0') return true;
     if (unlink(path) == 0) return true;
@@ -259,84 +229,128 @@ static bool remove_temp_asm(const char* path) {
     return false;
 }
 
-// Purpose: Entry point for the C compiler frontend and debug pipelines.
-// Inputs: argv contains command-line flags and the input file path.
-// Outputs: Returns a non-zero status code on compilation or pipeline errors.
-// Invariants/Assumptions: The input file is a regular file readable via mmap.
 int main(int argc, const char *const *const argv) {
 
-    int print_tokens = 0;
-    int print_ast = 0;
-    int print_preprocess = 0;
-    int print_idents = 0;
-    int print_labels = 0;
-    int print_types = 0;
-    int print_tac = 0;
-    int print_asm = 0;
-    int interpret_tac = 0;
-    int kernel_mode = 0;
-    int emit_binary = 0;
+    bool print_tokens = false;
+    bool print_ast = false;
+    bool print_preprocess = false;
+    bool print_idents = false;
+    bool print_labels = false;
+    bool print_types = false;
+    bool print_tac = false;
+    bool print_asm = false;
+    bool interpret_tac = false;
+    bool kernel_mode = false;
+    bool emit_binary = false;
+
     const char *filename = NULL;
     const char *output_path = NULL;
     const char *crt_dir_option = NULL;
-    int output_path_set = 0;
-    int emit_debug_info = 0;
-    int emit_asm_file = 0;
+
+    bool output_path_set = false;
+    bool emit_debug_info = false;
+    bool emit_asm_file = false;
+
     const char **cli_defines = malloc(argc * sizeof(char*));
     int num_defines = 0;
+
+    struct OptimizationOptions optimization_options = {false};
 
     for (int i = 1; i < argc; ++i) {
         const char *arg = argv[i];
         if (strcmp(arg, "-tokens") == 0) {
-            print_tokens = 1;
+            print_tokens = true;
             continue;
         }
         if (strcmp(arg, "-preprocess") == 0) {
-            print_preprocess = 1;
+            print_preprocess = true;
             continue;
         }
         if (strcmp(arg, "-ast") == 0) {
-            print_ast = 1;
+            print_ast = true;
             continue;
         }
         if (strcmp(arg, "-idents") == 0) {
-            print_idents = 1;
+            print_idents = true;
             continue;
         }
         if (strcmp(arg, "-labels") == 0) {
-            print_labels = 1;
+            print_labels = true;
             continue;
         }
         if (strcmp(arg, "-types") == 0) {
-            print_types = 1;
+            print_types = true;
             continue;
         }
         if (strcmp(arg, "-tac") == 0) {
-            print_tac = 1;
+            print_tac = true;
             continue;
         }
         if (strcmp(arg, "-asm") == 0) {
-            print_asm = 1;
+            print_asm = true;
             continue;
         }
         if (strcmp(arg, "-interp") == 0) {
-            interpret_tac = 1;
+            interpret_tac = true;
             continue;
         }
         if (strcmp(arg, "-s") == 0) {
-            emit_asm_file = 1;
+            emit_asm_file = true;
             continue;
         }
         if (strcmp(arg, "-bin") == 0) {
-            emit_binary = 1;
+            emit_binary = true;
             continue;
         }
         if (strcmp(arg, "-g") == 0) {
-            emit_debug_info = 1;
+            emit_debug_info = true;
+            continue;
+        }
+        if (strcmp(arg, "-constant-fold") == 0) {
+            optimization_options.constant_fold = true;
+            continue;
+        }
+        if (strcmp(arg, "-dead-code") == 0) {
+            optimization_options.dead_code_elim = true;
+            continue;
+        }
+        if (strcmp(arg, "-copy-prop") == 0) {
+            optimization_options.copy_prop = true;
+            continue;
+        }
+        if (strcmp(arg, "-dead-store") == 0) {
+            optimization_options.dead_store_elim = true;
+            continue;
+        }
+        if (strcmp(arg, "-tail-call") == 0) {
+            optimization_options.tail_call_opt = true;
+            continue;
+        }
+        if (strcmp(arg, "-inline") == 0) {
+            optimization_options.inline_opt = true;
+            continue;
+        }
+        if (strcmp(arg, "-peephole") == 0) {
+            optimization_options.peephole_opt = true;
+            continue;
+        }
+        if (strcmp(arg, "-reg-alloc") == 0) {
+            optimization_options.reg_alloc = true;
+            continue;
+        }
+        if (strcmp(arg, "-opt") == 0) {
+            optimization_options.constant_fold = true;
+            optimization_options.dead_code_elim = true;
+            optimization_options.copy_prop = true;
+            optimization_options.dead_store_elim = true;
+            optimization_options.tail_call_opt = true;
+            optimization_options.inline_opt = true;
+            optimization_options.peephole_opt = true;
+            optimization_options.reg_alloc = true;
             continue;
         }
         if (strcmp(arg, "-kernel") == 0) {
-            kernel_mode = 1;
+            kernel_mode = true;
             continue;
         }
         if (strcmp(arg, "-crt") == 0) {
@@ -355,7 +369,7 @@ int main(int argc, const char *const *const argv) {
                 exit(1);
             }
             output_path = argv[++i];
-            output_path_set = 1;
+            output_path_set = true;
             continue;
         }
         if (strncmp(arg, "-D", 2) == 0) {
@@ -570,6 +584,9 @@ int main(int argc, const char *const *const argv) {
 
     if (run_full || print_tac || print_asm || interpret_tac) {
         tac_prog = prog_to_TAC(prog, emit_debug_info);
+
+        optimize(tac_prog, optimization_options);
+
         if (tac_prog == NULL) {
             fprintf(stderr, "TAC lowering failed\n");
             destroy_preprocess_result(&preprocessed);
