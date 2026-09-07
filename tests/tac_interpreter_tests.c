@@ -214,15 +214,14 @@ static bool tac_test_arithmetic(void) {
 }
 
 /*
-Purpose: Verify compare and conditional jump handling.
+Purpose: Verify fused comparison and conditional jump handling.
 Inputs: None (builds a TACProg in-place).
 Outputs: Returns true when the interpreter returns 1.
-Invariants/Assumptions: Exercises TACCMP and TACCOND_JUMP.
+Invariants/Assumptions: TACCOND_JUMP carries both comparison operands.
 
 Readable TAC:
   func main:
-    cmp 5, 10
-    if LT goto L_then
+    if 5 LT 10 goto L_then
     return 2
   L_then:
     return 1
@@ -240,26 +239,23 @@ static bool tac_test_cond_jump(void) {
   struct Val const_1 = tac_val_const(kTrueValue, &kTestIntType);
   struct Val const_2 = tac_val_const(kFalseValue, &kTestIntType);
 
-  struct TACInstr cmp_instr;
   struct TACInstr cond_jump;
   struct TACInstr ret_false;
   struct TACInstr label;
   struct TACInstr ret_true;
-  tac_init_instr(&cmp_instr, TACCMP);
   tac_init_instr(&cond_jump, TACCOND_JUMP);
   tac_init_instr(&ret_false, TACRETURN);
   tac_init_instr(&label, TACLABEL);
   tac_init_instr(&ret_true, TACRETURN);
 
-  cmp_instr.instr.tac_cmp.src1 = &const_5;
-  cmp_instr.instr.tac_cmp.src2 = &const_10;
+  cond_jump.instr.tac_cond_jump.src1 = &const_5;
+  cond_jump.instr.tac_cond_jump.src2 = &const_10;
   cond_jump.instr.tac_cond_jump.condition = CondL;
   cond_jump.instr.tac_cond_jump.label = &then_label;
   ret_false.instr.tac_return.dst = &const_2;
   label.instr.tac_label.label = &then_label;
   ret_true.instr.tac_return.dst = &const_1;
 
-  tac_link_instr(&cmp_instr, &cond_jump);
   tac_link_instr(&cond_jump, &ret_false);
   tac_link_instr(&ret_false, &label);
   tac_link_instr(&label, &ret_true);
@@ -268,7 +264,7 @@ static bool tac_test_cond_jump(void) {
   main_func.type = FUNC;
   main_func.name = &main_name;
   main_func.global = true;
-  main_func.body = &cmp_instr;
+  main_func.body = &cond_jump;
   main_func.params = NULL;
   main_func.num_params = 0;
   main_func.next = NULL;
@@ -711,17 +707,19 @@ static bool tac_expect_folded_constant(const char* name,
 
 /*
 Purpose: Verify constant folding for operand selection, integer signedness,
-truncation, and sign extension.
+truncation, sign extension, and fused conditional jumps.
 Inputs: None (builds isolated TAC instructions in-place).
-Outputs: Returns true when each instruction is replaced with the exact TACCOPY.
+Outputs: Returns true when each instruction has the expected folded form.
 Invariants/Assumptions: Constants use the TAC raw-bit representation.
 */
 static bool tac_test_constant_folding(void) {
   struct Type long_type = { .type = LONG_TYPE };
+  struct Type uint_type = { .type = UINT_TYPE };
   struct Type uchar_type = { .type = UCHAR_TYPE };
   struct Type schar_type = { .type = SCHAR_TYPE };
   struct Slice dst_name = tac_slice_literal("fold.dst");
   struct Slice right_name = tac_slice_literal("fold.right");
+  struct Slice target_name = tac_slice_literal("fold.target");
   struct Val int_dst = tac_val_var(&dst_name, &kTestIntType);
   struct Val long_dst = tac_val_var(&dst_name, &long_type);
   struct Val uchar_dst = tac_val_var(&dst_name, &uchar_type);
@@ -736,6 +734,8 @@ static bool tac_test_constant_folding(void) {
       tac_val_const_bits(UINT64_C(0x80000000), &kTestIntType);
   struct Val minus_one_bits =
       tac_val_const_bits(UINT64_C(0xffffffff), &kTestIntType);
+  struct Val uint_max = tac_val_const_bits(UINT64_C(0xffffffff), &uint_type);
+  struct Val uint_zero = tac_val_const_bits(UINT64_C(0), &uint_type);
   struct Val all_bits = tac_val_const_bits(UINT64_MAX, &long_type);
   struct Val signed_byte_min = tac_val_const_bits(UINT64_C(0x80), &schar_type);
   struct TACInstr instr;
@@ -818,6 +818,37 @@ static bool tac_test_constant_folding(void) {
   if (constant_fold(&instr) != &instr) {
     printf("constant-folding test signed division overflow failed: undefined "
            "operation must remain unfolded\n");
+    ok = false;
+  }
+
+  tac_init_instr(&instr, TACCOND_JUMP);
+  instr.instr.tac_cond_jump.src1 = &minus_one_bits;
+  instr.instr.tac_cond_jump.src2 = &zero;
+  instr.instr.tac_cond_jump.condition = CondL;
+  instr.instr.tac_cond_jump.label = &target_name;
+  struct TACInstr* folded_jump = constant_fold(&instr);
+  if (folded_jump == NULL || folded_jump == &instr ||
+      folded_jump->type != TACJUMP ||
+      folded_jump->instr.tac_jump.label != &target_name) {
+    printf("constant-folding test signed conditional jump failed: expected "
+           "an unconditional jump\n");
+    ok = false;
+  }
+
+  struct TACInstr return_after_jump;
+  tac_init_instr(&instr, TACCOND_JUMP);
+  tac_init_instr(&return_after_jump, TACRETURN);
+  instr.instr.tac_cond_jump.src1 = &uint_max;
+  instr.instr.tac_cond_jump.src2 = &uint_zero;
+  instr.instr.tac_cond_jump.condition = CondB;
+  instr.instr.tac_cond_jump.label = &target_name;
+  return_after_jump.instr.tac_return.dst = &one;
+  tac_link_instr(&instr, &return_after_jump);
+  struct TACInstr* folded_fallthrough = constant_fold(&instr);
+  if (folded_fallthrough != &return_after_jump ||
+      folded_fallthrough->last != &return_after_jump) {
+    printf("constant-folding test unsigned conditional jump failed: expected "
+           "the never-taken jump to be removed\n");
     ok = false;
   }
 
@@ -906,18 +937,15 @@ static bool tac_test_compare_bodies(void) {
   EXPECT_FIELD_DIFFERENT(instr.tac_binary.src2, &second_val);
 
   tac_init_instr(&left, TACCOND_JUMP);
+  left.instr.tac_cond_jump.src1 = &first_val;
+  left.instr.tac_cond_jump.src2 = &first_val;
   left.instr.tac_cond_jump.condition = CondE;
   left.instr.tac_cond_jump.label = &first_name;
   EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_cond_jump.src1, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_cond_jump.src2, &second_val);
   EXPECT_FIELD_DIFFERENT(instr.tac_cond_jump.condition, CondNE);
   EXPECT_FIELD_DIFFERENT(instr.tac_cond_jump.label, &second_name);
-
-  tac_init_instr(&left, TACCMP);
-  left.instr.tac_cmp.src1 = &first_val;
-  left.instr.tac_cmp.src2 = &first_val;
-  EXPECT_MATCH();
-  EXPECT_FIELD_DIFFERENT(instr.tac_cmp.src1, &second_val);
-  EXPECT_FIELD_DIFFERENT(instr.tac_cmp.src2, &second_val);
 
   tac_init_instr(&left, TACJUMP);
   left.instr.tac_jump.label = &first_name;

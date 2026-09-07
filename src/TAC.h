@@ -54,7 +54,6 @@ enum TACInstrType {
   TACUNARY,
   TACBINARY,
   TACCOND_JUMP,
-  TACCMP,
   TACJUMP,
   TACLABEL,
   TACCOPY,
@@ -120,13 +119,10 @@ struct TACBinary {
 };
 
 struct TACCondJump {
-  enum TACCondition condition;
-  struct Slice* label;
-};
-
-struct TACCmp {
   struct Val* src1;
   struct Val* src2;
+  enum TACCondition condition;
+  struct Slice* label;
 };
 
 struct TACJump {
@@ -205,7 +201,6 @@ union TACInstrVariant {
   struct TACUnary tac_unary;
   struct TACBinary tac_binary;
   struct TACCondJump tac_cond_jump;
-  struct TACCmp tac_cmp;
   struct TACJump tac_jump;
   struct TACLabel tac_label;
   struct TACCopy tac_copy;

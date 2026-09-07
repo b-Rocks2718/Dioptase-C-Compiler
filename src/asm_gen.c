@@ -797,8 +797,6 @@ static const char* tac_instr_name(enum TACInstrType type) {
       return "TACBINARY";
     case TACCOND_JUMP:
       return "TACCOND_JUMP";
-    case TACCMP:
-      return "TACCMP";
     case TACJUMP:
       return "TACJUMP";
     case TACLABEL:
@@ -1181,32 +1179,26 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
     }
     case TACCOND_JUMP:{
       // TAC:
-      // CondJump cond, label
+      // CondJump cond, src1, src2, label
       //
       // ASM:
+      // Cmp src1, src2
       // CondJump cond, label
       struct TACCondJump* cond_jump_instr = &tac_instr->instr.tac_cond_jump;
-      asm_instr->type = ASM_COND_JUMP;
-      asm_instr->cond = cond_jump_instr->condition;
-      asm_instr->label = cond_jump_instr->label;
-      asm_instr->dst = NULL;
-      asm_instr->src1 = NULL;
-      asm_instr->src2 = NULL;
-      asm_instr->next = NULL;
-      return asm_instr;
-    }
-    case TACCMP:{
-      // TAC:
-      // Cmp src1, src2
-      //
-      // ASM:
-      // Cmp src1, src2
-      struct TACCmp* cmp_instr = &tac_instr->instr.tac_cmp;
       asm_instr->type = ASM_CMP;
       asm_instr->dst = NULL;
-      asm_instr->src1 = tac_val_to_asm(cmp_instr->src1);
-      asm_instr->src2 = tac_val_to_asm(cmp_instr->src2);
-      asm_instr->next = NULL;
+      asm_instr->src1 = tac_val_to_asm(cond_jump_instr->src1);
+      asm_instr->src2 = tac_val_to_asm(cond_jump_instr->src2);
+
+      struct AsmInstr* jump_instr = arena_alloc(sizeof(struct AsmInstr));
+      jump_instr->type = ASM_COND_JUMP;
+      jump_instr->cond = cond_jump_instr->condition;
+      jump_instr->label = cond_jump_instr->label;
+      jump_instr->dst = NULL;
+      jump_instr->src1 = NULL;
+      jump_instr->src2 = NULL;
+      jump_instr->next = NULL;
+      asm_instr->next = jump_instr;
       return asm_instr;
     }
     case TACJUMP:{

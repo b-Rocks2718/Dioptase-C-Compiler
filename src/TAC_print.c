@@ -260,14 +260,11 @@ static void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
       printf("CondJump ");
       print_tac_condition(instr->instr.tac_cond_jump.condition);
       printf(" ");
-      print_slice(instr->instr.tac_cond_jump.label);
-      printf("\n");
-      break;
-    case TACCMP:
-      printf("Cmp ");
-      print_tac_val(instr->instr.tac_cmp.src1);
+      print_tac_val(instr->instr.tac_cond_jump.src1);
       printf(", ");
-      print_tac_val(instr->instr.tac_cmp.src2);
+      print_tac_val(instr->instr.tac_cond_jump.src2);
+      printf(", ");
+      print_slice(instr->instr.tac_cond_jump.label);
       printf("\n");
       break;
     case TACJUMP:
