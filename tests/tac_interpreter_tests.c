@@ -1,5 +1,6 @@
 #include "TAC.h"
 #include "arena.h"
+#include "cfg.h"
 #include "optimization.h"
 #include "slice.h"
 
@@ -1062,6 +1063,110 @@ static bool tac_test_compare_bodies(void) {
   return ok;
 }
 
+/*
+Purpose: Verify that TAC-to-CFG-to-TAC round trips are idempotent and that
+CFG-to-TAC rebuilding is repeatable and non-destructive.
+Inputs: None (builds a three-block TAC body in-place).
+Outputs: Returns true when two complete round trips equal the input, repeated
+rebuilds have valid tail links, and every CFG block remains independently
+terminated.
+Invariants/Assumptions: build_cfg preserves basic blocks in TAC layout order.
+*/
+static bool tac_test_cfg_rebuild(void) {
+  const unsigned kExpectedNodeCount = 5;
+  const unsigned kExpectedInstrCount = 5;
+  const size_t kArenaBlockSize = 1024;
+  struct Slice target_name = tac_slice_literal("target");
+  struct Val zero = tac_val_const(0, &kTestIntType);
+  struct Val one = tac_val_const(1, &kTestIntType);
+  struct Val condition = tac_val_const(1, &kTestIntType);
+  struct TACInstr cond_jump;
+  struct TACInstr return_false;
+  struct TACInstr label;
+  struct TACInstr copy;
+  struct TACInstr return_true;
+  bool ok = true;
+
+  arena_init(kArenaBlockSize);
+
+  tac_init_instr(&copy, TACCOPY);
+  copy.instr.tac_copy.dst = &condition;
+  copy.instr.tac_copy.src = &one;
+  tac_init_instr(&cond_jump, TACCOND_JUMP);
+  cond_jump.instr.tac_cond_jump.src1 = &condition;
+  cond_jump.instr.tac_cond_jump.src2 = &zero;
+  cond_jump.instr.tac_cond_jump.condition = CondNE;
+  cond_jump.instr.tac_cond_jump.label = &target_name;
+  tac_init_instr(&return_false, TACRETURN);
+  return_false.instr.tac_return.dst = &zero;
+  tac_init_instr(&label, TACLABEL);
+  label.instr.tac_label.label = &target_name;
+  tac_init_instr(&return_true, TACRETURN);
+  return_true.instr.tac_return.dst = &one;
+
+  copy.next = &cond_jump;
+  cond_jump.next = &return_false;
+  return_false.next = &label;
+  label.next = &return_true;
+  copy.last = &return_true;
+
+  struct CFG* cfg = build_cfg(&copy);
+  if (cfg == NULL || cfg->num_nodes != kExpectedNodeCount) {
+    printf("CFG rebuild test setup failed: expected %u CFG nodes\n",
+           kExpectedNodeCount);
+    arena_destroy();
+    return false;
+  }
+
+  struct TACInstr* first = rebuild_body(cfg);
+  struct TACInstr* second = rebuild_body(cfg);
+  if (!compare_bodies(&copy, first) || !compare_bodies(first, second)) {
+    printf("CFG rebuild test failed: repeated rebuilds changed TAC instruction order\n");
+    ok = false;
+  }
+  if (first == second || first == cfg->nodes[1]->body) {
+    printf("CFG rebuild test failed: rebuilt TAC must use detached instruction copies\n");
+    ok = false;
+  }
+
+  struct CFG* second_cfg = build_cfg(first);
+  struct TACInstr* second_round_trip = rebuild_body(second_cfg);
+  if (!compare_bodies(first, second_round_trip)) {
+    printf("CFG rebuild test failed: a second TAC-to-CFG-to-TAC round trip "
+           "changed the body\n");
+    ok = false;
+  }
+  if (second_round_trip == first) {
+    printf("CFG rebuild test failed: the second round trip reused its input list\n");
+    ok = false;
+  }
+
+  unsigned instr_count = 0;
+  struct TACInstr* rebuilt_tail = NULL;
+  for (struct TACInstr* instr = first; instr != NULL; instr = instr->next) {
+    rebuilt_tail = instr;
+    instr_count++;
+  }
+  if (instr_count != kExpectedInstrCount || first == NULL ||
+      first->last != rebuilt_tail) {
+    printf("CFG rebuild test failed: expected %u instructions and a valid tail link\n",
+           kExpectedInstrCount);
+    ok = false;
+  }
+
+  for (unsigned i = 1; i + 1 < cfg->num_nodes; i++) {
+    struct CFGNode* block = cfg->nodes[i];
+    if (block->last_instr == NULL || block->last_instr->next != NULL ||
+        block->body->last != block->last_instr) {
+      printf("CFG rebuild test failed: rebuilding mutated basic block %u\n", i);
+      ok = false;
+    }
+  }
+
+  arena_destroy();
+  return ok;
+}
+
 // Purpose: Run all TAC interpreter tests.
 // Inputs: None.
 // Outputs: Returns 0 on success and non-zero on failure.
@@ -1088,6 +1193,8 @@ int main(void) {
   ok = tac_test_constant_folding() && ok;
   printf("- tac_test_compare_bodies\n");
   ok = tac_test_compare_bodies() && ok;
+  printf("- tac_test_cfg_rebuild\n");
+  ok = tac_test_cfg_rebuild() && ok;
 
   if (ok) {
     printf("TAC interpreter tests passed. ");

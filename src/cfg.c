@@ -45,6 +45,17 @@ static struct CFGNode* make_basic_block_node(void) {
   return node;
 }
 
+// Copy an instruction without retaining links owned by another TAC list.
+static struct TACInstr* copy_instr(const struct TACInstr* instr) {
+  // Operand pointers continue to refer to the original TAC values, but list
+  // links belong exclusively to the new instruction list.
+  struct TACInstr* instr_copy = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
+  *instr_copy = *instr;
+  instr_copy->next = NULL;
+  instr_copy->last = instr_copy;
+  return instr_copy;
+}
+
 // Add a detached copy of an instruction to a basic block node.
 static void append_instr(struct CFGNode* block, const struct TACInstr* instr) {
   if (block->type != CFG_BASIC_BLOCK) {
@@ -55,13 +66,7 @@ static void append_instr(struct CFGNode* block, const struct TACInstr* instr) {
     exit(1);
   }
 
-  // Operand pointers continue to refer to the original TAC values, but list
-  // links belong exclusively to the block so building the CFG cannot mutate
-  // or create cycles in the input instruction list.
-  struct TACInstr* instr_copy = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
-  *instr_copy = *instr;
-  instr_copy->next = NULL;
-  instr_copy->last = instr_copy;
+  struct TACInstr* instr_copy = copy_instr(instr);
 
   if (block->body == NULL) {
     block->body = instr_copy;
@@ -885,9 +890,60 @@ void print_cfg(const struct CFG* cfg) {
   print_cfg_ascii_graph(cfg);
 }
 
-// rebuild the body of a TAC function from its CFG
+// Rebuild a detached TAC function body from basic blocks in layout order. The
+// copies keep CFG block lists independent, so rebuilding does not consume or
+// otherwise mutate the graph.
 struct TACInstr* rebuild_body(struct CFG* cfg) {
-  (void)cfg;
-  // TODO
-  return NULL;
+  if (cfg == NULL || cfg->nodes == NULL) {
+    fprintf(stderr,
+            "CFG error: cannot rebuild a TAC body from a null or uninitialized CFG\n");
+    exit(1);
+  }
+
+  struct TACInstr* head = NULL;
+  struct TACInstr* tail = NULL;
+
+  // add instructions from each basic block in layout order
+  for (unsigned i = 0; i < cfg->num_nodes; i++) {
+    struct CFGNode* node = cfg->nodes[i];
+    if (node == NULL || node->type != CFG_BASIC_BLOCK || node->body == NULL) {
+      continue;
+    }
+    if (node->last_instr == NULL) {
+      fprintf(stderr,
+              "CFG error: cannot rebuild basic block %u because its non-empty "
+              "body has no last instruction\n",
+              i);
+      exit(1);
+    }
+
+    struct TACInstr* instr = node->body;
+    // add each instruction from a basic block
+    while (true) {
+      struct TACInstr* instr_copy = copy_instr(instr);
+      if (head == NULL) {
+        head = instr_copy;
+      } else {
+        tail->next = instr_copy;
+      }
+      tail = instr_copy;
+
+      if (instr == node->last_instr) {
+        break;
+      }
+      instr = instr->next;
+      if (instr == NULL) {
+        fprintf(stderr,
+                "CFG error: cannot rebuild basic block %u because its last "
+                "instruction is not reachable from its body\n",
+                i);
+        exit(1);
+      }
+    }
+  }
+
+  if (head != NULL) {
+    head->last = tail;
+  }
+  return head;
 }
