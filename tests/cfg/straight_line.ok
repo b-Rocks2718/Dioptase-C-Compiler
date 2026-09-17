@@ -21,3 +21,11 @@ CFG (4 nodes)
 [EXIT]
     edges: none
 
+       [ENTRY]
+   +------+
+   v
+ [B1]         [B2]
+   +------+     |
+          +-----+
+          v
+       [EXIT]
