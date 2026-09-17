@@ -28,6 +28,7 @@ TEST_LABELS_INVALID_DIR := tests/labels_invalid
 TEST_DEBUG_INFO_DIR := tests/debug_info
 TEST_TYPES_DIR := tests/types
 TEST_TYPES_INVALID_DIR := tests/types_invalid
+TEST_CFG_DIR := tests/cfg
 TAC_INTERP_TESTS := tac_interpreter
 TAC_INTERP_TEST_SRC := tests/tac_interpreter_tests.c
 TAC_EXEC_TESTS := tac_exec
@@ -114,6 +115,8 @@ TYPES_SRCS := $(wildcard $(TEST_TYPES_DIR)/*.c)
 TYPES_TESTS := $(patsubst $(TEST_TYPES_DIR)/%.c,%, $(TYPES_SRCS))
 TYPES_INVALID_SRCS := $(wildcard $(TEST_TYPES_INVALID_DIR)/*.c)
 TYPES_INVALID_TESTS := $(patsubst $(TEST_TYPES_INVALID_DIR)/%.c,%, $(TYPES_INVALID_SRCS))
+CFG_SRCS := $(wildcard $(TEST_CFG_DIR)/*.c)
+CFG_TESTS := $(patsubst $(TEST_CFG_DIR)/%.c,%, $(CFG_SRCS))
 
 # Rule to build the main executable
 all: debug
@@ -184,7 +187,8 @@ clean:
 		$(TEST_LABELS_INVALID_DIR)/*.out \
 		$(TEST_DEBUG_INFO_DIR)/*.s \
 		$(TEST_TYPES_DIR)/*.out \
-		$(TEST_TYPES_INVALID_DIR)/*.out
+		$(TEST_TYPES_INVALID_DIR)/*.out \
+		$(TEST_CFG_DIR)/*.out
 	rm -rf $(BUILD_ROOT)/tac_exec $(BUILD_ROOT)/emu_exec $(BUILD_ROOT)/emu_exec_full
 
 # Rule to clean up generated files
@@ -195,7 +199,7 @@ define RUN_TESTS
 	@GREEN="\033[0;32m"; \
 	RED="\033[0;31m"; \
 	NC="\033[0m"; \
-	passed=0; total=$$(( $(words $(PREPROCESS_TESTS)) + $(words $(PREPROCESS_INVALID_TESTS)) + $(words $(LEXER_TESTS)) + $(words $(LEXER_INVALID_TESTS)) + $(words $(PARSER_TESTS)) + $(words $(PARSER_INVALID_TESTS)) + $(words $(IDENTS_TESTS)) + $(words $(IDENTS_INVALID_TESTS)) + $(words $(LABELS_TESTS)) + $(words $(LABELS_INVALID_TESTS)) + $(words $(DEBUG_INFO_TESTS)) + $(words $(TYPES_TESTS)) + $(words $(TYPES_INVALID_TESTS)) + $(words $(TAC_INTERP_TESTS)) + $(words $(TAC_EXEC_TESTS)) + $(words $(EMU_EXEC_TESTS)) + $(words $(EMU_EXEC_FULL_TESTS)) )); \
+	passed=0; total=$$(( $(words $(PREPROCESS_TESTS)) + $(words $(PREPROCESS_INVALID_TESTS)) + $(words $(LEXER_TESTS)) + $(words $(LEXER_INVALID_TESTS)) + $(words $(PARSER_TESTS)) + $(words $(PARSER_INVALID_TESTS)) + $(words $(IDENTS_TESTS)) + $(words $(IDENTS_INVALID_TESTS)) + $(words $(LABELS_TESTS)) + $(words $(LABELS_INVALID_TESTS)) + $(words $(DEBUG_INFO_TESTS)) + $(words $(TYPES_TESTS)) + $(words $(TYPES_INVALID_TESTS)) + $(words $(CFG_TESTS)) + $(words $(TAC_INTERP_TESTS)) + $(words $(TAC_EXEC_TESTS)) + $(words $(EMU_EXEC_TESTS)) + $(words $(EMU_EXEC_FULL_TESTS)) )); \
 	echo "Running $(words $(PREPROCESS_TESTS)) preprocess tests:"; \
 	for t in $(PREPROCESS_TESTS); do \
 		printf "%s %-20s " '-' "$$t"; \
@@ -412,6 +416,20 @@ define RUN_TESTS
 			else \
 				echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
 			fi; \
+		fi; \
+	done; \
+	echo "\nRunning $(words $(CFG_TESTS)) CFG tests:"; \
+	for t in $(CFG_TESTS); do \
+		printf "%s %-20s " '-' "$$t"; \
+		out="$(TEST_CFG_DIR)/$$t.out"; \
+		if $(TEST_EXEC) -cfg "$(TEST_CFG_DIR)/$$t.c" > "$$out" 2>/dev/null; then \
+			if diff -u "$(TEST_CFG_DIR)/$$t.ok" "$$out" >/dev/null 2>&1; then \
+				echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
+			else \
+				echo "$$RED FAIL $$NC"; \
+			fi; \
+		else \
+			echo "$$RED FAIL $$NC"; \
 		fi; \
 	done; \
 	echo "\nRunning $(words $(TAC_INTERP_TESTS)) TAC interpreter tests:"; \

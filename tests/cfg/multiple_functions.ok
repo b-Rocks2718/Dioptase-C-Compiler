@@ -1,0 +1,42 @@
+Function helper
+CFG (4 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Return Const(7)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+
+Function main
+CFG (4 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Call helper -> Var(main.tmp.0) ()
+    Return Var(main.tmp.0)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+

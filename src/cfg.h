@@ -46,6 +46,9 @@ struct CFG {
 // build a CFG for the body of a TAC function
 struct CFG* build_cfg(struct TACInstr* body);
 
+// Print an ASCII CFG visualization, including TAC and labeled outgoing edges.
+void print_cfg(const struct CFG* cfg);
+
 // rebuild the body of a TAC function from its CFG
 struct TACInstr* rebuild_body(struct CFG* cfg);
 

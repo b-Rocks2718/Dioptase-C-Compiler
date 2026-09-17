@@ -220,7 +220,7 @@ void print_static_init(const struct InitList* init) {
 // Inputs: instr points to the instruction; tabs is the indentation level.
 // Outputs: Writes one formatted instruction line to stdout.
 // Invariants/Assumptions: instr is non-NULL and variants are populated.
-static void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
+void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
   if (instr == NULL) {
     return;
   }

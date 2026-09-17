@@ -1,0 +1,26 @@
+Function main
+CFG (5 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Label main.goto.0
+    Jump main.goto.0
+    edges:
+      +-- jump --> [B1]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[B3]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+

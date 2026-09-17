@@ -1,0 +1,38 @@
+Function main
+CFG (7 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    CondJump CondE Const(1), Const(0), main.else.0
+    edges:
+      |-- fallthrough --> [B2]
+      +-- branch --> [B4]
+
+[B2]
+    Return Const(1)
+    edges:
+      +-- return --> [EXIT]
+
+[B3]
+    Jump main.end.1
+    edges:
+      +-- jump --> [B5]
+
+[B4]
+    Label main.else.0
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[B5]
+    Label main.end.1
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+

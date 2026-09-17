@@ -310,6 +310,9 @@ void print_static_init(const struct InitList* init);
 
 bool compare_bodies(struct TACInstr* body1, struct TACInstr* body2);
 
+// Print one TAC instruction to stdout with the requested indentation.
+void print_tac_instr(const struct TACInstr* instr, unsigned tabs);
+
 void print_tac_prog(struct TACProg* prog);
 
 // ----- TAC interpreter -----

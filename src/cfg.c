@@ -260,6 +260,142 @@ struct CFG* build_cfg(struct TACInstr* body) {
   return link_cfg(cfg);
 }
 
+// Return the array index of a node, or cfg->num_nodes when it is not registered
+// in the graph. Node indices give basic blocks stable names in printed output.
+static unsigned cfg_node_index(const struct CFG* cfg, const struct CFGNode* node) {
+  for (unsigned i = 0; i < cfg->num_nodes; i++) {
+    if (cfg->nodes[i] == node) {
+      return i;
+    }
+  }
+  return cfg->num_nodes;
+}
+
+// Print a compact, stable name for a CFG node.
+static void print_cfg_node_name(const struct CFG* cfg, const struct CFGNode* node) {
+  if (node == NULL) {
+    printf("[NULL]");
+    return;
+  }
+
+  unsigned index = cfg_node_index(cfg, node);
+  if (index == cfg->num_nodes) {
+    printf("[UNREGISTERED]");
+    return;
+  }
+
+  switch (node->type) {
+    case CFG_ENTRY:
+      printf("[ENTRY]");
+      break;
+    case CFG_EXIT:
+      printf("[EXIT]");
+      break;
+    case CFG_BASIC_BLOCK:
+      printf("[B%u]", index);
+      break;
+    default:
+      printf("[UNKNOWN %u]", index);
+      break;
+  }
+}
+
+// Describe why an edge exists. Conditional jumps can target the immediately
+// following block, in which case duplicate-edge suppression leaves one edge
+// carrying both meanings.
+static const char* cfg_edge_kind(const struct CFG* cfg,
+                                 const struct CFGNode* parent,
+                                 const struct CFGNode* child) {
+  if (parent->type == CFG_ENTRY) {
+    return "entry";
+  }
+  if (parent->type != CFG_BASIC_BLOCK || parent->last_instr == NULL) {
+    return "edge";
+  }
+
+  switch (parent->last_instr->type) {
+    case TACCOND_JUMP: {
+      const struct CFGNode* target = find_target_of_jump(cfg, parent->last_instr);
+      unsigned parent_index = cfg_node_index(cfg, parent);
+      const struct CFGNode* fallthrough =
+          parent_index + 1 < cfg->num_nodes ? cfg->nodes[parent_index + 1] : NULL;
+      bool is_branch = child == target;
+      bool is_fallthrough = child == fallthrough;
+      if (is_branch && is_fallthrough) {
+        return "branch + fallthrough";
+      }
+      if (is_branch) {
+        return "branch";
+      }
+      if (is_fallthrough) {
+        return "fallthrough";
+      }
+      return "edge";
+    }
+    case TACJUMP:
+      return "jump";
+    case TACRETURN:
+      return "return";
+    default:
+      return "fallthrough";
+  }
+}
+
+// Print an ASCII representation of a CFG. Blocks appear in source order, TAC
+// instructions are indented below them, and labeled arrows name all outgoing
+// edges. Backedges remain easy to spot because block names use stable indices.
+void print_cfg(const struct CFG* cfg) {
+  if (cfg == NULL) {
+    printf("CFG <null>\n");
+    return;
+  }
+  if (cfg->nodes == NULL || cfg->num_nodes == 0) {
+    printf("CFG <invalid: no nodes>\n");
+    return;
+  }
+
+  printf("CFG (%u nodes)\n", cfg->num_nodes);
+  printf("===============\n");
+
+  for (unsigned i = 0; i < cfg->num_nodes; i++) {
+    const struct CFGNode* node = cfg->nodes[i];
+    print_cfg_node_name(cfg, node);
+    printf("\n");
+
+    if (node == NULL) {
+      printf("    edges: unavailable\n\n");
+      continue;
+    }
+
+    if (node->type == CFG_BASIC_BLOCK) {
+      if (node->body == NULL) {
+        printf("    <empty block>\n");
+      } else {
+        for (const struct TACInstr* instr = node->body;
+             instr != NULL;
+             instr = instr->next) {
+          print_tac_instr(instr, 1);
+        }
+      }
+    }
+
+    if (node->successors.head == NULL) {
+      printf("    edges: none\n");
+    } else {
+      printf("    edges:\n");
+      for (const struct CFGNodeEntry* edge = node->successors.head;
+           edge != NULL;
+           edge = edge->next) {
+        printf("      %s-- %s --> ", edge->next == NULL ? "+" : "|",
+               cfg_edge_kind(cfg, node, edge->node));
+        print_cfg_node_name(cfg, edge->node);
+        printf("\n");
+      }
+    }
+    printf("\n");
+  }
+}
+
 // rebuild the body of a TAC function from its CFG
 struct TACInstr* rebuild_body(struct CFG* cfg) {
   (void)cfg;
