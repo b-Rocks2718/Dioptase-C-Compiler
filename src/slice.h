@@ -9,8 +9,11 @@ struct Slice {
   size_t len;        // How many characters in the string
 };
 
+// compare a slice to a C string pointer
+// true if the slice is equal to the C string pointer, false otherwise
 bool compare_slice_to_pointer(const struct Slice* s, char const *p);
 
+// true if the slices are equal, false otherwise
 bool compare_slice_to_slice(const struct Slice* self, const struct Slice* other);
 
 struct Slice* slice_concat(const struct Slice* a, const char* b);
