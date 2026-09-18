@@ -2,6 +2,7 @@
 #define CFG_H
 
 #include "TAC.h"
+#include "stdbool.h"
 
 enum CFGNodeType {
   CFG_ENTRY,
@@ -32,6 +33,8 @@ struct CFGNode {
 
   struct TACInstr* body;       // first instruction
   struct TACInstr* last_instr; // final instruction and O(1) append position
+
+  bool marked; // used for marking nodes during traversals
 };
 
 // a control flow graph, consisting of an array of CFGNodes and the total number of nodes

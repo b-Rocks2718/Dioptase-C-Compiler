@@ -16,6 +16,7 @@ static struct CFGNode* make_start_node(void) {
   node->successors.tail = NULL;
   node->body = NULL;
   node->last_instr = NULL;
+  node->marked = false;
   return node;
 }
 
@@ -29,6 +30,7 @@ static struct CFGNode* make_exit_node(void) {
   node->successors.tail = NULL;
   node->body = NULL;
   node->last_instr = NULL;
+  node->marked = false;
   return node;
 }
 
@@ -42,6 +44,7 @@ static struct CFGNode* make_basic_block_node(void) {
   node->successors.tail = NULL;
   node->body = NULL;
   node->last_instr = NULL;
+  node->marked = false;
   return node;
 }
 

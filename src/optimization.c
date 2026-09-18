@@ -1,5 +1,6 @@
 #include "optimization.h"
 #include "arena.h"
+#include "TAC.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -558,9 +559,127 @@ static struct ConstantFoldResult constant_fold_instr(struct TACInstr* instr) {
   }
 }
 
+// must set all marks to false before calling
+void dfs_cfg(struct CFGNode* entry){
+  if (entry == NULL || entry->marked) {
+    return;
+  }
+  entry->marked = true;
+  for (struct CFGNodeEntry* succ = entry->successors.head; succ != NULL; succ = succ->next) {
+    dfs_cfg(succ->node);
+  }
+}
+
+struct CFG* remove_dead_blocks(struct CFG* cfg){
+  // reset node marks
+  for (unsigned i = 0; i < cfg->num_nodes; i++) {
+    cfg->nodes[i]->marked = false;
+  }
+
+  // dfs from entry node and mark every node we encounter
+  dfs_cfg(cfg->nodes[0]); // first node is the entry node
+
+  // count marked nodes
+  unsigned num_marked = 0;
+  for (unsigned i = 0; i < cfg->num_nodes; i++) {
+    if (cfg->nodes[i]->marked) {
+      num_marked++;
+    }
+  }
+
+  // create new cfg with only the marked nodes
+  struct CFG* new_cfg = arena_alloc(sizeof(struct CFG));
+  new_cfg->num_nodes = num_marked;
+  new_cfg->nodes = arena_alloc(sizeof(struct CFGNode*) * num_marked);
+  for (unsigned i = 0, j = 0; i < cfg->num_nodes; i++) {
+    if (cfg->nodes[i]->marked) {
+      new_cfg->nodes[j++] = cfg->nodes[i];
+    }
+  }
+
+  return new_cfg;
+}
+
+void remove_useless_jumps(struct CFG* cfg){
+  // loop over the basic block nodes
+  for (unsigned i = 1; i < cfg->num_nodes - 1; i++) {
+    struct CFGNode* block = cfg->nodes[i];
+
+    // jump is useless if the only thing it targets is the next block
+    if (block->successors.head->node == &cfg->nodes[i + 1] &&
+        block->successors.head == block->successors.tail) {
+      
+      // find last and 2nd to last instr
+      struct TACInstr* last = block->body;
+      struct TACInstr* second_to_last = NULL;
+      while (last != NULL && last->next != NULL) {
+        second_to_last = last;
+        last = last->next;
+      }
+      
+      
+      // remove jump from the list of instructions in this block
+      if (second_to_last != NULL) {
+        second_to_last->next = NULL;
+      } else {
+        block->body = NULL;
+      }
+    }
+  }
+}
+
+void remove_useless_labels(struct CFG* cfg){
+  // loop over the basic block nodes
+  for (unsigned i = 1; i < cfg->num_nodes - 1; i++) {
+    struct CFGNode* block = cfg->nodes[i];
+
+    // label is useless if the only thing targeting the label 
+    // is the previous block
+    if (block->predecessors.head->node == &cfg->nodes[i - 1] &&
+        block->predecessors.head == block->predecessors.tail) {
+      // remove label from the list of instructions in this block
+      if (block->body != NULL && block->body->type == TACLABEL) {
+        struct TACInstr* label = block->body;
+        block->body = label->next;
+        label->next = NULL;
+      }
+    }
+  }
+}
+
+struct CFG* remove_empty_blocks(struct CFG* cfg){
+  unsigned num_nonempty_blocks = 0;
+  for (unsigned i = 0; i < cfg->num_nodes; i++) {
+    struct CFGNode* block = cfg->nodes[i];
+
+    if (block->type != CFG_BASIC_BLOCK || block->body != NULL) {
+      // count ENTRY and EXIT nodes
+      num_nonempty_blocks++;
+    }
+  }
+
+  struct CFG* new_cfg = arena_alloc(sizeof(struct CFG));
+  new_cfg->num_nodes = num_nonempty_blocks;
+  new_cfg->nodes = arena_alloc(sizeof(struct CFGNode*) * num_nonempty_blocks);
+
+  for (unsigned i = 0, j = 0; i < cfg->num_nodes; i++) {
+    struct CFGNode* block = cfg->nodes[i];
+
+    if (block->type != CFG_BASIC_BLOCK || block->body != NULL) {
+      new_cfg->nodes[j++] = block;
+    }
+  }
+
+  return new_cfg;
+}
+
 struct CFG* dead_code_elim(struct CFG* cfg){
-  // TODO
-  return NULL;
+  cfg = remove_dead_blocks(cfg);
+  remove_useless_jumps(cfg);
+  remove_useless_labels(cfg);
+  cfg = remove_empty_blocks(cfg);
+
+  return cfg;
 }
 
 struct CFG* copy_prop(struct CFG* cfg){
