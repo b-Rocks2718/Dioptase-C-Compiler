@@ -1,4 +1,7 @@
 #include "TAC.h"
+#include "arena.h"
+#include "cfg.h"
+#include "optimization.h"
 #include "slice.h"
 
 #include <stdbool.h>
@@ -32,6 +35,18 @@ static struct Val tac_val_const(int value, struct Type* type) {
   struct Val val;
   val.val_type = CONSTANT;
   val.val.const_value = (uint64_t)(int64_t)value;
+  val.type = type;
+  return val;
+}
+
+// Purpose: Build a constant TAC value from an exact 64-bit bit pattern.
+// Inputs: value is the raw integer representation; type supplies width/sign.
+// Outputs: Returns a Val tagged as CONSTANT.
+// Invariants/Assumptions: The caller chooses a value valid for the test type.
+static struct Val tac_val_const_bits(uint64_t value, struct Type* type) {
+  struct Val val;
+  val.val_type = CONSTANT;
+  val.val.const_value = value;
   val.type = type;
   return val;
 }
@@ -200,15 +215,14 @@ static bool tac_test_arithmetic(void) {
 }
 
 /*
-Purpose: Verify compare and conditional jump handling.
+Purpose: Verify fused comparison and conditional jump handling.
 Inputs: None (builds a TACProg in-place).
 Outputs: Returns true when the interpreter returns 1.
-Invariants/Assumptions: Exercises TACCMP and TACCOND_JUMP.
+Invariants/Assumptions: TACCOND_JUMP carries both comparison operands.
 
 Readable TAC:
   func main:
-    cmp 5, 10
-    if LT goto L_then
+    if 5 LT 10 goto L_then
     return 2
   L_then:
     return 1
@@ -226,26 +240,23 @@ static bool tac_test_cond_jump(void) {
   struct Val const_1 = tac_val_const(kTrueValue, &kTestIntType);
   struct Val const_2 = tac_val_const(kFalseValue, &kTestIntType);
 
-  struct TACInstr cmp_instr;
   struct TACInstr cond_jump;
   struct TACInstr ret_false;
   struct TACInstr label;
   struct TACInstr ret_true;
-  tac_init_instr(&cmp_instr, TACCMP);
   tac_init_instr(&cond_jump, TACCOND_JUMP);
   tac_init_instr(&ret_false, TACRETURN);
   tac_init_instr(&label, TACLABEL);
   tac_init_instr(&ret_true, TACRETURN);
 
-  cmp_instr.instr.tac_cmp.src1 = &const_5;
-  cmp_instr.instr.tac_cmp.src2 = &const_10;
+  cond_jump.instr.tac_cond_jump.src1 = &const_5;
+  cond_jump.instr.tac_cond_jump.src2 = &const_10;
   cond_jump.instr.tac_cond_jump.condition = CondL;
   cond_jump.instr.tac_cond_jump.label = &then_label;
   ret_false.instr.tac_return.dst = &const_2;
   label.instr.tac_label.label = &then_label;
   ret_true.instr.tac_return.dst = &const_1;
 
-  tac_link_instr(&cmp_instr, &cond_jump);
   tac_link_instr(&cond_jump, &ret_false);
   tac_link_instr(&ret_false, &label);
   tac_link_instr(&label, &ret_true);
@@ -254,7 +265,7 @@ static bool tac_test_cond_jump(void) {
   main_func.type = FUNC;
   main_func.name = &main_name;
   main_func.global = true;
-  main_func.body = &cmp_instr;
+  main_func.body = &cond_jump;
   main_func.params = NULL;
   main_func.num_params = 0;
   main_func.next = NULL;
@@ -669,6 +680,493 @@ static bool tac_test_copy_to_offset(void) {
   return tac_expect_result("copy_to_offset", result, kExpected);
 }
 
+// Purpose: Check a constant-folding replacement and its typed result.
+// Inputs: name identifies the case; instr is the original instruction;
+// expected_dst/type/value describe the required TACCOPY.
+// Outputs: Returns true when all replacement fields match.
+// Invariants/Assumptions: The compiler arena is initialized.
+static bool tac_expect_folded_constant(const char* name,
+                                       struct TACInstr* instr,
+                                       struct Val* expected_dst,
+                                       struct Type* expected_type,
+                                       uint64_t expected_value) {
+  struct TACInstr* folded = constant_fold(instr);
+  if (folded != NULL && folded != instr && folded->type == TACCOPY &&
+      folded->instr.tac_copy.dst == expected_dst &&
+      folded->instr.tac_copy.src != NULL &&
+      folded->instr.tac_copy.src->val_type == CONSTANT &&
+      folded->instr.tac_copy.src->type == expected_type &&
+      folded->instr.tac_copy.src->val.const_value == expected_value) {
+    return true;
+  }
+
+  printf("constant-folding test %s failed: expected a typed constant copy "
+         "with value 0x%016llx\n",
+         name, (unsigned long long)expected_value);
+  return false;
+}
+
+/*
+Purpose: Verify constant folding for operand selection, integer signedness,
+truncation, sign extension, and fused conditional jumps.
+Inputs: None (builds isolated TAC instructions in-place).
+Outputs: Returns true when each instruction has the expected folded form.
+Invariants/Assumptions: Constants use the TAC raw-bit representation.
+*/
+static bool tac_test_constant_folding(void) {
+  struct Type long_type = { .type = LONG_TYPE };
+  struct Type uint_type = { .type = UINT_TYPE };
+  struct Type uchar_type = { .type = UCHAR_TYPE };
+  struct Type schar_type = { .type = SCHAR_TYPE };
+  struct Slice dst_name = tac_slice_literal("fold.dst");
+  struct Slice right_name = tac_slice_literal("fold.right");
+  struct Slice target_name = tac_slice_literal("fold.target");
+  struct Val int_dst = tac_val_var(&dst_name, &kTestIntType);
+  struct Val long_dst = tac_val_var(&dst_name, &long_type);
+  struct Val uchar_dst = tac_val_var(&dst_name, &uchar_type);
+  struct Val variable_right = tac_val_var(&right_name, &kTestIntType);
+  struct Val one = tac_val_const(1, &kTestIntType);
+  struct Val two = tac_val_const(2, &kTestIntType);
+  struct Val minus_seven_bits =
+      tac_val_const_bits(UINT64_C(0xfffffff9), &kTestIntType);
+  struct Val minus_twenty_thousand_bits =
+      tac_val_const_bits(UINT64_C(0xffffb1e0), &kTestIntType);
+  struct Val int_min_bits =
+      tac_val_const_bits(UINT64_C(0x80000000), &kTestIntType);
+  struct Val minus_one_bits =
+      tac_val_const_bits(UINT64_C(0xffffffff), &kTestIntType);
+  struct Val uint_max = tac_val_const_bits(UINT64_C(0xffffffff), &uint_type);
+  struct Val uint_zero = tac_val_const_bits(UINT64_C(0), &uint_type);
+  struct Val all_bits = tac_val_const_bits(UINT64_MAX, &long_type);
+  struct Val signed_byte_min = tac_val_const_bits(UINT64_C(0x80), &schar_type);
+  struct TACInstr instr;
+  bool ok = true;
+
+  arena_init(1024);
+
+  tac_init_instr(&instr, TACBINARY);
+  instr.instr.tac_binary.alu_op = ALU_MOV;
+  instr.instr.tac_binary.dst = &int_dst;
+  instr.instr.tac_binary.src1 = &one;
+  instr.instr.tac_binary.src2 = &variable_right;
+  struct TACInstr* folded_move = constant_fold(&instr);
+  if (folded_move == NULL || folded_move == &instr ||
+      folded_move->type != TACCOPY ||
+      folded_move->last != folded_move ||
+      folded_move->instr.tac_copy.dst != &int_dst ||
+      folded_move->instr.tac_copy.src != &variable_right) {
+    printf("constant-folding test ALU_MOV failed: expected the second operand "
+           "to be copied\n");
+    ok = false;
+  }
+
+  tac_init_instr(&instr, TACBINARY);
+  instr.instr.tac_binary.alu_op = ALU_SDIV;
+  instr.instr.tac_binary.dst = &int_dst;
+  instr.instr.tac_binary.src1 = &minus_seven_bits;
+  instr.instr.tac_binary.src2 = &two;
+  ok = tac_expect_folded_constant("signed division", &instr, &int_dst,
+                                  &kTestIntType, UINT64_MAX - UINT64_C(2)) && ok;
+
+  tac_init_instr(&instr, TACBINARY);
+  instr.instr.tac_binary.alu_op = ALU_ASR;
+  instr.instr.tac_binary.dst = &int_dst;
+  instr.instr.tac_binary.src1 = &minus_twenty_thousand_bits;
+  instr.instr.tac_binary.src2 = &two;
+  ok = tac_expect_folded_constant("arithmetic right shift", &instr, &int_dst,
+                                  &kTestIntType,
+                                  (uint64_t)(int64_t)-5000) && ok;
+
+  tac_init_instr(&instr, TACTRUNC);
+  instr.instr.tac_trunc.dst = &int_dst;
+  instr.instr.tac_trunc.src = &all_bits;
+  instr.instr.tac_trunc.target_size = sizeof(uint32_t);
+  ok = tac_expect_folded_constant("signed truncation", &instr, &int_dst,
+                                  &kTestIntType, UINT64_MAX) && ok;
+
+  tac_init_instr(&instr, TACTRUNC);
+  instr.instr.tac_trunc.dst = &uchar_dst;
+  instr.instr.tac_trunc.src = &all_bits;
+  instr.instr.tac_trunc.target_size = sizeof(uint8_t);
+  ok = tac_expect_folded_constant("unsigned truncation", &instr, &uchar_dst,
+                                  &uchar_type, UINT64_C(0xff)) && ok;
+
+  tac_init_instr(&instr, TACEXTEND);
+  instr.instr.tac_extend.dst = &long_dst;
+  instr.instr.tac_extend.src = &signed_byte_min;
+  instr.instr.tac_extend.src_size = sizeof(uint8_t);
+  ok = tac_expect_folded_constant("sign extension", &instr, &long_dst,
+                                  &long_type,
+                                  (uint64_t)(int64_t)-128) && ok;
+
+  tac_init_instr(&instr, TACBINARY);
+  instr.instr.tac_binary.alu_op = ALU_SDIV;
+  instr.instr.tac_binary.dst = &int_dst;
+  instr.instr.tac_binary.src1 = &one;
+  struct Val zero = tac_val_const(0, &kTestIntType);
+  instr.instr.tac_binary.src2 = &zero;
+  if (constant_fold(&instr) != &instr) {
+    printf("constant-folding test division by zero failed: undefined "
+           "operation must remain unfolded\n");
+    ok = false;
+  }
+
+  tac_init_instr(&instr, TACBINARY);
+  instr.instr.tac_binary.alu_op = ALU_SDIV;
+  instr.instr.tac_binary.dst = &int_dst;
+  instr.instr.tac_binary.src1 = &int_min_bits;
+  instr.instr.tac_binary.src2 = &minus_one_bits;
+  if (constant_fold(&instr) != &instr) {
+    printf("constant-folding test signed division overflow failed: undefined "
+           "operation must remain unfolded\n");
+    ok = false;
+  }
+
+  tac_init_instr(&instr, TACCOND_JUMP);
+  instr.instr.tac_cond_jump.src1 = &minus_one_bits;
+  instr.instr.tac_cond_jump.src2 = &zero;
+  instr.instr.tac_cond_jump.condition = CondL;
+  instr.instr.tac_cond_jump.label = &target_name;
+  struct TACInstr* folded_jump = constant_fold(&instr);
+  if (folded_jump == NULL || folded_jump == &instr ||
+      folded_jump->type != TACJUMP ||
+      folded_jump->instr.tac_jump.label != &target_name) {
+    printf("constant-folding test signed conditional jump failed: expected "
+           "an unconditional jump\n");
+    ok = false;
+  }
+
+  struct TACInstr return_after_jump;
+  tac_init_instr(&instr, TACCOND_JUMP);
+  tac_init_instr(&return_after_jump, TACRETURN);
+  instr.instr.tac_cond_jump.src1 = &uint_max;
+  instr.instr.tac_cond_jump.src2 = &uint_zero;
+  instr.instr.tac_cond_jump.condition = CondB;
+  instr.instr.tac_cond_jump.label = &target_name;
+  return_after_jump.instr.tac_return.dst = &one;
+  tac_link_instr(&instr, &return_after_jump);
+  struct TACInstr* folded_fallthrough = constant_fold(&instr);
+  if (folded_fallthrough != &return_after_jump ||
+      folded_fallthrough->last != &return_after_jump) {
+    printf("constant-folding test unsigned conditional jump failed: expected "
+           "the never-taken jump to be removed\n");
+    ok = false;
+  }
+
+  arena_destroy();
+  return ok;
+}
+
+// Purpose: Check one expected result from TAC body comparison.
+// Inputs: name identifies the field under test; left/right are TAC bodies.
+// Outputs: Returns true when compare_bodies produces expected.
+// Invariants/Assumptions: The bodies are acyclic.
+static bool tac_expect_body_comparison(const char* name, struct TACInstr* left,
+                                       struct TACInstr* right, bool expected) {
+  bool actual = compare_bodies(left, right);
+  if (actual == expected) {
+    return true;
+  }
+  printf("TAC comparison test %s failed: expected %s, got %s\n",
+         name, expected ? "equal" : "different", actual ? "equal" : "different");
+  return false;
+}
+
+/*
+Purpose: Verify equality for every TAC instruction payload.
+Inputs: None (builds isolated instruction nodes in-place).
+Outputs: Returns true when identical payloads compare equal and every changed
+field compares different.
+Invariants/Assumptions: TAC references intentionally use pointer identity.
+*/
+static bool tac_test_compare_bodies(void) {
+  const size_t kFirstCount = 1;
+  const size_t kSecondCount = 2;
+  const int kFirstOffset = 4;
+  const int kSecondOffset = 8;
+  const size_t kFirstSize = 2;
+  const size_t kSecondSize = 4;
+  struct Slice first_name = tac_slice_literal("first");
+  struct Slice second_name = tac_slice_literal("second");
+  struct Val first_val = tac_val_var(&first_name, &kTestIntType);
+  struct Val second_val = tac_val_var(&second_name, &kTestIntType);
+  struct Val first_args[1] = { first_val };
+  struct Val second_args[1] = { second_val };
+  char first_loc;
+  char second_loc;
+  struct TACInstr left;
+  struct TACInstr right;
+  struct TACInstr extra;
+  bool ok = true;
+
+#define EXPECT_MATCH() do {                                                        \
+    right = left;                                                                 \
+    ok = tac_expect_body_comparison("identical payload", &left, &right, true)     \
+         && ok;                                                                   \
+  } while (false)
+#define EXPECT_FIELD_DIFFERENT(FIELD, VALUE) do {                                 \
+    right = left;                                                                 \
+    right.FIELD = (VALUE);                                                        \
+    ok = tac_expect_body_comparison(#FIELD, &left, &right, false) && ok;          \
+  } while (false)
+
+  ok = tac_expect_body_comparison("empty bodies", NULL, NULL, true) && ok;
+
+  tac_init_instr(&left, TACRETURN);
+  left.instr.tac_return.dst = &first_val;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_return.dst, &second_val);
+
+  tac_init_instr(&left, TACUNARY);
+  left.instr.tac_unary.op = NEGATE;
+  left.instr.tac_unary.dst = &first_val;
+  left.instr.tac_unary.src = &first_val;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_unary.op, BOOL_NOT);
+  EXPECT_FIELD_DIFFERENT(instr.tac_unary.dst, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_unary.src, &second_val);
+
+  tac_init_instr(&left, TACBINARY);
+  left.instr.tac_binary.alu_op = ALU_ADD;
+  left.instr.tac_binary.dst = &first_val;
+  left.instr.tac_binary.src1 = &first_val;
+  left.instr.tac_binary.src2 = &first_val;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_binary.alu_op, ALU_SUB);
+  EXPECT_FIELD_DIFFERENT(instr.tac_binary.dst, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_binary.src1, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_binary.src2, &second_val);
+
+  tac_init_instr(&left, TACCOND_JUMP);
+  left.instr.tac_cond_jump.src1 = &first_val;
+  left.instr.tac_cond_jump.src2 = &first_val;
+  left.instr.tac_cond_jump.condition = CondE;
+  left.instr.tac_cond_jump.label = &first_name;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_cond_jump.src1, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_cond_jump.src2, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_cond_jump.condition, CondNE);
+  EXPECT_FIELD_DIFFERENT(instr.tac_cond_jump.label, &second_name);
+
+  tac_init_instr(&left, TACJUMP);
+  left.instr.tac_jump.label = &first_name;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_jump.label, &second_name);
+
+  tac_init_instr(&left, TACLABEL);
+  left.instr.tac_label.label = &first_name;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_label.label, &second_name);
+
+  tac_init_instr(&left, TACCOPY);
+  left.instr.tac_copy.dst = &first_val;
+  left.instr.tac_copy.src = &first_val;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_copy.dst, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_copy.src, &second_val);
+
+  tac_init_instr(&left, TACCALL);
+  left.instr.tac_call.func_name = &first_name;
+  left.instr.tac_call.dst = &first_val;
+  left.instr.tac_call.args = first_args;
+  left.instr.tac_call.num_args = kFirstCount;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_call.func_name, &second_name);
+  EXPECT_FIELD_DIFFERENT(instr.tac_call.dst, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_call.args, second_args);
+  EXPECT_FIELD_DIFFERENT(instr.tac_call.num_args, kSecondCount);
+
+  tac_init_instr(&left, TACCALL_INDIRECT);
+  left.instr.tac_call_indirect.func = &first_val;
+  left.instr.tac_call_indirect.dst = &first_val;
+  left.instr.tac_call_indirect.args = first_args;
+  left.instr.tac_call_indirect.num_args = kFirstCount;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_call_indirect.func, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_call_indirect.dst, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_call_indirect.args, second_args);
+  EXPECT_FIELD_DIFFERENT(instr.tac_call_indirect.num_args, kSecondCount);
+
+  tac_init_instr(&left, TACGET_ADDRESS);
+  left.instr.tac_get_address.dst = &first_val;
+  left.instr.tac_get_address.src = &first_val;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_get_address.dst, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_get_address.src, &second_val);
+
+  tac_init_instr(&left, TACLOAD);
+  left.instr.tac_load.dst = &first_val;
+  left.instr.tac_load.src_ptr = &first_val;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_load.dst, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_load.src_ptr, &second_val);
+
+  tac_init_instr(&left, TACSTORE);
+  left.instr.tac_store.dst_ptr = &first_val;
+  left.instr.tac_store.src = &first_val;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_store.dst_ptr, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_store.src, &second_val);
+
+  tac_init_instr(&left, TACCOPY_TO_OFFSET);
+  left.instr.tac_copy_to_offset.dst = &first_name;
+  left.instr.tac_copy_to_offset.src = &first_val;
+  left.instr.tac_copy_to_offset.offset = kFirstOffset;
+  left.instr.tac_copy_to_offset.dst_type = &kTestIntType;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_copy_to_offset.dst, &second_name);
+  EXPECT_FIELD_DIFFERENT(instr.tac_copy_to_offset.src, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_copy_to_offset.offset, kSecondOffset);
+  EXPECT_FIELD_DIFFERENT(instr.tac_copy_to_offset.dst_type, &kTestPtrType);
+
+  tac_init_instr(&left, TACCOPY_FROM_OFFSET);
+  left.instr.tac_copy_from_offset.dst = &first_val;
+  left.instr.tac_copy_from_offset.src = &first_name;
+  left.instr.tac_copy_from_offset.offset = kFirstOffset;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_copy_from_offset.dst, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_copy_from_offset.src, &second_name);
+  EXPECT_FIELD_DIFFERENT(instr.tac_copy_from_offset.offset, kSecondOffset);
+
+  tac_init_instr(&left, TACBOUNDARY);
+  left.instr.tac_boundary.loc = &first_loc;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_boundary.loc, &second_loc);
+
+  tac_init_instr(&left, TACTRUNC);
+  left.instr.tac_trunc.dst = &first_val;
+  left.instr.tac_trunc.src = &first_val;
+  left.instr.tac_trunc.target_size = kFirstSize;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_trunc.dst, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_trunc.src, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_trunc.target_size, kSecondSize);
+
+  tac_init_instr(&left, TACEXTEND);
+  left.instr.tac_extend.dst = &first_val;
+  left.instr.tac_extend.src = &first_val;
+  left.instr.tac_extend.src_size = kFirstSize;
+  EXPECT_MATCH();
+  EXPECT_FIELD_DIFFERENT(instr.tac_extend.dst, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_extend.src, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_extend.src_size, kSecondSize);
+
+  tac_init_instr(&right, TACRETURN);
+  ok = tac_expect_body_comparison("instruction type", &left, &right, false) && ok;
+  tac_init_instr(&extra, TACRETURN);
+  left.next = &extra;
+  ok = tac_expect_body_comparison("body length", &left, &right, false) && ok;
+
+#undef EXPECT_FIELD_DIFFERENT
+#undef EXPECT_MATCH
+
+  return ok;
+}
+
+/*
+Purpose: Verify that TAC-to-CFG-to-TAC round trips are idempotent and that
+CFG-to-TAC rebuilding is repeatable and non-destructive.
+Inputs: None (builds a three-block TAC body in-place).
+Outputs: Returns true when two complete round trips equal the input, repeated
+rebuilds have valid tail links, and every CFG block remains independently
+terminated.
+Invariants/Assumptions: build_cfg preserves basic blocks in TAC layout order.
+*/
+static bool tac_test_cfg_rebuild(void) {
+  const unsigned kExpectedNodeCount = 5;
+  const unsigned kExpectedInstrCount = 5;
+  const size_t kArenaBlockSize = 1024;
+  struct Slice target_name = tac_slice_literal("target");
+  struct Val zero = tac_val_const(0, &kTestIntType);
+  struct Val one = tac_val_const(1, &kTestIntType);
+  struct Val condition = tac_val_const(1, &kTestIntType);
+  struct TACInstr cond_jump;
+  struct TACInstr return_false;
+  struct TACInstr label;
+  struct TACInstr copy;
+  struct TACInstr return_true;
+  bool ok = true;
+
+  arena_init(kArenaBlockSize);
+
+  tac_init_instr(&copy, TACCOPY);
+  copy.instr.tac_copy.dst = &condition;
+  copy.instr.tac_copy.src = &one;
+  tac_init_instr(&cond_jump, TACCOND_JUMP);
+  cond_jump.instr.tac_cond_jump.src1 = &condition;
+  cond_jump.instr.tac_cond_jump.src2 = &zero;
+  cond_jump.instr.tac_cond_jump.condition = CondNE;
+  cond_jump.instr.tac_cond_jump.label = &target_name;
+  tac_init_instr(&return_false, TACRETURN);
+  return_false.instr.tac_return.dst = &zero;
+  tac_init_instr(&label, TACLABEL);
+  label.instr.tac_label.label = &target_name;
+  tac_init_instr(&return_true, TACRETURN);
+  return_true.instr.tac_return.dst = &one;
+
+  copy.next = &cond_jump;
+  cond_jump.next = &return_false;
+  return_false.next = &label;
+  label.next = &return_true;
+  copy.last = &return_true;
+
+  struct CFG* cfg = build_cfg(&copy);
+  if (cfg == NULL || cfg->num_nodes != kExpectedNodeCount) {
+    printf("CFG rebuild test setup failed: expected %u CFG nodes\n",
+           kExpectedNodeCount);
+    arena_destroy();
+    return false;
+  }
+
+  struct TACInstr* first = rebuild_body(cfg);
+  struct TACInstr* second = rebuild_body(cfg);
+  if (!compare_bodies(&copy, first) || !compare_bodies(first, second)) {
+    printf("CFG rebuild test failed: repeated rebuilds changed TAC instruction order\n");
+    ok = false;
+  }
+  if (first == second || first == cfg->nodes[1]->body) {
+    printf("CFG rebuild test failed: rebuilt TAC must use detached instruction copies\n");
+    ok = false;
+  }
+
+  struct CFG* second_cfg = build_cfg(first);
+  struct TACInstr* second_round_trip = rebuild_body(second_cfg);
+  if (!compare_bodies(first, second_round_trip)) {
+    printf("CFG rebuild test failed: a second TAC-to-CFG-to-TAC round trip "
+           "changed the body\n");
+    ok = false;
+  }
+  if (second_round_trip == first) {
+    printf("CFG rebuild test failed: the second round trip reused its input list\n");
+    ok = false;
+  }
+
+  unsigned instr_count = 0;
+  struct TACInstr* rebuilt_tail = NULL;
+  for (struct TACInstr* instr = first; instr != NULL; instr = instr->next) {
+    rebuilt_tail = instr;
+    instr_count++;
+  }
+  if (instr_count != kExpectedInstrCount || first == NULL ||
+      first->last != rebuilt_tail) {
+    printf("CFG rebuild test failed: expected %u instructions and a valid tail link\n",
+           kExpectedInstrCount);
+    ok = false;
+  }
+
+  for (unsigned i = 1; i + 1 < cfg->num_nodes; i++) {
+    struct CFGNode* block = cfg->nodes[i];
+    if (block->last_instr == NULL || block->last_instr->next != NULL ||
+        block->body->last != block->last_instr) {
+      printf("CFG rebuild test failed: rebuilding mutated basic block %u\n", i);
+      ok = false;
+    }
+  }
+
+  arena_destroy();
+  return ok;
+}
+
 // Purpose: Run all TAC interpreter tests.
 // Inputs: None.
 // Outputs: Returns 0 on success and non-zero on failure.
@@ -691,6 +1189,12 @@ int main(void) {
   ok = tac_test_jump() && ok;
   printf("- tac_test_copy_to_offset\n");
   ok = tac_test_copy_to_offset() && ok;
+  printf("- tac_test_constant_folding\n");
+  ok = tac_test_constant_folding() && ok;
+  printf("- tac_test_compare_bodies\n");
+  ok = tac_test_compare_bodies() && ok;
+  printf("- tac_test_cfg_rebuild\n");
+  ok = tac_test_cfg_rebuild() && ok;
 
   if (ok) {
     printf("TAC interpreter tests passed. ");

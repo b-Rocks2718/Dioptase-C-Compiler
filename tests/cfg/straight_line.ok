@@ -1,0 +1,31 @@
+Function main
+CFG (4 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Copy Var(value.0), Const(1)
+    Binary AddOp Var(main.tmp.0), Var(value.0), Const(2)
+    Copy Var(value.0), Var(main.tmp.0)
+    Return Var(value.0)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+       [ENTRY]
+   +------+
+   v
+ [B1]         [B2]
+   +------+     |
+          +-----+
+          v
+       [EXIT]

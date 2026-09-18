@@ -54,7 +54,6 @@ enum TACInstrType {
   TACUNARY,
   TACBINARY,
   TACCOND_JUMP,
-  TACCMP,
   TACJUMP,
   TACLABEL,
   TACCOPY,
@@ -120,13 +119,10 @@ struct TACBinary {
 };
 
 struct TACCondJump {
-  enum TACCondition condition;
-  struct Slice* label;
-};
-
-struct TACCmp {
   struct Val* src1;
   struct Val* src2;
+  enum TACCondition condition;
+  struct Slice* label;
 };
 
 struct TACJump {
@@ -205,7 +201,6 @@ union TACInstrVariant {
   struct TACUnary tac_unary;
   struct TACBinary tac_binary;
   struct TACCondJump tac_cond_jump;
-  struct TACCmp tac_cmp;
   struct TACJump tac_jump;
   struct TACLabel tac_label;
   struct TACCopy tac_copy;
@@ -312,6 +307,11 @@ void concat_TAC_instrs(struct TACInstr** old_instrs, struct TACInstr* new_instrs
 struct Val* make_temp(struct Slice* func_name, struct Type* type);
 
 void print_static_init(const struct InitList* init);
+
+bool compare_bodies(struct TACInstr* body1, struct TACInstr* body2);
+
+// Print one TAC instruction to stdout with the requested indentation.
+void print_tac_instr(const struct TACInstr* instr, unsigned tabs);
 
 void print_tac_prog(struct TACProg* prog);
 

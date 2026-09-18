@@ -356,12 +356,9 @@ static struct TACInstr* emit_unsigned_lhs_signed_divmod(struct Slice* func_name,
     struct Slice* rhs_nonneg = tac_make_label(func_name, "rhs_nonneg");
     struct Slice* rhs_done = tac_make_label(func_name, "rhs_done");
 
-    struct TACInstr* cmp_rhs = tac_instr_create(TACCMP);
-    cmp_rhs->instr.tac_cmp.src1 = rhs;
-    cmp_rhs->instr.tac_cmp.src2 = tac_make_const(0, rhs_type);
-    concat_TAC_instrs(&instrs, cmp_rhs);
-
     struct TACInstr* jump_rhs_nonneg = tac_instr_create(TACCOND_JUMP);
+    jump_rhs_nonneg->instr.tac_cond_jump.src1 = rhs;
+    jump_rhs_nonneg->instr.tac_cond_jump.src2 = tac_make_const(0, rhs_type);
     jump_rhs_nonneg->instr.tac_cond_jump.condition = CondGE;
     jump_rhs_nonneg->instr.tac_cond_jump.label = rhs_nonneg;
     concat_TAC_instrs(&instrs, jump_rhs_nonneg);
@@ -410,12 +407,9 @@ static struct TACInstr* emit_unsigned_lhs_signed_divmod(struct Slice* func_name,
   if (!is_mod && rhs_neg != NULL) {
     struct Slice* div_done = tac_make_label(func_name, "div_done");
 
-    struct TACInstr* cmp_neg = tac_instr_create(TACCMP);
-    cmp_neg->instr.tac_cmp.src1 = rhs_neg;
-    cmp_neg->instr.tac_cmp.src2 = tac_make_const(0, rhs_neg->type);
-    concat_TAC_instrs(&instrs, cmp_neg);
-
     struct TACInstr* jump_done = tac_instr_create(TACCOND_JUMP);
+    jump_done->instr.tac_cond_jump.src1 = rhs_neg;
+    jump_done->instr.tac_cond_jump.src2 = tac_make_const(0, rhs_neg->type);
     jump_done->instr.tac_cond_jump.condition = CondE;
     jump_done->instr.tac_cond_jump.label = div_done;
     concat_TAC_instrs(&instrs, jump_done);
@@ -1208,18 +1202,15 @@ struct TACInstr* cases_to_TAC(struct Slice* label, struct CaseList* cases, struc
         // AST:
         // case <const>:
         // TAC:
-        // Cmp switch_val, const
-        // CondJump CondE case_label
-        struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
-        cmp_instr->instr.tac_cmp.src1 = rslt;
-        cmp_instr->instr.tac_cmp.src2 =
-            tac_make_const((uint64_t)case_item->case_label.data, rslt->type);
+        // CondJump CondE switch_val, const, case_label
 
         struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+        cond_jump_instr->instr.tac_cond_jump.src1 = rslt;
+        cond_jump_instr->instr.tac_cond_jump.src2 =
+            tac_make_const((uint64_t)case_item->case_label.data, rslt->type);
         cond_jump_instr->instr.tac_cond_jump.condition = CondE;
         cond_jump_instr->instr.tac_cond_jump.label = make_case_label(label, case_item->case_label.data);
 
-        concat_TAC_instrs(&case_instrs, cmp_instr);
         concat_TAC_instrs(&case_instrs, cond_jump_instr);
         break;
       }
@@ -1308,8 +1299,7 @@ struct TACInstr* while_to_TAC(struct Slice* func_name,
   // TAC:
   // Label continue
   // <cond>
-  // Cmp cond, 0
-  // CondJump CondE break
+  // CondJump CondE cond, 0, break
   // <body>
   // Jump continue
   // Label break
@@ -1319,15 +1309,12 @@ struct TACInstr* while_to_TAC(struct Slice* func_name,
 
   concat_TAC_instrs(&instrs, cond_instrs);
 
-  struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
-  cmp_instr->instr.tac_cmp.src1 = cond_val;
-  cmp_instr->instr.tac_cmp.src2 = tac_make_const(0, cond_val->type);
-
   struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+  cond_jump_instr->instr.tac_cond_jump.src1 = cond_val;
+  cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, cond_val->type);
   cond_jump_instr->instr.tac_cond_jump.condition = CondE;
   cond_jump_instr->instr.tac_cond_jump.label = break_label;
 
-  concat_TAC_instrs(&instrs, cmp_instr);
   concat_TAC_instrs(&instrs, cond_jump_instr);
   concat_TAC_instrs(&instrs, body_instrs);
 
@@ -1372,8 +1359,7 @@ struct TACInstr* do_while_to_TAC(struct Slice* func_name,
   // <body>
   // Label continue
   // <cond>
-  // Cmp cond, 0
-  // CondJump CondNE start
+  // CondJump CondNE cond, 0, start
   // Label break
   struct TACInstr* start_label_instr = tac_instr_create(TACLABEL);
   start_label_instr->instr.tac_label.label = start_label;
@@ -1387,15 +1373,12 @@ struct TACInstr* do_while_to_TAC(struct Slice* func_name,
 
   concat_TAC_instrs(&instrs, cond_instrs);
 
-  struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
-  cmp_instr->instr.tac_cmp.src1 = cond_val;
-  cmp_instr->instr.tac_cmp.src2 = tac_make_const(0, cond_val->type);
-
   struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+  cond_jump_instr->instr.tac_cond_jump.src1 = cond_val;
+  cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, cond_val->type);
   cond_jump_instr->instr.tac_cond_jump.condition = CondNE;
   cond_jump_instr->instr.tac_cond_jump.label = start_label;
 
-  concat_TAC_instrs(&instrs, cmp_instr);
   concat_TAC_instrs(&instrs, cond_jump_instr);
 
   struct TACInstr* break_label_instr = tac_instr_create(TACLABEL);
@@ -1433,15 +1416,12 @@ struct TACInstr* for_to_TAC(struct Slice* func_name,
     struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
     condition_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
 
-    struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
-    cmp_instr->instr.tac_cmp.src1 = cond_val;
-    cmp_instr->instr.tac_cmp.src2 = tac_make_const(0, cond_val->type);
-
     struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+    cond_jump_instr->instr.tac_cond_jump.src1 = cond_val;
+    cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, cond_val->type);
     cond_jump_instr->instr.tac_cond_jump.condition = CondE;
     cond_jump_instr->instr.tac_cond_jump.label = break_label;
 
-    concat_TAC_instrs(&condition_instrs, cmp_instr);
     concat_TAC_instrs(&condition_instrs, cond_jump_instr);
   }
 
@@ -1460,8 +1440,7 @@ struct TACInstr* for_to_TAC(struct Slice* func_name,
   // <init>
   // Label start
   // <cond>
-  // Cmp cond, 0
-  // CondJump CondE break
+  // CondJump CondE cond, 0, break
   // <body>
   // Label continue
   // <end>
@@ -1538,15 +1517,12 @@ struct TACInstr* if_to_TAC(struct Slice* func_name, struct Expr* condition, stru
   // if (cond) { body }
   // TAC:
   // <cond>
-  // Cmp cond, 0
-  // CondJump CondE end
+  // CondJump CondE cond, 0, end
   // <body>
   // Label end
-  struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
-  cmp_instr->instr.tac_cmp.src1 = cond_val;
-  cmp_instr->instr.tac_cmp.src2 = tac_make_const(0, cond_val->type);
-
   struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+  cond_jump_instr->instr.tac_cond_jump.src1 = cond_val;
+  cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, cond_val->type);
   cond_jump_instr->instr.tac_cond_jump.condition = CondE;
   cond_jump_instr->instr.tac_cond_jump.label = end_label;
 
@@ -1555,7 +1531,6 @@ struct TACInstr* if_to_TAC(struct Slice* func_name, struct Expr* condition, stru
 
   struct TACInstr* instrs = NULL;
   concat_TAC_instrs(&instrs, cond_instrs);
-  concat_TAC_instrs(&instrs, cmp_instr);
   concat_TAC_instrs(&instrs, cond_jump_instr);
   concat_TAC_instrs(&instrs, body_instrs);
   concat_TAC_instrs(&instrs, end_label_instr);
@@ -1582,18 +1557,15 @@ struct TACInstr* if_else_to_TAC(struct Slice* func_name,
   // if (cond) { if_body } else { else_body }
   // TAC:
   // <cond>
-  // Cmp cond, 0
-  // CondJump CondE else
+  // CondJump CondE cond, 0, else
   // <if_body>
   // Jump end
   // Label else
   // <else_body>
   // Label end
-  struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
-  cmp_instr->instr.tac_cmp.src1 = cond_val;
-  cmp_instr->instr.tac_cmp.src2 = tac_make_const(0, cond_val->type);
-
   struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+  cond_jump_instr->instr.tac_cond_jump.src1 = cond_val;
+  cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, cond_val->type);
   cond_jump_instr->instr.tac_cond_jump.condition = CondE;
   cond_jump_instr->instr.tac_cond_jump.label = else_label;
 
@@ -1608,7 +1580,6 @@ struct TACInstr* if_else_to_TAC(struct Slice* func_name,
 
   struct TACInstr* instrs = NULL;
   concat_TAC_instrs(&instrs, cond_instrs);
-  concat_TAC_instrs(&instrs, cmp_instr);
   concat_TAC_instrs(&instrs, cond_jump_instr);
   concat_TAC_instrs(&instrs, if_instrs);
   concat_TAC_instrs(&instrs, jump_end_instr);
@@ -1678,8 +1649,7 @@ struct TACInstr* relational_to_TAC(struct Slice* func_name,
   // Copy dst, 1
   // <left>
   // <right>
-  // Cmp left, right
-  // CondJump <cond> end
+  // CondJump <cond> left, right, end
   // Copy dst, 0
   // Label end
   struct TACInstr* init_copy = tac_instr_create(TACCOPY);
@@ -1690,11 +1660,9 @@ struct TACInstr* relational_to_TAC(struct Slice* func_name,
   concat_TAC_instrs(&instrs, left_instrs);
   concat_TAC_instrs(&instrs, right_instrs);
 
-  struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
-  cmp_instr->instr.tac_cmp.src1 = left_val;
-  cmp_instr->instr.tac_cmp.src2 = right_val;
-
   struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+  cond_jump_instr->instr.tac_cond_jump.src1 = left_val;
+  cond_jump_instr->instr.tac_cond_jump.src2 = right_val;
   cond_jump_instr->instr.tac_cond_jump.condition = relation_to_cond(op, left->value_type);
   cond_jump_instr->instr.tac_cond_jump.label = end_label;
 
@@ -1705,7 +1673,6 @@ struct TACInstr* relational_to_TAC(struct Slice* func_name,
   struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
   end_label_instr->instr.tac_label.label = end_label;
 
-  concat_TAC_instrs(&instrs, cmp_instr);
   concat_TAC_instrs(&instrs, cond_jump_instr);
   concat_TAC_instrs(&instrs, clear_copy);
   concat_TAC_instrs(&instrs, end_label_instr);
@@ -1803,11 +1770,9 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
         // TAC:
         // Copy dst, <short-circuit default>
         // <left>
-        // Cmp left, 0
-        // CondJump <cond> end
+        // CondJump <cond> left, 0, end
         // <right>
-        // Cmp right, 0
-        // CondJump <cond> end
+        // CondJump <cond> right, 0, end
         // Copy dst, <final>
         // Label end
         // Default result matches the short-circuit outcome before evaluating RHS.
@@ -1818,28 +1783,22 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
         concat_TAC_instrs(&instrs, init_copy);
         concat_TAC_instrs(&instrs, left_instrs);
 
-        struct TACInstr* cmp_left = tac_instr_create(TACCMP);
-        cmp_left->instr.tac_cmp.src1 = left_val;
-        cmp_left->instr.tac_cmp.src2 = tac_make_const(0, left_val->type);
-
         // If the left side decides the result, skip RHS evaluation.
         struct TACInstr* jump_left = tac_instr_create(TACCOND_JUMP);
+        jump_left->instr.tac_cond_jump.src1 = left_val;
+        jump_left->instr.tac_cond_jump.src2 = tac_make_const(0, left_val->type);
         jump_left->instr.tac_cond_jump.condition = (op == BOOL_AND) ? CondE : CondNE;
         jump_left->instr.tac_cond_jump.label = end_label;
 
-        concat_TAC_instrs(&instrs, cmp_left);
         concat_TAC_instrs(&instrs, jump_left);
         concat_TAC_instrs(&instrs, right_instrs);
 
-        struct TACInstr* cmp_right = tac_instr_create(TACCMP);
-        cmp_right->instr.tac_cmp.src1 = right_val;
-        cmp_right->instr.tac_cmp.src2 = tac_make_const(0, right_val->type);
-
         struct TACInstr* jump_right = tac_instr_create(TACCOND_JUMP);
+        jump_right->instr.tac_cond_jump.src1 = right_val;
+        jump_right->instr.tac_cond_jump.src2 = tac_make_const(0, right_val->type);
         jump_right->instr.tac_cond_jump.condition = (op == BOOL_AND) ? CondE : CondNE;
         jump_right->instr.tac_cond_jump.label = end_label;
 
-        concat_TAC_instrs(&instrs, cmp_right);
         concat_TAC_instrs(&instrs, jump_right);
 
         struct TACInstr* final_copy = tac_instr_create(TACCOPY);
@@ -2357,8 +2316,7 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
       // cond ? left : right
       // TAC:
       // <cond>
-      // Cmp cond, 0
-      // CondJump CondE else
+      // CondJump CondE cond, 0, else
       // <left>
       // Copy dst, left (if not void)
       // Jump end
@@ -2367,12 +2325,9 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
       // Copy dst, right (if not void)
       // Label end
 
-      struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
-      cmp_instr->instr.tac_cmp.src1 = cond_val;
-      cmp_instr->instr.tac_cmp.src2 = tac_make_const(0, cond_val->type);
-      concat_TAC_instrs(&instrs, cmp_instr);
-
       struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+      cond_jump_instr->instr.tac_cond_jump.src1 = cond_val;
+      cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, cond_val->type);
       cond_jump_instr->instr.tac_cond_jump.condition = CondE;
       cond_jump_instr->instr.tac_cond_jump.label = else_label;
       concat_TAC_instrs(&instrs, cond_jump_instr);
@@ -2452,8 +2407,7 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
         // TAC:
         // Copy dst, 1
         // <expr>
-        // Cmp src, 0
-        // CondJump CondE end
+        // CondJump CondE src, 0, end
         // Copy dst, 0
         // Label end
         struct TACInstr* init_copy = tac_instr_create(TACCOPY);
@@ -2462,11 +2416,9 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
         concat_TAC_instrs(&instrs, init_copy);
         concat_TAC_instrs(&instrs, src_instrs);
 
-        struct TACInstr* cmp_instr = tac_instr_create(TACCMP);
-        cmp_instr->instr.tac_cmp.src1 = src_val;
-        cmp_instr->instr.tac_cmp.src2 = tac_make_const(0, src_val->type);
-
         struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
+        cond_jump_instr->instr.tac_cond_jump.src1 = src_val;
+        cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, src_val->type);
         cond_jump_instr->instr.tac_cond_jump.condition = CondE;
         cond_jump_instr->instr.tac_cond_jump.label = end_label;
 
@@ -2477,7 +2429,6 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
         struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
         end_label_instr->instr.tac_label.label = end_label;
 
-        concat_TAC_instrs(&instrs, cmp_instr);
         concat_TAC_instrs(&instrs, cond_jump_instr);
         concat_TAC_instrs(&instrs, clear_copy);
         concat_TAC_instrs(&instrs, end_label_instr);
@@ -3035,4 +2986,91 @@ void concat_TAC_instrs(struct TACInstr** old_instrs, struct TACInstr* new_instrs
 
   (*old_instrs)->last->next = new_instrs;
   (*old_instrs)->last = new_instrs->last;
+}
+
+bool compare_instrs(struct TACInstr* instr1, struct TACInstr* instr2) {
+  if (instr1->type != instr2->type) {
+    return false;
+  }
+
+  switch (instr1->type) {
+    case TACRETURN:
+      return instr1->instr.tac_return.dst == instr2->instr.tac_return.dst;
+    case TACUNARY:
+      return (instr1->instr.tac_unary.op == instr2->instr.tac_unary.op &&
+              instr1->instr.tac_unary.dst == instr2->instr.tac_unary.dst &&
+              instr1->instr.tac_unary.src == instr2->instr.tac_unary.src);
+    case TACBINARY:
+      return (instr1->instr.tac_binary.alu_op == instr2->instr.tac_binary.alu_op &&
+              instr1->instr.tac_binary.dst == instr2->instr.tac_binary.dst &&
+              instr1->instr.tac_binary.src1 == instr2->instr.tac_binary.src1 &&
+              instr1->instr.tac_binary.src2 == instr2->instr.tac_binary.src2);
+    case TACCOND_JUMP:
+      return (instr1->instr.tac_cond_jump.condition == instr2->instr.tac_cond_jump.condition &&
+              instr1->instr.tac_cond_jump.src1 == instr2->instr.tac_cond_jump.src1 &&
+              instr1->instr.tac_cond_jump.src2 == instr2->instr.tac_cond_jump.src2 &&
+              instr1->instr.tac_cond_jump.label == instr2->instr.tac_cond_jump.label);
+    case TACJUMP:
+      return instr1->instr.tac_jump.label == instr2->instr.tac_jump.label;
+    case TACLABEL:
+      return instr1->instr.tac_label.label == instr2->instr.tac_label.label;
+    case TACCOPY:
+      return (instr1->instr.tac_copy.dst == instr2->instr.tac_copy.dst &&
+              instr1->instr.tac_copy.src == instr2->instr.tac_copy.src);
+    case TACCALL:
+      return (instr1->instr.tac_call.func_name == instr2->instr.tac_call.func_name &&
+              instr1->instr.tac_call.dst == instr2->instr.tac_call.dst &&
+              instr1->instr.tac_call.args == instr2->instr.tac_call.args &&
+              instr1->instr.tac_call.num_args == instr2->instr.tac_call.num_args);
+    case TACCALL_INDIRECT:
+      return (instr1->instr.tac_call_indirect.func == instr2->instr.tac_call_indirect.func &&
+              instr1->instr.tac_call_indirect.dst == instr2->instr.tac_call_indirect.dst &&
+              instr1->instr.tac_call_indirect.args == instr2->instr.tac_call_indirect.args &&
+              instr1->instr.tac_call_indirect.num_args == instr2->instr.tac_call_indirect.num_args);
+    case TACGET_ADDRESS:
+      return (instr1->instr.tac_get_address.dst == instr2->instr.tac_get_address.dst &&
+              instr1->instr.tac_get_address.src == instr2->instr.tac_get_address.src);
+    case TACLOAD:
+      return (instr1->instr.tac_load.dst == instr2->instr.tac_load.dst &&
+              instr1->instr.tac_load.src_ptr == instr2->instr.tac_load.src_ptr);
+    case TACSTORE:
+      return (instr1->instr.tac_store.dst_ptr == instr2->instr.tac_store.dst_ptr &&
+              instr1->instr.tac_store.src == instr2->instr.tac_store.src);
+    case TACCOPY_TO_OFFSET:
+      return (instr1->instr.tac_copy_to_offset.dst == instr2->instr.tac_copy_to_offset.dst &&
+              instr1->instr.tac_copy_to_offset.src == instr2->instr.tac_copy_to_offset.src &&
+              instr1->instr.tac_copy_to_offset.offset == instr2->instr.tac_copy_to_offset.offset &&
+              instr1->instr.tac_copy_to_offset.dst_type == instr2->instr.tac_copy_to_offset.dst_type);
+    case TACCOPY_FROM_OFFSET:
+      return (instr1->instr.tac_copy_from_offset.dst == instr2->instr.tac_copy_from_offset.dst &&
+              instr1->instr.tac_copy_from_offset.src == instr2->instr.tac_copy_from_offset.src &&
+              instr1->instr.tac_copy_from_offset.offset == instr2->instr.tac_copy_from_offset.offset);
+    case TACBOUNDARY:
+      return instr1->instr.tac_boundary.loc == instr2->instr.tac_boundary.loc;
+    case TACTRUNC:
+      return (instr1->instr.tac_trunc.dst == instr2->instr.tac_trunc.dst &&
+              instr1->instr.tac_trunc.src == instr2->instr.tac_trunc.src &&
+              instr1->instr.tac_trunc.target_size == instr2->instr.tac_trunc.target_size);
+    case TACEXTEND:
+      return (instr1->instr.tac_extend.dst == instr2->instr.tac_extend.dst &&
+              instr1->instr.tac_extend.src == instr2->instr.tac_extend.src &&
+              instr1->instr.tac_extend.src_size == instr2->instr.tac_extend.src_size);
+  }
+
+  return false;
+}
+
+bool compare_bodies(struct TACInstr* body1, struct TACInstr* body2) {
+  struct TACInstr* cur1 = body1;
+  struct TACInstr* cur2 = body2;
+
+  while (cur1 != NULL && cur2 != NULL) {
+    if (!compare_instrs(cur1, cur2)) {
+      return false;
+    }
+    cur1 = cur1->next;
+    cur2 = cur2->next;
+  }
+
+  return (cur1 == NULL && cur2 == NULL);
 }

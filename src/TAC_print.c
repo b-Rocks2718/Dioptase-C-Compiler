@@ -220,7 +220,7 @@ void print_static_init(const struct InitList* init) {
 // Inputs: instr points to the instruction; tabs is the indentation level.
 // Outputs: Writes one formatted instruction line to stdout.
 // Invariants/Assumptions: instr is non-NULL and variants are populated.
-static void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
+void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
   if (instr == NULL) {
     return;
   }
@@ -260,14 +260,11 @@ static void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
       printf("CondJump ");
       print_tac_condition(instr->instr.tac_cond_jump.condition);
       printf(" ");
-      print_slice(instr->instr.tac_cond_jump.label);
-      printf("\n");
-      break;
-    case TACCMP:
-      printf("Cmp ");
-      print_tac_val(instr->instr.tac_cmp.src1);
+      print_tac_val(instr->instr.tac_cond_jump.src1);
       printf(", ");
-      print_tac_val(instr->instr.tac_cmp.src2);
+      print_tac_val(instr->instr.tac_cond_jump.src2);
+      printf(", ");
+      print_slice(instr->instr.tac_cond_jump.label);
       printf("\n");
       break;
     case TACJUMP:

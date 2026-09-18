@@ -123,16 +123,13 @@ struct TacLabelEntry {
 
 // Purpose: Store per-function execution state for the interpreter.
 // Inputs: locals holds the local bindings; labels index jump targets.
-// Outputs: Tracks comparison state for TACCOND_JUMP.
-// Invariants/Assumptions: cmp_valid is set only after a TACCMP.
+// Outputs: Tracks local values and control-flow targets during one call.
+// Invariants/Assumptions: Conditional jumps carry their own comparison operands.
 struct TacFrame {
   struct TacBindings locals;
   struct TacLabelEntry* labels;
   size_t label_count;
   size_t label_capacity;
-  bool cmp_valid;
-  uint64_t cmp_left;
-  uint64_t cmp_right;
 };
 
 // Purpose: Hold interpreter-wide state across function calls.
@@ -998,9 +995,6 @@ static void tac_frame_init(struct TacFrame* frame, struct TacInterpreter* interp
   frame->labels = NULL;
   frame->label_count = 0;
   frame->label_capacity = 0;
-  frame->cmp_valid = false;
-  frame->cmp_left = 0;
-  frame->cmp_right = 0;
   tac_collect_labels(frame, body);
   tac_preallocate_copy_offsets(frame, interp, body);
 }
@@ -1097,19 +1091,12 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
         tac_assign_val(interp, &frame, pc->instr.tac_copy.dst, value);
         break;
       }
-      case TACCMP: {
-        frame.cmp_left = tac_eval_val(interp, &frame, pc->instr.tac_cmp.src1);
-        frame.cmp_right = tac_eval_val(interp, &frame, pc->instr.tac_cmp.src2);
-        frame.cmp_valid = true;
-        break;
-      }
       case TACCOND_JUMP: {
-        if (!frame.cmp_valid) {
-          tac_interp_error("conditional jump without prior compare");
-        }
+        uint64_t left = tac_eval_val(interp, &frame, pc->instr.tac_cond_jump.src1);
+        uint64_t right = tac_eval_val(interp, &frame, pc->instr.tac_cond_jump.src2);
         if (tac_condition_true(pc->instr.tac_cond_jump.condition,
-                               frame.cmp_left,
-                               frame.cmp_right)) {
+                               left,
+                               right)) {
           pc = tac_find_label(&frame, pc->instr.tac_cond_jump.label);
           continue;
         }
