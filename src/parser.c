@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "AST.h"
+#include "analysis.h"
 #include "arena.h"
 #include "parser.h"
 #include "token.h"
@@ -36,6 +37,9 @@ static void record_consumed_token(const struct Token* token) {
 // Outputs: Returns a pointer into the source text or source_text_end().
 // Invariants/Assumptions: source context has been initialized before parsing.
 static const char* parser_error_ptr(void) {
+  // parse_prog establishes the token-array cursors before any parser helper.
+  // The analyzer loses this invariant when it stops inlining recursive parses.
+  ANALYSIS_ASSUME(program != NULL && current != NULL);
   if (max_consumed_valid) {
     if (max_consumed_index < prog_size) {
       return program[max_consumed_index].start;
@@ -155,6 +159,8 @@ static bool consume(const enum TokenType expected) {
 // Outputs: Returns a pointer to the token variant on success, else NULL.
 // Invariants/Assumptions: current points into the program array.
 static union TokenVariant* consume_with_data(const enum TokenType expected) {
+  // Same parse_prog cursor invariant as parser_error_ptr; no host/guest change.
+  ANALYSIS_ASSUME(program != NULL && current != NULL);
   if (current - program < prog_size && expected == current->type) {
     current++;
     record_consumed_token(current - 1);
@@ -2302,6 +2308,8 @@ struct Declarator* parse_direct_declarator(){
     // array declarator
     struct LitExpr size_expr = parse_lit_expr();
     if (size_expr.type == -1 || !consume(CLOSE_S)) {
+      // Backtracking abandons the heap-owned dimensions collected so far.
+      free(array_sizes);
       current = old_current;
       return NULL;
     }

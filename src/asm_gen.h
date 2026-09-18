@@ -2,6 +2,7 @@
 #define ASM_GEN_H
 
 #include "AST.h"
+#include "analysis.h"
 #include "typechecking.h"
 #include "TAC.h"
 #include "slice.h"
@@ -312,7 +313,7 @@ bool asm_symbol_table_contains(struct AsmSymbolTable* hmap, struct Slice* key);
 
 void print_asm_symbol_table(struct AsmSymbolTable* hmap);
 
-void asm_gen_error(const char* operation,
+ANALYSIS_NORETURN void asm_gen_error(const char* operation,
                           const struct Slice* func_name,
                           const char* fmt,
                           ...);

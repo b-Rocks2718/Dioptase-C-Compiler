@@ -11,6 +11,10 @@ concurrency:
   group: compiler-ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  # Override this repository variable only with a tested, full root commit SHA.
+  DIOPTASE_STACK_REF: ${{ vars.DIOPTASE_STACK_REF || '20a493b87692552881c1712779a0800fac72d34b' }}
+
 jobs:
   tests:
     name: Compiler tests
@@ -18,28 +22,29 @@ jobs:
     # This includes fresh debug/release builds of both emulator dependencies.
     timeout-minutes: 90
     steps:
-      - name: Check out assembler dependency
+      - name: Require an immutable stack revision
+        run: |
+          if [[ ! "$DIOPTASE_STACK_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Compiler CI: DIOPTASE_STACK_REF must be a full root repository commit SHA; observed '$DIOPTASE_STACK_REF'." >&2
+            exit 1
+          fi
+      - name: Check out pinned Dioptase stack
         uses: actions/checkout@v7
         with:
-          repository: b-Rocks2718/Dioptase-Assembler
-          path: Dioptase-Assembler
+          repository: b-Rocks2718/Dioptase
+          ref: ${{ env.DIOPTASE_STACK_REF }}
           persist-credentials: false
-      - name: Check out simple emulator dependency
-        uses: actions/checkout@v7
-        with:
-          repository: b-Rocks2718/Dioptase-Emulator-Simple
-          path: Dioptase-Emulators/Dioptase-Emulator-Simple
-          persist-credentials: false
-      - name: Check out full emulator dependency
-        uses: actions/checkout@v7
-        with:
-          repository: b-Rocks2718/Dioptase-Emulator-Full
-          path: Dioptase-Emulators/Dioptase-Emulator-Full
-          persist-credentials: false
+      - name: Initialize pinned compiler dependencies
+        run: |
+          git -c url."https://github.com/".insteadOf="git@github.com:" \
+            submodule update --init --depth 1 -- \
+            Dioptase-Assembler \
+            Dioptase-Emulators/Dioptase-Emulator-Simple \
+            Dioptase-Emulators/Dioptase-Emulator-Full
       - name: Check out compiler pull request
         uses: actions/checkout@v7
         with:
           path: Dioptase-Languages/Dioptase-C-Compiler
           persist-credentials: false
-      - name: Run debug and release suites
+      - name: Run tests and static analysis
         run: bash Dioptase-Languages/Dioptase-C-Compiler/.github/scripts/ci.sh

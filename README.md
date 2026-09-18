@@ -1,5 +1,7 @@
 # Dioptase C Compiler
 
+[![CI](https://github.com/b-Rocks2718/Dioptase-C-Compiler/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/b-Rocks2718/Dioptase-C-Compiler/actions/workflows/ci.yml)
+
 My implementation of of the compiler described in [Writing a C Compiler](https://nostarch.com/writing-c-compiler) by Nora Sandler. Targets the [Dioptase architecture](https://github.com/b-Rocks2718/Dioptase) and relies on the [Dioptase assembler](). The generated machine code can be run with the [Dioptase emulator]().
 
 ## Usage

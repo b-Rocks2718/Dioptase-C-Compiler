@@ -99,7 +99,7 @@ static const char* find_function_entry_loc(const struct AsmInstr* instrs) {
 // Inputs: func_name is the current function (may be NULL), instr_type is the ASM opcode.
 // Outputs: Prints an actionable message to stderr and terminates.
 // Invariants/Assumptions: fmt is a printf-style format string.
-static void codegen_errorf(const struct Slice* func_name,
+ANALYSIS_NORETURN static void codegen_errorf(const struct Slice* func_name,
                            enum AsmInstrType instr_type,
                            const char* fmt,
                            ...) {

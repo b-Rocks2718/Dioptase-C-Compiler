@@ -1,4 +1,5 @@
 #include "TAC.h"
+#include "analysis.h"
 #include "slice.h"
 
 #include <stdbool.h>
@@ -147,7 +148,7 @@ struct TacInterpreter {
 // Inputs: fmt is a printf-style format string.
 // Outputs: Writes to stderr and exits with non-zero status.
 // Invariants/Assumptions: Used for irrecoverable interpreter errors.
-static void tac_interp_error(const char* fmt, ...) {
+ANALYSIS_NORETURN static void tac_interp_error(const char* fmt, ...) {
   va_list args;
   fprintf(stderr, "TAC Interpreter Error: ");
   va_start(args, fmt);

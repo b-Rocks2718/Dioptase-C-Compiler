@@ -3211,10 +3211,8 @@ struct InitList* is_init_const(struct Type* type, struct Initializer* init) {
           pad_node->next = NULL;
           if (flattened == NULL) {
             flattened = pad_node;
-            flattened_tail = pad_node;
           } else {
             flattened_tail->next = pad_node;
-            flattened_tail = pad_node;
           }
         }
 
@@ -3297,10 +3295,8 @@ struct InitList* is_init_const(struct Type* type, struct Initializer* init) {
 
           if (init_list == NULL) {
             init_list = pad_node;
-            init_list_tail = pad_node;
           } else {
             init_list_tail->next = pad_node;
-            init_list_tail = pad_node;
           }
         }
 
