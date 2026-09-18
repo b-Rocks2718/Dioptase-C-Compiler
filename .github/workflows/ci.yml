@@ -1,0 +1,45 @@
+name: PR CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compiler-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Compiler tests
+    runs-on: ubuntu-24.04
+    # This includes fresh debug/release builds of both emulator dependencies.
+    timeout-minutes: 90
+    steps:
+      - name: Check out assembler dependency
+        uses: actions/checkout@v7
+        with:
+          repository: b-Rocks2718/Dioptase-Assembler
+          path: Dioptase-Assembler
+          persist-credentials: false
+      - name: Check out simple emulator dependency
+        uses: actions/checkout@v7
+        with:
+          repository: b-Rocks2718/Dioptase-Emulator-Simple
+          path: Dioptase-Emulators/Dioptase-Emulator-Simple
+          persist-credentials: false
+      - name: Check out full emulator dependency
+        uses: actions/checkout@v7
+        with:
+          repository: b-Rocks2718/Dioptase-Emulator-Full
+          path: Dioptase-Emulators/Dioptase-Emulator-Full
+          persist-credentials: false
+      - name: Check out compiler pull request
+        uses: actions/checkout@v7
+        with:
+          path: Dioptase-Languages/Dioptase-C-Compiler
+          persist-credentials: false
+      - name: Run debug and release suites
+        run: bash Dioptase-Languages/Dioptase-C-Compiler/.github/scripts/ci.sh
