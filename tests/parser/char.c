@@ -1,7 +1,7 @@
 static char x = 1;
 static char esc = '\x1b';
 
-int main(void){
+int main(void){ /* Exercise char behavior. */
   int a = 1;
   signed char b = a;
   unsigned char c = '\\';

@@ -6,20 +6,15 @@
 #include <stdarg.h>
 #include <stdio.h>
 
-// Purpose: Resolve identifiers to unique names and validate scoping rules.
-// Inputs: Traverses AST nodes produced by the parser.
-// Outputs: Rewrites identifier slices and reports resolution errors.
-// Invariants/Assumptions: Uses a scoped identifier stack for name lookup.
+// Resolve identifiers to unique names and validate scoping rules.
+// Rewrites identifier slices and reports resolution errors.
 
 
-// Inputs: Initialized in resolve_prog and updated on scope entry/exit.
 static struct IdentStack* global_ident_stack = NULL; // function, variable, and enum constant namespace
 static struct IdentStack* global_type_stack = NULL; // struct, union, and enum type namespace
 
-// Purpose: Emit a formatted identifier-resolution error at a source location.
-// Inputs: loc points into source text; fmt is printf-style.
-// Outputs: Writes a diagnostic message to stdout.
-// Invariants/Assumptions: source_location_from_ptr handles NULL/unknown locations.
+// Emit a formatted identifier-resolution error at a source location.
+// Writes a diagnostic message to stdout.
 static void ident_error_at(const char* loc, const char* fmt, ...) {
   struct SourceLocation where = source_location_from_ptr(loc);
   const char* filename = source_filename_for_ptr(loc);
@@ -35,10 +30,8 @@ static void ident_error_at(const char* loc, const char* fmt, ...) {
   printf("\n");
 }
 
-// Purpose: Locate the nearest identifier with linkage, ignoring local-only bindings.
-// Inputs: stack is the identifier scope stack; name is the identifier to search.
-// Outputs: Returns the first linkage-bearing entry found, or NULL if none exist.
-// Invariants/Assumptions: Searches from innermost scope outward.
+// Locate the nearest identifier with linkage, ignoring local-only bindings.
+// Returns the first linkage-bearing entry found, or NULL if none exist.
 static struct IdentMapEntry* find_linkage_entry(struct IdentStack* stack,
                                                 struct Slice* name) {
   for (int i = (int)stack->size - 1; i >= 0; --i) {
@@ -50,10 +43,9 @@ static struct IdentMapEntry* find_linkage_entry(struct IdentStack* stack,
   return NULL;
 }
 
-// Purpose: Resolve identifiers for all file-scope declarations.
-// Inputs: prog is the Program AST.
-// Outputs: Returns true on success; false on any resolution error.
-// Invariants/Assumptions: Initializes and destroys the global scope stack.
+// Resolve identifiers for all file-scope declarations.
+// Returns true on success; false on any resolution error.
+// Scope stacks and maps are owned by the compiler arena.
 bool resolve_prog(struct Program* prog) {
   global_ident_stack = init_scope();
   global_type_stack = init_scope();
@@ -65,16 +57,11 @@ bool resolve_prog(struct Program* prog) {
     }
   }
 
-  destroy_ident_stack(global_ident_stack);
-  destroy_ident_stack(global_type_stack);
-
   return true;
 }
 
-// Purpose: Resolve identifiers within a function call argument list.
-// Inputs: args is the argument list.
-// Outputs: Returns true on success; false on any resolution error.
-// Invariants/Assumptions: Uses the current scope stack.
+// Resolve identifiers within a function call argument list.
+// Returns true on success; false on any resolution error.
 bool resolve_args(struct ArgList* args){
   for (struct ArgList* arg = args; arg != NULL; arg = arg->next) {
     if (!resolve_expr(arg->arg)) {
@@ -85,6 +72,7 @@ bool resolve_args(struct ArgList* args){
   return true;
 }
 
+// Set up the resolver state for a local variable declaration.
 bool resolve_var_init(struct Initializer* init){
   switch (init->init_type) {
     case SINGLE_INIT:
@@ -103,10 +91,9 @@ bool resolve_var_init(struct Initializer* init){
   }
 }
 
-// Purpose: Resolve identifiers within an expression subtree.
-// Inputs: expr is the expression to resolve.
-// Outputs: Returns true on success; false on any unresolved identifier.
-// Invariants/Assumptions: Identifier stack is initialized before traversal.
+// Resolve identifiers within an expression subtree.
+// Returns true on success; false on any unresolved identifier.
+// Identifier stack is initialized before traversal.
 bool resolve_expr(struct Expr* expr) {
   switch (expr->type) {
     case ASSIGN:
@@ -186,6 +173,7 @@ bool resolve_expr(struct Expr* expr) {
   }
 }
 
+// Resolve names referenced by a type, including nested declarators.
 bool resolve_type(struct Type* type){
   switch (type->type){
     case STRUCT_TYPE:
@@ -218,10 +206,9 @@ bool resolve_type(struct Type* type){
   }
 }
 
-// Purpose: Resolve identifiers in a local variable declaration.
-// Inputs: var_dclr is the variable declaration node.
-// Outputs: Returns true on success; false on redeclaration or lookup errors.
-// Invariants/Assumptions: Locals may be renamed to unique slices.
+// Resolve identifiers in a local variable declaration.
+// Returns true on success; false on redeclaration or lookup errors.
+// Locals may be renamed to unique slices.
 bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
   // extern and static declarations don't support cleanup attributes
   if (var_dclr->storage != NONE && var_dclr->attributes.cleanup_func != NULL) {
@@ -291,10 +278,8 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
   return true;
 }
 
-// Purpose: Resolve identifiers in a local declaration (var or func).
-// Inputs: dclr is the declaration node.
-// Outputs: Returns true on success; false on any resolution error.
-// Invariants/Assumptions: Caller manages scope entry/exit.
+// Resolve identifiers in a local declaration (var or func).
+// Returns true on success; false on any resolution error.
 bool resolve_local_dclr(struct Declaration* dclr) {
   switch (dclr->type) {
     case VAR_DCLR:
@@ -313,10 +298,8 @@ bool resolve_local_dclr(struct Declaration* dclr) {
   }
 }
 
-// Purpose: Resolve identifiers in a for-loop initializer.
-// Inputs: init is the initializer node.
-// Outputs: Returns true on success; false on any resolution error.
-// Invariants/Assumptions: A for-loop introduces its own scope.
+// Resolve identifiers in a for-loop initializer.
+// Returns true on success; false on any resolution error.
 bool resolve_for_init(struct ForInit* init) {
   switch (init->type) {
     case DCLR_INIT:
@@ -333,10 +316,8 @@ bool resolve_for_init(struct ForInit* init) {
   }
 }
 
-// Purpose: Resolve identifiers within a statement subtree.
-// Inputs: stmt is the statement node.
-// Outputs: Returns true on success; false on any resolution error.
-// Invariants/Assumptions: Manages scope for compound and for statements.
+// Resolve identifiers within a statement subtree.
+// Returns true on success; false on any resolution error.
 bool resolve_stmt(struct Statement* stmt) {
   switch (stmt->type) {
     case RETURN_STMT:
@@ -375,8 +356,6 @@ bool resolve_stmt(struct Statement* stmt) {
       exit_scope(global_type_stack);
       if (stmt->statement.compound_stmt.block != NULL) {
         stmt->statement.compound_stmt.block->idents = maps;
-      } else {
-        destroy_ident_map(maps);
       }
       return true;
     case BREAK_STMT:
@@ -437,10 +416,9 @@ bool resolve_stmt(struct Statement* stmt) {
   }
 }
 
-// Purpose: Resolve identifiers for a local function declaration.
-// Inputs: func_dclr is the function declaration node.
-// Outputs: Returns true on success; false on invalid linkage or body use.
-// Invariants/Assumptions: Local function declarations must be extern-only.
+// Resolve identifiers for a local function declaration.
+// Returns true on success; false on invalid linkage or body use.
+// Local function declarations must be extern-only.
 bool resolve_local_func(struct FunctionDclr* func_dclr) {
   // local functions must have extern linkage
   if (func_dclr->storage == STATIC) {
@@ -472,10 +450,8 @@ bool resolve_local_func(struct FunctionDclr* func_dclr) {
   return true;
 }
 
-// Purpose: Resolve identifiers for each parameter in a parameter list.
-// Inputs: params is the parameter list.
-// Outputs: Returns true on success; false on any resolution error.
-// Invariants/Assumptions: Parameters are resolved as local variables.
+// Resolve identifiers for each parameter in a parameter list.
+// Returns true on success; false on any resolution error.
 bool resolve_params(struct ParamList* params){
   for (struct ParamList* param = params; param != NULL; param = param->next) {
     if (param->param.name == NULL) {
@@ -490,10 +466,8 @@ bool resolve_params(struct ParamList* params){
   return true;
 }
 
-// Purpose: Resolve identifiers within a block list.
-// Inputs: block is the block list.
-// Outputs: Returns true on success; false on any resolution error.
-// Invariants/Assumptions: Does not automatically enter/exit scope.
+// Resolve identifiers within a block list.
+// Returns true on success; false on any resolution error.
 bool resolve_block(struct Block* block){
   for (struct Block* item = block; item != NULL; item = item->next) {
     switch (item->item->type) {
@@ -517,10 +491,8 @@ bool resolve_block(struct Block* block){
   return true;
 }
 
-// Purpose: Resolve identifiers in a file-scope variable declaration.
-// Inputs: var_dclr is the variable declaration node.
-// Outputs: Returns true on success; false on invalid redeclarations.
-// Invariants/Assumptions: File-scope variables keep their original names.
+// Resolve identifiers in a file-scope variable declaration.
+// Returns true on success; false on invalid redeclarations.
 bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
   // file scope vars don't support cleanup attributes
   if (var_dclr->attributes.cleanup_func != NULL) {
@@ -559,10 +531,8 @@ bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
   }
 }
 
-// Purpose: Resolve identifiers in a file-scope function declaration/definition.
-// Inputs: func_dclr is the function declaration node.
-// Outputs: Returns true on success; false on invalid redeclarations.
-// Invariants/Assumptions: Function bodies get their own scope for params/locals.
+// Resolve identifiers in a file-scope function declaration/definition.
+// Returns true on success; false on invalid redeclarations.
 bool resolve_file_scope_func(struct FunctionDclr* func_dclr) {
   if (!resolve_type(func_dclr->type)) {
     ident_error_at(func_dclr->name->start, "failed to resolve function return type");
@@ -608,14 +578,13 @@ bool resolve_file_scope_func(struct FunctionDclr* func_dclr) {
     exit_scope(global_type_stack);
     if (func_dclr->body != NULL){
       func_dclr->body->idents = maps;
-    } else {
-      destroy_ident_map(maps);
     }
 
     return params_resolved && block_resolved;
   }
 }
 
+// Resolve member and tag names in a struct declaration.
 bool resolve_struct(struct StructDclr* struct_dclr){
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_type_stack, struct_dclr->name, &from_current_scope);
@@ -646,6 +615,7 @@ bool resolve_struct(struct StructDclr* struct_dclr){
   return true;
 }
 
+// Resolve member and tag names in a union declaration.
 bool resolve_union(struct UnionDclr* union_dclr){
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_type_stack, union_dclr->name, &from_current_scope);
@@ -676,6 +646,7 @@ bool resolve_union(struct UnionDclr* union_dclr){
   return true;
 }
 
+// Resolve enumerator names and the tag in an enum declaration.
 bool resolve_enum(struct EnumDclr* enum_dclr){
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_type_stack, enum_dclr->name, &from_current_scope);
@@ -714,10 +685,8 @@ bool resolve_enum(struct EnumDclr* enum_dclr){
   return true;
 }
 
-// Purpose: Resolve identifiers in a file-scope declaration.
-// Inputs: dclr is the declaration node.
-// Outputs: Returns true on success; false on any resolution error.
-// Invariants/Assumptions: File-scope declarations share one global scope.
+// Resolve identifiers in a file-scope declaration.
+// Returns true on success; false on any resolution error.
 bool resolve_file_scope_dclr(struct Declaration* dclr) {
   switch (dclr->type) {
     case VAR_DCLR:

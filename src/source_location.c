@@ -6,20 +6,24 @@ static const char* source_text_ptr = NULL;
 static const char* source_file_ptr = NULL;
 static const struct SourceMapping* source_map_ptr = NULL;
 
+// Set source context.
 void set_source_context(const char* filename, const char* text) {
   set_source_context_with_map(filename, text, NULL);
 }
 
+// Set source context with map.
 void set_source_context_with_map(const char* filename, const char* text, const struct SourceMapping* map) {
   source_file_ptr = filename;
   source_text_ptr = text;
   source_map_ptr = map;
 }
 
+// Return the filename associated with the current source buffer.
 const char* source_filename(void) {
   return source_file_ptr ? source_file_ptr : "<input>";
 }
 
+// Find the filename associated with a pointer into the source buffer.
 const char* source_filename_for_ptr(const char* ptr) {
   if (source_map_ptr == NULL || source_text_ptr == NULL || ptr == NULL) {
     return source_filename();
@@ -38,15 +42,18 @@ const char* source_filename_for_ptr(const char* ptr) {
   return mapped != NULL ? mapped : source_filename();
 }
 
+// Return the complete preprocessed source text.
 const char* source_text(void) {
   return source_text_ptr;
 }
 
+// Return the one-past-end pointer for the source text.
 const char* source_text_end(void) {
   if (source_text_ptr == NULL) return NULL;
   return source_text_ptr + strlen(source_text_ptr);
 }
 
+// Compute the line and column for a pointer into the source text.
 struct SourceLocation source_location_from_ptr(const char* ptr) {
   struct SourceLocation loc = {0, 0, 0};
   if (source_text_ptr == NULL || ptr == NULL) return loc;

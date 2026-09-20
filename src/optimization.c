@@ -4,6 +4,9 @@
 
 #include <limits.h>
 #include <stdint.h>
+#include <stdio.h>
+
+// ---------- constant folding --------------------------------------
 
 enum ConstantFoldAction {
   CONSTANT_FOLD_UNCHANGED,
@@ -11,6 +14,7 @@ enum ConstantFoldAction {
   CONSTANT_FOLD_DELETE,
 };
 
+// The a constant fold result stores action, replacement.
 struct ConstantFoldResult {
   enum ConstantFoldAction action;
   struct TACInstr* replacement;
@@ -25,6 +29,7 @@ static struct ConstantFoldResult constant_fold_unchanged =  {
   NULL,
 };
 
+// Replace a constant-foldable expression with its computed value.
 static struct ConstantFoldResult constant_fold_replacement(
     struct TACInstr* replacement) {
   if (replacement == NULL) {
@@ -243,55 +248,7 @@ static bool constant_arithmetic_shift_right(uint64_t value,
   return normalize_constant(shifted, type, result);
 }
 
-// iterate over each function and optimize its body
-void optimize(struct TACProg* prog, struct OptimizationOptions options) {
-  if (prog == NULL) {
-    return;
-  }
-  for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
-    if (top->type == FUNC) {
-      struct TACInstr* body = top->body;
-      top->body = optimize_body(body, options);
-    }
-  }
-}
-
-struct TACInstr* optimize_body(struct TACInstr* body, struct OptimizationOptions options) {
-  if (body == NULL) {
-    return body;
-  }
-
-  while (true) {
-    
-    struct TACInstr* post_const_fold_body = body;
-    if (options.constant_fold) {
-      post_const_fold_body = constant_fold(body);
-    } 
-
-    /*
-    struct CFG* cfg = build_cfg(post_const_fold_body);
-
-    if (options.dead_code_elim) {
-      cfg = dead_code_elim(cfg);
-    }
-
-    if (options.copy_prop){
-      cfg = copy_prop(cfg);
-    }
-
-    if (options.dead_store_elim) {
-      cfg = dead_store_elim(cfg);
-    }
-    */
-
-    struct TACInstr* new_body = post_const_fold_body; // rebuild_body(cfg);
-    if (compare_bodies(new_body, body)) {
-      return new_body;
-    }
-    body = new_body;
-  }
-}
-
+// Fold constant expressions throughout a TAC body.
 struct TACInstr* constant_fold(struct TACInstr* body){
   struct TACInstr* prev = NULL;
   struct TACInstr* curr = body;
@@ -559,6 +516,8 @@ static struct ConstantFoldResult constant_fold_instr(struct TACInstr* instr) {
   }
 }
 
+// ------------------------------ dead code elimination ------------------------
+
 // must set all marks to false before calling
 void dfs_cfg(struct CFGNode* entry){
   if (entry == NULL || entry->marked) {
@@ -570,6 +529,7 @@ void dfs_cfg(struct CFGNode* entry){
   }
 }
 
+// Remove dead blocks.
 struct CFG* remove_dead_blocks(struct CFG* cfg){
   // reset node marks
   for (unsigned i = 0; i < cfg->num_nodes; i++) {
@@ -600,14 +560,17 @@ struct CFG* remove_dead_blocks(struct CFG* cfg){
   return new_cfg;
 }
 
+// Remove useless jumps.
 void remove_useless_jumps(struct CFG* cfg){
   // loop over the basic block nodes
   for (unsigned i = 1; i < cfg->num_nodes - 1; i++) {
     struct CFGNode* block = cfg->nodes[i];
 
-    // jump is useless if the only thing it targets is the next block
-    if (block->successors.head->node == &cfg->nodes[i + 1] &&
-        block->successors.head == block->successors.tail) {
+    // A jump is redundant when its only target is the next block.
+    if (block->successors.head->node == cfg->nodes[i + 1] &&
+        block->successors.head == block->successors.tail &&
+        (block->last_instr->type == TACJUMP ||
+        block->last_instr->type == TACCOND_JUMP)) {
       
       // find last and 2nd to last instr
       struct TACInstr* last = block->body;
@@ -624,19 +587,20 @@ void remove_useless_jumps(struct CFG* cfg){
       } else {
         block->body = NULL;
       }
+      block->last_instr = second_to_last;
     }
   }
 }
 
+// Remove useless labels.
 void remove_useless_labels(struct CFG* cfg){
   // loop over the basic block nodes
   for (unsigned i = 1; i < cfg->num_nodes - 1; i++) {
     struct CFGNode* block = cfg->nodes[i];
-
-    // label is useless if the only thing targeting the label 
-    // is the previous block
-    if (block->predecessors.head->node == &cfg->nodes[i - 1] &&
-        block->predecessors.head == block->predecessors.tail) {
+    // A label is redundant when the previous block is its only predecessor.
+    if (block->predecessors.head == NULL ||
+        (block->predecessors.head->node == cfg->nodes[i - 1] &&
+        block->predecessors.head == block->predecessors.tail)) {
       // remove label from the list of instructions in this block
       if (block->body != NULL && block->body->type == TACLABEL) {
         struct TACInstr* label = block->body;
@@ -647,6 +611,7 @@ void remove_useless_labels(struct CFG* cfg){
   }
 }
 
+// Return whether remove empty blocks.
 struct CFG* remove_empty_blocks(struct CFG* cfg){
   unsigned num_nonempty_blocks = 0;
   for (unsigned i = 0; i < cfg->num_nodes; i++) {
@@ -673,6 +638,7 @@ struct CFG* remove_empty_blocks(struct CFG* cfg){
   return new_cfg;
 }
 
+// Remove unreachable TAC blocks after control-flow analysis.
 struct CFG* dead_code_elim(struct CFG* cfg){
   cfg = remove_dead_blocks(cfg);
   remove_useless_jumps(cfg);
@@ -682,12 +648,65 @@ struct CFG* dead_code_elim(struct CFG* cfg){
   return cfg;
 }
 
+// ------------------------------ copy propagation ------------------------
+
 struct CFG* copy_prop(struct CFG* cfg){
   // TODO
-  return NULL;
+  return cfg;
 }
+
+// ------------------------------ dead store elimination ------------------------
 
 struct CFG* dead_store_elim(struct CFG* cfg){
   // TODO
-  return NULL;
+  return cfg;
+}
+
+// ------------------------------ general optimization loop ---------------------
+
+// iterate over each function and optimize its body
+void optimize(struct TACProg* prog, struct OptimizationOptions options) {
+  if (prog == NULL) {
+    return;
+  }
+  for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
+    if (top->type == FUNC) {
+      struct TACInstr* body = top->body;
+      top->body = optimize_body(body, options);
+    }
+  }
+}
+
+// Run the enabled optimization passes over one function body.
+struct TACInstr* optimize_body(struct TACInstr* body, struct OptimizationOptions options) {
+  if (body == NULL) {
+    return body;
+  }
+
+  while (true) {
+    struct TACInstr* post_const_fold_body = body;
+    if (options.constant_fold) {
+      post_const_fold_body = constant_fold(body);
+    }
+
+    struct CFG* cfg = build_cfg(post_const_fold_body);
+
+    if (options.dead_code_elim) {
+      cfg = dead_code_elim(cfg);
+    }
+
+    if (options.copy_prop){
+      cfg = copy_prop(cfg);
+    }
+
+    if (options.dead_store_elim) {
+      cfg = dead_store_elim(cfg);
+    }
+
+    struct TACInstr* new_body = rebuild_body(cfg);
+    if (compare_bodies(new_body, body)) {
+      return new_body;
+    }
+    body = new_body;
+  }
 }

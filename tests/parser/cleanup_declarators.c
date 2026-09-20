@@ -5,7 +5,7 @@ void cleanup_arr_ptrs(int *(*p)[2]);
 void cleanup_arr(int (*p)[2]);
 void cleanup_fp(int (**p)(int));
 
-int main(void) {
+int main(void) { /* Exercise cleanup declarators behavior. */
   __attribute__((cleanup(cleanup_int_ptr))) int **pp;
   int __attribute__((cleanup(cleanup_arr_ptrs))) *arr[2];
   int (*arr_ptr)[2] __attribute__((cleanup(cleanup_arr)));

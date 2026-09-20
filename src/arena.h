@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 
+// The arena block stores next, used, cap, data.
 struct ArenaBlock {
   struct ArenaBlock* next;
   size_t used;
@@ -10,6 +11,7 @@ struct ArenaBlock {
   unsigned char data[];
 };
 
+// The arena stores head, block_size.
 struct Arena {
   struct ArenaBlock* head;
   size_t block_size;

@@ -46,5 +46,9 @@ jobs:
         with:
           path: Dioptase-Languages/Dioptase-C-Compiler
           persist-credentials: false
-      - name: Run tests and static analysis
+      - name: Install Valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes valgrind
+      - name: Run tests and analysis
         run: bash Dioptase-Languages/Dioptase-C-Compiler/.github/scripts/ci.sh

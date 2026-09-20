@@ -348,13 +348,7 @@ urs_end:
 strcmp:
 	# Purpose: Compare two NUL-terminated byte strings lexicographically.
 	# Inputs: r1 = s1 (pointer to first string), r2 = s2 (pointer to second string).
-	# Outputs: r1 = signed difference of first mismatched bytes (0 if equal).
-	# Preconditions: s1 and s2 point to readable, NUL-terminated byte strings.
-	# Postconditions: r1 < 0 if s1 < s2, r1 == 0 if s1 == s2, r1 > 0 if s1 > s2.
-	# Invariants: r0 remains zero; memory is read-only; no stack usage.
-	# CPU state assumptions: executes in caller mode; interrupts and MMU state
-	# are unchanged and must allow reads of s1/s2; core count is irrelevant but
-	# callers must avoid concurrent mutation of the string data.
+	# Outputs: r1 < 0 if s1 < s2, r1 == 0 if s1 == s2, r1 > 0 if s1 > s2.
 strcmp_loop:
 	# Load current bytes (zero-extended) from each string.
 	lba r3 [r1]
@@ -381,12 +375,6 @@ malloc:
 	# Purpose: Simple bump allocator for the CRT heap.
 	# Inputs: r1 = size in bytes (low 32 bits used).
 	# Outputs: r1 = pointer to allocated block, or 0 on failure/size==0.
-	# Preconditions: __heap_ptr is a word in .bss; __heap_base/__heap_end bound a
-	# heap region. Caller must serialize allocations (not thread-safe).
-	# Postconditions: On success, __heap_ptr advances by aligned size.
-	# Invariants: r0 remains zero; heap pointer stays HEAP_ALIGN_BYTES-aligned.
-	# CPU state assumptions: Executes in caller mode; interrupts/MMU unchanged;
-	# no concurrent heap mutation across cores.
 	cmp r1 r0
 	bz  malloc_return_zero
 
@@ -436,15 +424,9 @@ malloc_return_zero:
 
 	.global calloc
 calloc:
-	# Purpose: Allocate and zero-initialize nmemb * size bytes.
+	# Allocate and zero-initialize nmemb * size bytes.
 	# Inputs: r1 = nmemb, r2 = size (low 32 bits used).
 	# Outputs: r1 = pointer to zeroed block, or 0 on failure/zero size.
-	# Preconditions: malloc is available; heap state is initialized as needed.
-	# Postconditions: On success, returned block is zero-filled.
-	# Invariants: r0 remains zero; heap pointer remains aligned.
-	# CPU state assumptions: Executes in caller mode; interrupts/MMU unchanged;
-	# no concurrent heap mutation across cores.
-	# Saves/Restores: ra is saved on the stack because calloc calls helpers.
 	push ra
 	cmp r1 r0
 	bz  calloc_return_zero
@@ -486,11 +468,6 @@ memcmp:
 	# Purpose: Compare two byte arrays lexicographically.
 	# Inputs: r1 = s1 pointer, r2 = s2 pointer, r3 = length in bytes.
 	# Outputs: r1 = 0 if equal, <0 if s1<s2, >0 if s1>s2.
-	# Preconditions: s1/s2 are valid for r3 bytes; buffers may overlap.
-	# Postconditions: r1 holds the first byte difference (unsigned compare).
-	# Invariants: r0 remains zero; memory is read-only.
-	# CPU state assumptions: Executes in caller mode; interrupts/MMU unchanged;
-	# no concurrent mutation of compared memory.
 	cmp r3 r0
 	bz  memcmp_equal
 	movi r6 BYTE_MASK
@@ -514,7 +491,7 @@ memcmp_equal:
 
 	.data
 	.align HEAP_ALIGN_BYTES
-# Purpose: Heap storage for malloc/calloc bump allocator.
+# Heap storage for malloc/calloc bump allocator.
 # Address range: __heap_base .. __heap_end (exclusive).
 # Side effects: malloc/calloc update __heap_ptr; no reuse or free support.
 # Timing/ordering: Allocations must be serialized; no concurrent mutation.

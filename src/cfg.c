@@ -108,6 +108,7 @@ static void append_cfg_node(struct CFGNodeList* list, struct CFGNode* node) {
   }
 }
 
+// Skip CFG nodes that already have predecessor/successor links.
 static bool nodes_already_linked(const struct CFGNode* parent,
                                  const struct CFGNode* child) {
   for (struct CFGNodeEntry* entry = parent->successors.head; entry != NULL; entry = entry->next) {
@@ -218,6 +219,7 @@ static struct CFGNode* find_target_of_jump(const struct CFG* cfg,
   return NULL;
 }
 
+// Link basic blocks and populate their CFG edges.
 static struct CFG* link_cfg(struct CFG* cfg) {
   struct CFGNode* start_node = cfg->nodes[0];
   struct CFGNode* exit_node = cfg->nodes[cfg->num_nodes - 1];
@@ -362,12 +364,14 @@ enum {
   CFG_ASCII_SELF_LOOP_PADDING = 3,
 };
 
+// The cfgascii canvas stores cells, rows, columns.
 struct CFGAsciiCanvas {
   char* cells;
   unsigned rows;
   unsigned columns;
 };
 
+// Identify the possible cfgascii edge kind values.
 enum CFGAsciiEdgeKind {
   CFG_ASCII_ADJACENT_EDGE,
   CFG_ASCII_FORWARD_EDGE,
@@ -375,6 +379,7 @@ enum CFGAsciiEdgeKind {
   CFG_ASCII_SELF_EDGE,
 };
 
+// The cfgascii edge stores source, target, kind, departure_row, and other fields.
 struct CFGAsciiEdge {
   unsigned source;
   unsigned target;
@@ -423,6 +428,7 @@ static void cfg_ascii_put(struct CFGAsciiCanvas* canvas,
   }
 }
 
+// Draw a horizontal edge segment in the CFG visualization.
 static void cfg_ascii_horizontal(struct CFGAsciiCanvas* canvas,
                                  unsigned row,
                                  unsigned first_column,
@@ -435,6 +441,7 @@ static void cfg_ascii_horizontal(struct CFGAsciiCanvas* canvas,
   }
 }
 
+// Draw a vertical edge segment in the CFG visualization.
 static void cfg_ascii_vertical(struct CFGAsciiCanvas* canvas,
                                unsigned column,
                                unsigned first_row,
@@ -465,6 +472,7 @@ static unsigned cfg_ascii_node_label(const struct CFG* cfg,
   return written > 0 ? (unsigned)written : 0;
 }
 
+// Draw the terminating segment of a labeled CFG edge.
 static unsigned cfg_ascii_label_end(const struct CFG* cfg,
                                     const unsigned* node_columns,
                                     unsigned node_index) {
@@ -473,6 +481,7 @@ static unsigned cfg_ascii_label_end(const struct CFG* cfg,
   return node_columns[node_index] - length / 2 + length - 1;
 }
 
+// Free the temporary rank, routing, and edge arrays used by the ASCII renderer.
 static void cfg_ascii_free_layout(unsigned* ranks,
                                   unsigned* rank_sizes,
                                   unsigned* rank_positions,

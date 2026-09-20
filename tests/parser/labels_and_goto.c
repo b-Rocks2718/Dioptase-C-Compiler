@@ -1,4 +1,4 @@
-int main(void){
+int main(void){ /* Exercise labels and goto behavior. */
   int x = 0;
 start:
   x = x + 1;

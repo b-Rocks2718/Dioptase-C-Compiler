@@ -1,4 +1,4 @@
-// Purpose: Verify cleanup runs for multiple locals in the same scope.
+// Verify cleanup runs for multiple locals in the same scope.
 // Expected: main returns 0.
 #define TEST_OK 0
 #define TEST_FAIL 1
@@ -8,11 +8,11 @@
 
 int sum = 0;
 
-void cleanup_add(int *p) {
+void cleanup_add(int *p) { /* Add the cleaned-up value to the test total. */
   sum += *p;
 }
 
-int main(void) {
+int main(void) { /* Exercise cleanup two vars behavior. */
   {
     int first __attribute__((cleanup(cleanup_add))) = TEST_A;
     int second __attribute__((cleanup(cleanup_add))) = TEST_B;

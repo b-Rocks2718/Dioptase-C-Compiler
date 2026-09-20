@@ -1,6 +1,4 @@
-// Purpose: Define named constants for struct/array/pointer test data.
-// Inputs/Outputs: Constants are consumed by initializers and loops.
-// Invariants/Assumptions: Values are small signed integers.
+// Define named constants for struct/array/pointer test data.
 #define kDataLen 4
 #define kSeed 10
 #define kIndexMid 2
@@ -10,23 +8,17 @@
 #define kGlobal2 3
 #define kGlobal3 4
 
-// Purpose: Hold packet data for struct/array/pointer behavior.
-// Inputs/Outputs: data stores integers; cursor selects an element.
-// Invariants/Assumptions: cursor is either kZero or points into data.
+// Hold packet data for struct/array/pointer behavior.
 struct Packet {
   int data[kDataLen];
   int* cursor;
 };
 
-// Purpose: Provide global storage to exercise static struct initialization.
-// Inputs/Outputs: data values seed global accumulation; cursor is initialized to kZero.
-// Invariants/Assumptions: data length is kDataLen.
+// Provide global storage to exercise static struct initialization.
 struct Packet g_packet = { {kGlobal0, kGlobal1, kGlobal2, kGlobal3}, 0 };
 
-// Purpose: Fill a packet with a sequence and set its cursor.
-// Inputs: pkt is the target packet; seed is the base value.
-// Outputs: Returns the value at kIndexMid after filling.
-// Invariants/Assumptions: pkt is non-NULL and has kDataLen elements.
+// Fill a packet with a sequence and set its cursor.
+// Returns the value at kIndexMid after filling.
 int fill_packet(struct Packet* pkt, int seed) {
   int i = 0;
   for (i = 0; i < kDataLen; i = i + 1) {
@@ -36,10 +28,8 @@ int fill_packet(struct Packet* pkt, int seed) {
   return *pkt->cursor;
 }
 
-// Purpose: Sum all elements in a packet.
-// Inputs: pkt is the packet to sum.
-// Outputs: Returns the sum of pkt->data.
-// Invariants/Assumptions: pkt is non-NULL and has kDataLen elements.
+// Sum all elements in a packet.
+// Returns the sum of pkt->data.
 int sum_packet(struct Packet* pkt) {
   int i = 0;
   int sum = 0;
@@ -49,9 +39,7 @@ int sum_packet(struct Packet* pkt) {
   return sum;
 }
 
-// Purpose: Drive struct initialization, pointer fields, and array access.
-// Inputs/Outputs: None.
-// Invariants/Assumptions: Uses global and local packets for aggregation.
+// Drive struct initialization, pointer fields, and array access.
 int main(void) {
   struct Packet local = { {0, 0, 0, 0}, 0 };
   int mid = fill_packet(&local, kSeed);

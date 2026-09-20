@@ -1,4 +1,4 @@
-// Purpose: Exercise address-of, dereference, loads, and stores.
+// Exercise address-of, dereference, loads, and stores.
 // Expected: main returns 18.
 int main(void) {
   int x = 3;

@@ -1,10 +1,10 @@
 
-struct Test {
+struct Test { /* Define the struct used by the struct test. */
   int a;
   short b;
 };
 
-int main(){
+int main(){ /* Exercise struct behavior. */
   struct Test t;
   struct Test* p = &t;
   p->a = 5;

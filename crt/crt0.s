@@ -17,6 +17,7 @@ _start_exit_loop:
   jmp _start_exit_loop
 
 .global exit
+# Implement the exit assembly routine.
 exit:
   mov  r2, r1
 exit_loop:

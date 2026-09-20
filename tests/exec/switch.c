@@ -1,4 +1,4 @@
-// Purpose: Exercise switch/case lowering and default handling.
+// Exercise switch/case lowering and default handling.
 // Expected: main returns 20.
 int main(void) {
   int x = 2;

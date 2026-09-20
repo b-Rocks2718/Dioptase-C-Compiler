@@ -10,6 +10,7 @@ void print_tabs(int tabs) {
   for (int i = 0; i < tabs; ++i) printf("    ");
 }
 
+// Print param type list.
 void print_param_type_list(struct ParamTypeList* type_list){
   if (type_list == NULL) return;
   print_type(type_list->type);
@@ -17,6 +18,7 @@ void print_param_type_list(struct ParamTypeList* type_list){
   print_param_type_list(type_list->next);
 }
 
+// Print a type tree with its qualifiers, derived types, and aggregate details.
 void print_type(struct Type* type){
   switch (type->type){
     case INT_TYPE:
@@ -92,6 +94,7 @@ void print_type(struct Type* type){
   }
 }
 
+// Print storage class.
 static void print_storage_class(enum StorageClass storage){
   switch (storage){
     case NONE:
@@ -106,6 +109,7 @@ static void print_storage_class(enum StorageClass storage){
   }
 }
 
+// Print an expression tree recursively with indentation for nesting.
 void print_expr(struct Expr* expr, int tabs){
   switch (expr->type){
     case BINARY:
@@ -195,6 +199,7 @@ void print_expr(struct Expr* expr, int tabs){
   }
 }
 
+// Print bin expr.
 void print_bin_expr(struct BinaryExpr* bin_expr, int tabs){
   switch (bin_expr->op){
     case ADD_OP:
@@ -297,6 +302,7 @@ void print_bin_expr(struct BinaryExpr* bin_expr, int tabs){
   printf(")");
 }
 
+// Print un expr.
 void print_un_expr(struct UnaryExpr* un_expr, int tabs){
   switch (un_expr->op){
     case COMPLEMENT:
@@ -316,6 +322,7 @@ void print_un_expr(struct UnaryExpr* un_expr, int tabs){
   printf(")");
 }
 
+// Print assign expr.
 void print_assign_expr(struct AssignExpr* assign_expr, int tabs){
   printf("Assign(");
   print_expr(assign_expr->left, tabs);
@@ -324,6 +331,7 @@ void print_assign_expr(struct AssignExpr* assign_expr, int tabs){
   printf(")");
 }
 
+// Print post assign expr.
 void print_post_assign_expr(struct PostAssignExpr* post_expr, int tabs){
   printf("PostAssign(");
   switch (post_expr->op){
@@ -339,6 +347,7 @@ void print_post_assign_expr(struct PostAssignExpr* post_expr, int tabs){
   printf(")");
 }
 
+// Print conditional expr.
 void print_conditional_expr(struct ConditionalExpr* c_expr, int tabs){
   printf("ConditionalExpr(");
   print_expr(c_expr->condition, tabs);
@@ -349,6 +358,7 @@ void print_conditional_expr(struct ConditionalExpr* c_expr, int tabs){
   printf(")");
 }
 
+// Print lit expr.
 void print_lit_expr(struct LitExpr* lit_expr){
   printf("LitExpr(");
   switch (lit_expr->type){
@@ -371,12 +381,14 @@ void print_lit_expr(struct LitExpr* lit_expr){
   printf(")");
 }
 
+// Print var expr.
 void print_var_expr(struct VarExpr* var_expr){
   printf("Var(");
   print_slice(var_expr->name);
   printf(")");
 }
 
+// Print args list.
 void print_args_list(struct ArgList* args_list, int tabs){
   if (args_list == NULL) return;
   print_expr(args_list->arg, tabs);
@@ -384,6 +396,7 @@ void print_args_list(struct ArgList* args_list, int tabs){
   print_args_list(args_list->next, tabs);
 }
 
+// Print fun call expr.
 void print_fun_call_expr(struct FunctionCallExpr* fun_expr, int tabs){
   printf("FunCallExpr(");
   print_expr(fun_expr->func, tabs);
@@ -392,6 +405,7 @@ void print_fun_call_expr(struct FunctionCallExpr* fun_expr, int tabs){
   printf("])");
 }
 
+// Print cast expr.
 void print_cast_expr(struct CastExpr* cast_expr, int tabs){
   printf("Cast(");
   print_type(cast_expr->target);
@@ -400,18 +414,21 @@ void print_cast_expr(struct CastExpr* cast_expr, int tabs){
   printf(")");
 }
 
+// Print addr of expr.
 void print_addr_of_expr(struct AddrOfExpr* expr, int tabs){
   printf("AddrOf(");
   print_expr(expr->expr, tabs);
   printf(")");
 }
 
+// Print dereference expr.
 void print_dereference_expr(struct DereferenceExpr* expr, int tabs){
   printf("Dereference(");
   print_expr(expr->expr, tabs);
   printf(")");
 }
 
+// Print subscript expr.
 void print_subscript_expr(struct SubscriptExpr* expr, int tabs){
   printf("Subscript(");
   print_expr(expr->array, tabs);
@@ -420,6 +437,7 @@ void print_subscript_expr(struct SubscriptExpr* expr, int tabs){
   printf(")");
 }
 
+// Print block item.
 void print_block_item(struct BlockItem* item, int tabs){
   switch (item->type){
     case DCLR_ITEM:
@@ -430,12 +448,14 @@ void print_block_item(struct BlockItem* item, int tabs){
   }
 }
 
+// Print every declaration and statement in a compound block.
 void print_block(struct Block* block, int tabs){
   if (block == NULL) return;
   print_block_item(block->item, tabs);
   print_block(block->next, tabs);
 }
 
+// Print for init.
 void print_for_init(struct ForInit* for_init, int tabs){
   switch (for_init->type){
     case DCLR_INIT:
@@ -447,6 +467,7 @@ void print_for_init(struct ForInit* for_init, int tabs){
   }
 }
 
+// Print case list.
 void print_case_list(struct CaseList* case_list, int tabs){
   if (case_list == NULL) return;
   switch (case_list->case_label.type){
@@ -461,6 +482,7 @@ void print_case_list(struct CaseList* case_list, int tabs){
   print_case_list(case_list->next, tabs);
 }
 
+// Print return stmt.
 void print_return_stmt(struct ReturnStmt* ret_stmt, int tabs){
   printf("Return(");
   if (ret_stmt->expr == NULL){
@@ -475,10 +497,12 @@ void print_return_stmt(struct ReturnStmt* ret_stmt, int tabs){
   printf(");\n");
 }
 
+// Print expr stmt.
 void print_expr_stmt(struct ExprStmt* expr_stmt, int tabs){
   printf("ExprStmt("); print_expr(expr_stmt->expr, tabs); printf(");\n");
 }
 
+// Print if stmt.
 void print_if_stmt(struct IfStmt* if_stmt, int tabs){
   printf("IfStmt(\n");
   print_tabs(tabs + 1); printf("c="); print_expr(if_stmt->condition, tabs); printf(", \n");
@@ -491,10 +515,12 @@ void print_if_stmt(struct IfStmt* if_stmt, int tabs){
   print_tabs(tabs); printf(");\n");
 }
 
+// Print goto stmt.
 void print_goto_stmt(struct GotoStmt* goto_stmt, int tabs){
   printf("GotoStmt("); print_slice(goto_stmt->label); printf(");\n");
 }
 
+// Print labeled stmt.
 void print_labeled_stmt(struct LabeledStmt* labeled_stmt, int tabs){
   printf("LabeledStmt(\n");
   print_tabs(tabs + 1); print_slice(labeled_stmt->label); printf(",\n");
@@ -502,12 +528,14 @@ void print_labeled_stmt(struct LabeledStmt* labeled_stmt, int tabs){
   print_tabs(tabs); printf(");\n"); 
 }
 
+// Print compound stmt.
 void print_compound_stmt(struct CompoundStmt* compound_stmt, int tabs){
   printf("CompoundStmt(\n");
   print_block(compound_stmt->block, tabs + 1);
   print_tabs(tabs); printf(");\n");
 }
 
+// Print break stmt.
 void print_break_stmt(struct BreakStmt* break_stmt, int tabs){
   printf("BreakStmt(label=");
   if (break_stmt->label == NULL) printf("null");
@@ -515,6 +543,7 @@ void print_break_stmt(struct BreakStmt* break_stmt, int tabs){
   printf(");\n");
 }
 
+// Print continue stmt.
 void print_continue_stmt(struct ContinueStmt* continue_stmt, int tabs){
   printf("ContinueStmt(label=");
   if (continue_stmt->label == NULL) printf("null");
@@ -522,6 +551,7 @@ void print_continue_stmt(struct ContinueStmt* continue_stmt, int tabs){
   printf(");\n");
 }
 
+// Print while stmt.
 void print_while_stmt(struct WhileStmt* while_stmt, int tabs){
   printf("WhileStmt(\n");
   if (while_stmt->label != NULL){
@@ -532,6 +562,7 @@ void print_while_stmt(struct WhileStmt* while_stmt, int tabs){
   print_tabs(tabs); printf(");\n");
 }
 
+// Print do while stmt.
 void print_do_while_stmt(struct DoWhileStmt* do_while_stmt, int tabs){
   printf("DoWhileStmt(\n");
   if (do_while_stmt->label != NULL){
@@ -542,6 +573,7 @@ void print_do_while_stmt(struct DoWhileStmt* do_while_stmt, int tabs){
   print_tabs(tabs); printf(");\n");
 }
 
+// Print for stmt.
 void print_for_stmt(struct ForStmt* for_stmt, int tabs){
   printf("ForStmt(\n");
   if (for_stmt->label != NULL){
@@ -558,6 +590,7 @@ void print_for_stmt(struct ForStmt* for_stmt, int tabs){
   print_tabs(tabs); printf(");\n");
 }
 
+// Print switch stmt.
 void print_switch_stmt(struct SwitchStmt* switch_stmt, int tabs){
   printf("SwitchStmt(\n");
   print_tabs(tabs + 1); printf("label="); 
@@ -572,6 +605,7 @@ void print_switch_stmt(struct SwitchStmt* switch_stmt, int tabs){
   print_tabs(tabs); printf(");\n");
 }
 
+// Print case stmt.
 void print_case_stmt(struct CaseStmt* case_stmt, int tabs){
   printf("CaseStmt(\n"); 
   print_tabs(tabs + 1); print_expr(case_stmt->expr, tabs); printf(",\n");
@@ -579,16 +613,19 @@ void print_case_stmt(struct CaseStmt* case_stmt, int tabs){
   print_tabs(tabs); printf(");\n");
 }
 
+// Print default stmt.
 void print_default_stmt(struct DefaultStmt* default_stmt, int tabs){
   printf("DefaultStmt(\n");
   print_stmt(default_stmt->statement, tabs + 1);
   print_tabs(tabs); printf(");\n");
 }
 
+// Print null stmt.
 void print_null_stmt(struct NullStmt* null_stmt, int tabs){
   printf("NullStmt;\n");
 }
 
+// Dispatch printing for the concrete statement variant.
 void print_stmt(struct Statement* stmt, int tabs){
   print_tabs(tabs);
   switch (stmt->type){
@@ -640,6 +677,7 @@ void print_stmt(struct Statement* stmt, int tabs){
   }
 }
 
+// Print scalar and compound initializer contents recursively.
 void print_initializer(struct Initializer* init, int tabs){
   switch (init->init_type){
     case SINGLE_INIT:
@@ -660,6 +698,7 @@ void print_initializer(struct Initializer* init, int tabs){
   }
 }
 
+// Print var attributes.
 void print_var_attributes(struct VarAttributes attrs){
   if (attrs.cleanup_func != NULL){
     printf("cleanup = ");
@@ -668,6 +707,7 @@ void print_var_attributes(struct VarAttributes attrs){
   }
 }
 
+// Print var dclr.
 void print_var_dclr(struct VariableDclr* var_dclr, int tabs){
   printf("VarDclr(");
   print_storage_class(var_dclr->storage); printf(", ");
@@ -680,6 +720,7 @@ void print_var_dclr(struct VariableDclr* var_dclr, int tabs){
   printf(")");
 }
 
+// Print param list.
 void print_param_list(struct ParamList* params, int tabs){
   if (params == NULL) return;
   print_var_dclr(&params->param, tabs);
@@ -687,6 +728,7 @@ void print_param_list(struct ParamList* params, int tabs){
   print_param_list(params->next, tabs);
 }
 
+// Print fun dclr.
 void print_fun_dclr(struct FunctionDclr* fun_dclr, int tabs){
   printf("FunDclr(\n");
   print_tabs(tabs + 1); 
@@ -717,6 +759,7 @@ void print_fun_dclr(struct FunctionDclr* fun_dclr, int tabs){
   print_tabs(tabs); printf(")");
 }
 
+// Print member dclr.
 void print_member_dclr(struct MemberDclr* member){
   printf("MemberDclr(name=");
   print_slice_with_escapes(member->name);
@@ -725,6 +768,7 @@ void print_member_dclr(struct MemberDclr* member){
   printf(")");
 }
 
+// Print struct dclr.
 void print_struct_dclr(struct StructDclr* struct_dclr, int tabs){
   printf("\n");
   print_tabs(tabs);
@@ -745,6 +789,7 @@ void print_struct_dclr(struct StructDclr* struct_dclr, int tabs){
   printf(")");
 }
 
+// Print union dclr.
 void print_union_dclr(struct UnionDclr* union_dclr, int tabs){
   printf("\n");
   print_tabs(tabs);
@@ -765,6 +810,7 @@ void print_union_dclr(struct UnionDclr* union_dclr, int tabs){
   printf(")");
 }
 
+// Print enum dclr.
 void print_enum_dclr(struct EnumDclr* enum_dclr, int tabs){
   printf("\n");
   print_tabs(tabs);
@@ -787,6 +833,7 @@ void print_enum_dclr(struct EnumDclr* enum_dclr, int tabs){
   printf(")");
 }
 
+// Print a variable, function, or aggregate declaration recursively.
 void print_declaration(struct Declaration* declaration, int tabs){
   print_tabs(tabs);
   switch (declaration->type){
@@ -817,6 +864,7 @@ void print_declaration(struct Declaration* declaration, int tabs){
   }
 }
 
+// Print the complete AST program in source-like debug form.
 void print_prog(struct Program* prog){
   printf("Program(\n");
   for (struct DeclarationList* cur = prog->dclrs; cur != NULL; cur = cur->next){
@@ -825,6 +873,7 @@ void print_prog(struct Program* prog){
   printf(")\n");
 }
 
+// Compare two type trees, including derived and aggregate structure.
 bool compare_types(struct Type* a, struct Type* b) {
   if (a->type != b->type) {
     return false;

@@ -1,4 +1,4 @@
-// Purpose: Check alignment of interleaved short/int globals.
+// Check alignment of interleaved short/int globals.
 // Expected: main returns 0.
 short g_short_a = 1;
 int g_int_a = 2;
@@ -6,7 +6,7 @@ short g_short_b = 3;
 short g_short_c = 3;
 int g_int_b = 4;
 
-int main(void) {
+int main(void) { /* Exercise align globals behavior. */
   unsigned int align_short = 2;
   unsigned int align_int = 4;
 

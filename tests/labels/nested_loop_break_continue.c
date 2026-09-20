@@ -1,4 +1,4 @@
-int main(void){
+int main(void){ /* Exercise nested loop break continue behavior. */
   while (1) {
     for (0; 1; 0) {
       break;

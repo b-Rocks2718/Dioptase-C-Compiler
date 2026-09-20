@@ -2,7 +2,7 @@
 #define TEST_ONE 1
 #define TEST_TWO 2
 
-int main(void) {
+int main(void) { /* Exercise conditional pointer behavior. */
   int x = TEST_ONE;
   int y = TEST_TWO;
   int *p = &x;

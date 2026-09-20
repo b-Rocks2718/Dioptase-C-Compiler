@@ -4,6 +4,7 @@
 #include "TAC.h"
 #include "stdbool.h"
 
+// Identify the possible cfgnode type values.
 enum CFGNodeType {
   CFG_ENTRY,
   CFG_EXIT,
@@ -17,16 +18,17 @@ struct CFGNodeEntry {
   struct CFGNodeEntry* next;
 };
 
+// The cfgnode list stores head, tail.
 struct CFGNodeList {
   struct CFGNodeEntry* head;
   struct CFGNodeEntry* tail;
 };
 
+// The cfgnode stores type, predecessors, successors, body, and other fields.
 struct CFGNode {
   enum CFGNodeType type;
 
-  // linked list of predecessor and successor CFGNodes
-  // links are bidirectional: `A` a successor of `B` <-> `B` a predecessor of `A`
+  // Predecessor and successor links are bidirectional.
 
   struct CFGNodeList predecessors;
   struct CFGNodeList successors;

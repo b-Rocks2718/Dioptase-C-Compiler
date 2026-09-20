@@ -3,6 +3,7 @@
 
 #include "TAC.h"
 
+// The call graph stores todo.
 struct CallGraph {
   unsigned todo;
 };

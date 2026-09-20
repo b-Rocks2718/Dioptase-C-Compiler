@@ -1,4 +1,4 @@
-int main(void){
+int main(void){ /* Exercise loop in switch behavior. */
   switch (1) {
     case 1: {
       while (1) {

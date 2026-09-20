@@ -1,4 +1,4 @@
-// Purpose: Verify cleanup runs for a for-init variable after the loop.
+// Verify cleanup runs for a for-init variable after the loop.
 // Expected: main returns 0.
 #define TEST_OK 0
 #define TEST_FAIL 1
@@ -7,11 +7,11 @@
 
 int result = 0;
 
-void cleanup_capture(int *p) {
+void cleanup_capture(int *p) { /* Record cleanup of the captured object. */
   result = *p;
 }
 
-int main(void) {
+int main(void) { /* Exercise cleanup for init behavior. */
   for (int i __attribute__((cleanup(cleanup_capture))) = INIT_VALUE;
        i < LIMIT;
        i = i + 1) {

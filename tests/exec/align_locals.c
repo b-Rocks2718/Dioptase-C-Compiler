@@ -1,4 +1,4 @@
-// Purpose: Check alignment of interleaved short/int locals.
+// Check alignment of interleaved short/int locals.
 // Expected: main returns 0.
 int main(void) {
   short s1 = 1;

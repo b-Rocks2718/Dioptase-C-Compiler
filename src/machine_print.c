@@ -8,10 +8,8 @@
 #include "slice.h"
 #include "source_location.h"
 
-// Purpose: Write a slice to a file without assuming NUL termination.
-// Inputs: out is the file to write to; slice may be NULL.
-// Outputs: Emits slice text or a placeholder to the file.
-// Invariants/Assumptions: out is valid and writable.
+// Write a slice to a file without assuming NUL termination.
+// out is the file to write to; slice may be NULL.
 static void write_slice(FILE* out, const struct Slice* slice) {
   if (slice == NULL) {
     fputs("<null>", out);
@@ -20,10 +18,7 @@ static void write_slice(FILE* out, const struct Slice* slice) {
   fwrite(slice->start, 1, slice->len, out);
 }
 
-// Purpose: Write a register name in assembler syntax.
-// Inputs: out is the file to write to; reg is the register number.
-// Outputs: Emits an assembler register name (e.g., r1).
-// Invariants/Assumptions: reg is a valid enum Reg value.
+// Write a register name in assembler syntax.
 static void write_reg(FILE* out, enum Reg reg) {
   switch (reg) {
     case R29:
@@ -41,10 +36,9 @@ static void write_reg(FILE* out, enum Reg reg) {
   }
 }
 
-// Purpose: Write a label or immediate literal for operands.
-// Inputs: out is the file to write to; label may be NULL; imm is the literal.
-// Outputs: Emits label text if provided, otherwise a decimal literal.
-// Invariants/Assumptions: label is a valid Slice if non-NULL.
+// Write a label or immediate literal for operands.
+// out is the file to write to; label may be NULL; imm is the literal.
+// Emits label text if provided, otherwise a decimal literal.
 static void write_label_or_imm(FILE* out, const struct Slice* label, int imm) {
   if (label != NULL) {
     write_slice(out, label);
@@ -53,20 +47,14 @@ static void write_label_or_imm(FILE* out, const struct Slice* label, int imm) {
   }
 }
 
-// Purpose: Write a memory operand in assembler syntax.
-// Inputs: out is the file to write to; base is the base register; imm is offset.
-// Outputs: Emits a memory operand like [rB, imm].
-// Invariants/Assumptions: base is a valid enum Reg value.
+// Write a memory operand in assembler syntax.
 static void write_mem_operand(FILE* out, enum Reg base, int imm) {
   fputc('[', out);
   write_reg(out, base);
   fprintf(out, ", %d]", imm);
 }
 
-// Purpose: Write a memory operand that may use a label for PC-relative addressing.
-// Inputs: out is the file to write to; base is the base register; label/imm select the offset.
-// Outputs: Emits a memory operand like [rB, label] or [rB, imm].
-// Invariants/Assumptions: label is a valid Slice if non-NULL.
+// Write a memory operand that may use a label for PC-relative addressing.
 static void write_mem_operand_label(FILE* out, enum Reg base, const struct Slice* label, int imm) {
   fputc('[', out);
   write_reg(out, base);
@@ -75,26 +63,18 @@ static void write_mem_operand_label(FILE* out, enum Reg base, const struct Slice
   fputc(']', out);
 }
 
-// Purpose: Emit a leading tab for non-label lines.
-// Inputs: out is the file to write to.
-// Outputs: Writes a single tab character.
-// Invariants/Assumptions: out is valid and writable.
+// Emit a leading tab for non-label lines.
 static void write_tab(FILE* out) {
   fputc('\t', out);
 }
 
-// Purpose: Decide whether to emit a register or immediate operand for binary ops.
-// Inputs: instr is the machine instruction being printed.
-// Outputs: Returns true to print instr->rc, false to print instr->imm.
-// Invariants/Assumptions: instr uses rc for register operands and imm for immediates.
+// Decide whether to emit a register or immediate operand for binary ops.
+// Returns true to print instr->rc, false to print instr->imm.
 static bool use_reg_operand(const struct MachineInstr* instr) {
   return instr->imm == 0;
 }
 
-// Purpose: Write a binary operation with either reg or immediate operand.
-// Inputs: out is the file to write to; mnem is the opcode; instr is the operation.
-// Outputs: Emits the formatted binary instruction.
-// Invariants/Assumptions: instr->ra/rb are set and either rc or imm is meaningful.
+// Write a binary operation with either reg or immediate operand.
 static void write_binary_op(FILE* out,
                             const char* mnem,
                             const struct MachineInstr* instr) {
@@ -111,10 +91,8 @@ static void write_binary_op(FILE* out,
   fputc('\n', out);
 }
 
-// Purpose: Emit a single machine instruction as assembly text.
-// Inputs: out is the file to write to; instr is the machine instruction.
-// Outputs: Returns false if an unknown instruction is encountered.
-// Invariants/Assumptions: instr is non-NULL and variants are populated.
+// Emit a single machine instruction as assembly text.
+// Returns false if an unknown instruction is encountered.
 static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
   switch (instr->type) {
     case MACHINE_LABEL:
@@ -877,6 +855,7 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
   }
 }
 
+// Serialize the complete machine program as assembler source.
 bool write_machine_prog_to_file(const struct MachineProg* prog, const char* path) {
   if (prog == NULL || path == NULL) {
     fprintf(stderr, "Compiler Error: machine_print: invalid write request\n");

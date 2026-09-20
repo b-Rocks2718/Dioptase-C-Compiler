@@ -119,7 +119,6 @@ static char* select_assembler_path(void) {
 }
 
 // Build a temporary assembly output path from the final output path.
-// output_path is the final assembler output path (e.g., a.hex).
 // Returns a heap-allocated path string or NULL on allocation failure.
 // Caller must free the returned string.
 static char* make_temp_asm_path(const char* output_path) {
@@ -147,9 +146,6 @@ static char* select_default_crt_dir(void) {
 }
 
 // Invoke the assembler to emit the final hex or binary file.
-// assembler_path is the executable path, asm_path is the input assembly,
-// output_path is the desired output file, kernel_mode forwards -kernel,
-// crt_dir provides the user-mode CRT directory when needed, and
 // emit_binary requests -bin output.
 // Returns true on success and false on failure.
 static bool run_assembler(const char* assembler_path,
@@ -230,6 +226,7 @@ static bool remove_temp_asm(const char* path) {
     return false;
 }
 
+// Run the requested compiler stages and emit the selected diagnostics or output.
 int main(int argc, const char *const *const argv) {
 
     bool print_tokens = false;

@@ -1,12 +1,12 @@
 
 struct Test;
 
-struct Test {
+struct Test { /* Define the struct used by the struct test. */
   int a;
   short b;
 };
 
-int main(){
+int main(){ /* Exercise struct behavior. */
   struct Test t = {0, 1};
   struct Test* p = &t;
   p->a = 5;
@@ -17,6 +17,6 @@ int main(){
   return sum;
 }
 
-void func(struct Test u, struct Test* v){
+void func(struct Test u, struct Test* v){ /* Copy the aggregate arguments to exercise parameter passing. */
   return;
 }

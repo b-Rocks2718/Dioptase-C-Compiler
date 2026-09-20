@@ -1,4 +1,4 @@
-// Purpose: Exercise explicit casts to/from short and unsigned short values.
+// Exercise explicit casts to/from short and unsigned short values.
 // Expected: main returns 7.
 int main(void) {
   int kShortPosValue = 30000; // Within signed short range per docs/abi.md.

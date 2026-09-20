@@ -12,6 +12,7 @@
 
 extern struct AsmSymbolTable* asm_symbol_table;
 
+// Identify the possible asm type type values.
 enum AsmTypeType {
   BYTE = 1,
   DOUBLE,
@@ -20,16 +21,19 @@ enum AsmTypeType {
   BYTE_ARRAY,
 };
 
+// The byte array stores size, alignment.
 struct ByteArray {
   size_t size;
   size_t alignment;
 };
 
+// The asm type stores type, byte_array.
 struct AsmType {
   enum AsmTypeType type;
   struct ByteArray byte_array;
 };
 
+// The one asm symbol entry stores key, type, is_static, is_defined, and other fields.
 struct AsmSymbolEntry{
   struct Slice* key;
   struct AsmType* type; // for data
@@ -40,19 +44,19 @@ struct AsmSymbolEntry{
   struct AsmSymbolEntry* next;
 };
 
+// The asm symbol table stores size, arr.
 struct AsmSymbolTable{
   size_t size;
   struct AsmSymbolEntry** arr;
 };
 
+// The asm prog stores head, tail.
 struct AsmProg {
   struct AsmTopLevel* head;
   struct AsmTopLevel* tail;
 };
 
-// Purpose: Capture a stack-local debug entry for assembly emission.
-// Inputs/Outputs: name identifies the source variable; offset is relative to BP.
-// Invariants/Assumptions: offset matches the lowered stack frame layout.
+// Capture a stack-local debug entry for assembly emission.
 struct DebugLocal {
   struct Slice* name;
   int offset;
@@ -60,6 +64,7 @@ struct DebugLocal {
   struct DebugLocal* next;
 };
 
+// Identify the possible asm top level type values.
 enum AsmTopLevelType {
   ASM_FUNC,
   ASM_STATIC_VAR,
@@ -68,6 +73,7 @@ enum AsmTopLevelType {
   ASM_ALIGN,
 };
 
+// The asm top level stores type, name, global, body, and other fields.
 struct AsmTopLevel {
   enum AsmTopLevelType type;
   struct Slice* name;
@@ -83,6 +89,7 @@ struct AsmTopLevel {
   struct AsmTopLevel* next;
 };
 
+// Identify the possible asm instr type values.
 enum AsmInstrType {
   ASM_MOV,
   ASM_UNARY,
@@ -103,6 +110,7 @@ enum AsmInstrType {
   ASM_EXTEND,
 };
 
+// The asm instr stores type, unary_op, alu_op, cond, and other fields.
 struct AsmInstr {
   enum AsmInstrType type;
 
@@ -123,6 +131,7 @@ struct AsmInstr {
   struct AsmInstr* next;
 };
 
+// Identify the possible operand type values.
 enum OperandType {
   OPERAND_LIT,
   OPERAND_REG,
@@ -132,6 +141,7 @@ enum OperandType {
   OPERAND_DATA
 };
 
+// Identify the possible reg values.
 enum Reg {
   R0 = 0,
   R1,
@@ -171,6 +181,7 @@ static const enum Reg BP = R30; // base pointer register
 static const enum Reg SP = R31; // stack pointer register
 static const enum Reg RA = R29; // return address register
 
+// The operand stores type, asm_type, reg, lit_value, and other fields.
 struct Operand {
   enum OperandType type;
   struct AsmType* asm_type;
@@ -180,27 +191,34 @@ struct Operand {
   struct Slice* pseudo;  // for Pseudo
 };
 
+// The one pseudo entry stores pseudo, mapped, next.
 struct PseudoEntry {
   struct Operand* pseudo;
   struct Operand* mapped;
   struct PseudoEntry* next;
 };
 
+// The pseudo map stores size, arr.
 struct PseudoMap{
   size_t size;
   struct PseudoEntry** arr;
 };
 
+// Classify variables for the purpose of register allocation according to the ABI.
+// MEMORY_CLASS indicates that the variable should be passed in memory.
+// INTEGER_CLASS indicates that the variable can be passed in integer registers.
 enum VarClass {
   MEMORY_CLASS,
   INTEGER_CLASS,
 };
 
+// The var class list stores var_class, next.
 struct VarClassList {
   enum VarClass var_class;
   struct VarClassList* next;
 };
 
+// The operand list stores opr, next.
 struct OperandList {
   struct Operand* opr;
   struct OperandList* next;
@@ -211,10 +229,8 @@ extern const enum Reg kScratchRegA;
 extern const enum Reg kScratchRegB;
 extern const enum Reg kScratchRegC;
 
-// Purpose: Lower TAC into ASM, optionally emitting section directives.
-// Inputs: tac_prog is the TAC program; emit_sections controls .data/.text emission.
-// Outputs: Returns the ASM program or exits on internal error.
-// Invariants/Assumptions: TAC top-level lists are well-formed and acyclic.
+// Lower TAC into ASM, optionally emitting section directives.
+// Returns the ASM program or exits on internal error.
 struct AsmProg* prog_to_asm(struct TACProg* tac_prog, bool emit_sections);
 
 struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top);
@@ -238,10 +254,9 @@ struct Operand** get_srcs(struct AsmInstr* asm_instr, size_t* out_count);
 
 struct Operand* get_dst(struct AsmInstr* asm_instr);
 
-// Purpose: Build stack slot mappings for pseudo operands.
-// Inputs: asm_instr is the function body; reserved_bytes is preallocated frame space.
-// Outputs: Returns the total stack allocation in bytes (including reserved + padding).
-// Invariants/Assumptions: reserved_bytes preserves ABI-mandated slots (e.g., return pointer).
+// Build stack slot mappings for pseudo operands.
+// Returns the total stack allocation in bytes (including reserved + padding).
+// reserved_bytes preserves ABI-mandated slots (e.g., return pointer).
 size_t create_maps(struct AsmInstr* asm_instr, size_t reserved_bytes);
 
 void replace_pseudo(struct AsmInstr* asm_instr);
@@ -262,35 +277,25 @@ void print_pseudo_map(struct Slice* func, struct PseudoMap* hmap);
 
 void destroy_pseudo_map(struct PseudoMap* hmap);
 
-// Purpose: Print a debugging representation of an ASM program.
-// Inputs: prog is the ASM program to print (may be NULL).
-// Outputs: Writes a readable summary to stdout.
-// Invariants/Assumptions: The program list is well-formed and acyclic.
+// Print a debugging representation of an ASM program.
+// prog is the ASM program to print (may be NULL).
 void print_asm_prog(const struct AsmProg* prog);
 
 void print_asm_symbols(const struct AsmSymbolTable* sym_table);
 
-// Purpose: Detect whether a pseudo operand maps to a static storage symbol.
-// Inputs: opr is the operand to classify.
-// Outputs: Returns true if the operand names a static symbol.
-// Invariants/Assumptions: global_symbol_table is initialized before use.
+// Detect whether a pseudo operand maps to a static storage symbol.
+// Returns true if the operand names a static symbol.
 bool is_static_symbol_operand(const struct Operand* opr);
 
-// Purpose: Reserve space for a new stack slot in the current frame.
-// Inputs: operand to allocate space for, and stack_bytes tracks the total allocated stack bytes.
-// Outputs: Returns the negative offset from BP for the new slot.
-// Invariants/Assumptions: stack_bytes is non-NULL.
+// Reserve space for a new stack slot in the current frame.
+// Returns the negative offset from BP for the new slot.
 int allocate_stack_slot(struct Operand* opr, size_t* stack_bytes);
 
-// Purpose: Calculate total stack size needed for arguments passed on the stack.
-// Inputs: args is the array of argument values; num_args is the number of arguments.
-// Outputs: Returns the total size in bytes needed for stack arguments.
+// Calculate total stack size needed for arguments passed on the stack.
+// Returns the total size in bytes needed for stack arguments.
 size_t get_stack_size(struct Val* args, size_t num_args);
 
-// Purpose: Replace a pseudo operand field with its mapped location if present.
-// Inputs: field points to an operand field that may hold a pseudo.
-// Outputs: Updates *field in place when a mapping exists.
-// Invariants/Assumptions: pseudo_map is initialized before use.
+// Replace a pseudo operand field with its mapped location if present.
 void replace_operand_if_pseudo(struct Operand** field);
 
 // classify function parameters into register and stack arguments

@@ -1,5 +1,7 @@
 # Variables
 CC 				:= gcc
+# Compiler flags exercised by optimized execution tests and WACC *-opt targets.
+OPT_TEST_FLAGS ?= -opt
 CFLAGS_COMMON ?= -Wall
 OPT_DEBUG := -O0
 OPT_RELEASE := -O3
@@ -32,6 +34,7 @@ TEST_CFG_DIR := tests/cfg
 TAC_INTERP_TESTS := tac_interpreter
 TAC_INTERP_TEST_SRC := tests/tac_interpreter_tests.c
 TAC_EXEC_TESTS := tac_exec
+EXEC_TEST_MODES := default opt
 TAC_EXEC_TEST_SRC := tests/tac_exec_tests.c
 EMU_EXEC_TESTS := emu_exec
 EMU_EXEC_TEST_SRC := tests/emu_exec_tests.c
@@ -82,6 +85,8 @@ WACC_TAC_SKIP_TYPES ?= $(WACC_SKIP_TYPES)
 WACC_EMU_SKIP_TYPES ?= $(WACC_SKIP_TYPES)
 WACC_TAC_SKIP_ARGS ?= --skip-libraries --skip-types $(WACC_TAC_SKIP_TYPES)
 WACC_EMU_SKIP_ARGS ?= --skip-types $(WACC_EMU_SKIP_TYPES) --skip-stdout
+WACC_COMPILER_OPTIONS ?=
+WACC_TEST_MODE := default
 WACC_EMU_ASSEMBLER ?= $(ASSEMBLER_DEBUG)
 WACC_EMU_EMULATOR ?= $(EMULATOR_SIMPLE_DEBUG)
 WACC_KERNEL_EMU_ASSEMBLER ?= $(ASSEMBLER_DEBUG)
@@ -200,7 +205,7 @@ define RUN_TESTS
 	@GREEN="\033[0;32m"; \
 	RED="\033[0;31m"; \
 	NC="\033[0m"; \
-	passed=0; total=$$(( $(words $(PREPROCESS_TESTS)) + $(words $(PREPROCESS_INVALID_TESTS)) + $(words $(LEXER_TESTS)) + $(words $(LEXER_INVALID_TESTS)) + $(words $(PARSER_TESTS)) + $(words $(PARSER_INVALID_TESTS)) + $(words $(IDENTS_TESTS)) + $(words $(IDENTS_INVALID_TESTS)) + $(words $(LABELS_TESTS)) + $(words $(LABELS_INVALID_TESTS)) + $(words $(DEBUG_INFO_TESTS)) + $(words $(TYPES_TESTS)) + $(words $(TYPES_INVALID_TESTS)) + $(words $(CFG_TESTS)) + $(words $(TAC_INTERP_TESTS)) + $(words $(TAC_EXEC_TESTS)) + $(words $(EMU_EXEC_TESTS)) + $(words $(EMU_EXEC_FULL_TESTS)) )); \
+	passed=0; total=$$(( $(words $(PREPROCESS_TESTS)) + $(words $(PREPROCESS_INVALID_TESTS)) + $(words $(LEXER_TESTS)) + $(words $(LEXER_INVALID_TESTS)) + $(words $(PARSER_TESTS)) + $(words $(PARSER_INVALID_TESTS)) + $(words $(IDENTS_TESTS)) + $(words $(IDENTS_INVALID_TESTS)) + $(words $(LABELS_TESTS)) + $(words $(LABELS_INVALID_TESTS)) + $(words $(DEBUG_INFO_TESTS)) + $(words $(TYPES_TESTS)) + $(words $(TYPES_INVALID_TESTS)) + $(words $(CFG_TESTS)) + $(words $(TAC_INTERP_TESTS)) + $(words $(EXEC_TEST_MODES)) * ( $(words $(TAC_EXEC_TESTS)) + $(words $(EMU_EXEC_TESTS)) + $(words $(EMU_EXEC_FULL_TESTS)) ) )); \
 	echo "Running $(words $(PREPROCESS_TESTS)) preprocess tests:"; \
 	for t in $(PREPROCESS_TESTS); do \
 		printf "%s %-20s " '-' "$$t"; \
@@ -441,29 +446,44 @@ define RUN_TESTS
 			echo "$$RED FAIL $$NC"; \
 		fi; \
 	done; \
-	echo "\nRunning $(words $(TAC_EXEC_TESTS)) TAC execution tests:"; \
+	echo "\nRunning TAC execution tests in $(words $(EXEC_TEST_MODES)) modes:"; \
 	for t in $(TAC_EXEC_TESTS); do \
-		if $(TAC_EXEC_TEST_EXEC); then \
-			echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
-		else \
-			echo "$$RED FAIL $$NC"; \
-		fi; \
+		for mode in $(EXEC_TEST_MODES); do \
+			flags=""; label="$$mode"; \
+			if [ "$$mode" = "opt" ]; then flags="$(OPT_TEST_FLAGS)"; label="$$flags"; fi; \
+			echo "- $$t ($$label)"; \
+			if $(TAC_EXEC_TEST_EXEC) $$flags; then \
+				echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
+			else \
+				echo "$$RED FAIL $$NC"; \
+			fi; \
+		done; \
 	done; \
-	echo "\nRunning $(words $(EMU_EXEC_TESTS)) emulator execution tests:"; \
+	echo "\nRunning emulator execution tests in $(words $(EXEC_TEST_MODES)) modes:"; \
 	for t in $(EMU_EXEC_TESTS); do \
-		if DIOPTASE_ROOT=$(STACK_ROOT) DIOPTASE_EMULATOR_SIMPLE=$(EMU_EXEC_EMULATOR) DIOPTASE_BCC=$(EMU_EXEC_BCC) DIOPTASE_ASSEMBLER=$(EMU_EXEC_ASSEMBLER) $(EMU_EXEC_TEST_EXEC); then \
-			echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
-		else \
-			echo "$$RED FAIL $$NC"; \
-		fi; \
+		for mode in $(EXEC_TEST_MODES); do \
+			flags=""; label="$$mode"; \
+			if [ "$$mode" = "opt" ]; then flags="$(OPT_TEST_FLAGS)"; label="$$flags"; fi; \
+			echo "- $$t ($$label)"; \
+			if DIOPTASE_ROOT=$(STACK_ROOT) DIOPTASE_EMULATOR_SIMPLE=$(EMU_EXEC_EMULATOR) DIOPTASE_BCC=$(EMU_EXEC_BCC) DIOPTASE_ASSEMBLER=$(EMU_EXEC_ASSEMBLER) $(EMU_EXEC_TEST_EXEC) $$flags; then \
+				echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
+			else \
+				echo "$$RED FAIL $$NC"; \
+			fi; \
+		done; \
 	done; \
-	echo "\nRunning $(words $(EMU_EXEC_FULL_TESTS)) full emulator execution tests:"; \
+	echo "\nRunning full emulator execution tests in $(words $(EXEC_TEST_MODES)) modes:"; \
 	for t in $(EMU_EXEC_FULL_TESTS); do \
-		if DIOPTASE_EMULATOR_FULL=$(EMU_EXEC_FULL_EMULATOR) DIOPTASE_BCC=$(EMU_EXEC_FULL_BCC) DIOPTASE_ASSEMBLER=$(EMU_EXEC_FULL_ASSEMBLER) $(EMU_EXEC_FULL_TEST_EXEC); then \
-			echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
-		else \
-			echo "$$RED FAIL $$NC"; \
-		fi; \
+		for mode in $(EXEC_TEST_MODES); do \
+			flags=""; label="$$mode"; \
+			if [ "$$mode" = "opt" ]; then flags="$(OPT_TEST_FLAGS)"; label="$$flags"; fi; \
+			echo "- $$t ($$label)"; \
+			if DIOPTASE_EMULATOR_FULL=$(EMU_EXEC_FULL_EMULATOR) DIOPTASE_BCC=$(EMU_EXEC_FULL_BCC) DIOPTASE_ASSEMBLER=$(EMU_EXEC_FULL_ASSEMBLER) $(EMU_EXEC_FULL_TEST_EXEC) $$flags; then \
+				echo "$$GREEN PASS $$NC"; passed=$$((passed+1)); \
+			else \
+				echo "$$RED FAIL $$NC"; \
+			fi; \
+		done; \
 	done; \
 	echo; \
 	echo "Summary: $$passed / $$total tests passed.";
@@ -499,52 +519,67 @@ test-release: EMU_EXEC_FULL_ASSEMBLER := $(ASSEMBLER_RELEASE)
 test-release: $(RELEASE_EXEC) $(TAC_INTERP_TEST_EXEC_RELEASE) $(TAC_EXEC_TEST_EXEC_RELEASE) $(EMU_EXEC_TEST_EXEC_RELEASE) $(EMU_EXEC_FULL_TEST_EXEC_RELEASE) emulator-release emulator-full-release assembler-release
 	$(RUN_TESTS)
 
-test-wacc: $(DEBUG_EXEC) emulator-debug assembler-debug
-	@echo "\nRunning WACC emulator tests:"; \
-	if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(DEBUG_EXEC) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+test-wacc-opt: WACC_COMPILER_OPTIONS := -- $(OPT_TEST_FLAGS)
+test-wacc-opt: WACC_TEST_MODE := $(OPT_TEST_FLAGS)
+test-wacc test-wacc-opt: $(DEBUG_EXEC) emulator-debug assembler-debug
+	@echo "\nRunning WACC emulator tests ($(WACC_TEST_MODE)):"; \
+	if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(DEBUG_EXEC) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	for ch in $(WACC_EXTRA_CHAPTERS); do \
-		if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(DEBUG_EXEC) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+		if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(DEBUG_EXEC) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	done
 
-test-wacc-release: WACC_EMU_ASSEMBLER := $(ASSEMBLER_RELEASE)
-test-wacc-release: WACC_EMU_EMULATOR := $(EMULATOR_SIMPLE_RELEASE)
-test-wacc-release: $(RELEASE_EXEC) emulator-release assembler-release
-	@echo "\nRunning WACC emulator tests (release):"; \
-	if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(RELEASE_EXEC) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+test-wacc-release test-wacc-release-opt: WACC_EMU_ASSEMBLER := $(ASSEMBLER_RELEASE)
+test-wacc-release test-wacc-release-opt: WACC_EMU_EMULATOR := $(EMULATOR_SIMPLE_RELEASE)
+test-wacc-release-opt: WACC_COMPILER_OPTIONS := -- $(OPT_TEST_FLAGS)
+test-wacc-release-opt: WACC_TEST_MODE := release, $(OPT_TEST_FLAGS)
+test-wacc-release: WACC_TEST_MODE := release
+test-wacc-release test-wacc-release-opt: $(RELEASE_EXEC) emulator-release assembler-release
+	@echo "\nRunning WACC emulator tests ($(WACC_TEST_MODE)):"; \
+	if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(RELEASE_EXEC) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	for ch in $(WACC_EXTRA_CHAPTERS); do \
-		if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(RELEASE_EXEC) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+		if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(RELEASE_EXEC) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	done
 
-test-wacc-kernel: $(DEBUG_EXEC) emulator-full-debug assembler-debug
-	@echo "\nRunning WACC kernel emulator tests:"; \
-	if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_WACC_KERNEL=1 DIOPTASE_ASSEMBLER=$(WACC_KERNEL_EMU_ASSEMBLER) DIOPTASE_EMULATOR_FULL=$(WACC_KERNEL_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(DEBUG_EXEC) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+test-wacc-kernel-opt: WACC_COMPILER_OPTIONS := -- $(OPT_TEST_FLAGS)
+test-wacc-kernel-opt: WACC_TEST_MODE := $(OPT_TEST_FLAGS)
+test-wacc-kernel test-wacc-kernel-opt: $(DEBUG_EXEC) emulator-full-debug assembler-debug
+	@echo "\nRunning WACC kernel emulator tests ($(WACC_TEST_MODE)):"; \
+	if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_WACC_KERNEL=1 DIOPTASE_ASSEMBLER=$(WACC_KERNEL_EMU_ASSEMBLER) DIOPTASE_EMULATOR_FULL=$(WACC_KERNEL_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(DEBUG_EXEC) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	for ch in $(WACC_EXTRA_CHAPTERS); do \
-		if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_WACC_KERNEL=1 DIOPTASE_ASSEMBLER=$(WACC_KERNEL_EMU_ASSEMBLER) DIOPTASE_EMULATOR_FULL=$(WACC_KERNEL_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(DEBUG_EXEC) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+		if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_WACC_KERNEL=1 DIOPTASE_ASSEMBLER=$(WACC_KERNEL_EMU_ASSEMBLER) DIOPTASE_EMULATOR_FULL=$(WACC_KERNEL_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(DEBUG_EXEC) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	done
 
-test-wacc-kernel-release: WACC_KERNEL_EMU_ASSEMBLER := $(ASSEMBLER_RELEASE)
-test-wacc-kernel-release: WACC_KERNEL_EMU_EMULATOR := $(EMULATOR_FULL_RELEASE)
-test-wacc-kernel-release: $(RELEASE_EXEC) emulator-full-release assembler-release
-	@echo "\nRunning WACC kernel emulator tests (release):"; \
-	if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_WACC_KERNEL=1 DIOPTASE_ASSEMBLER=$(WACC_KERNEL_EMU_ASSEMBLER) DIOPTASE_EMULATOR_FULL=$(WACC_KERNEL_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(RELEASE_EXEC) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+test-wacc-kernel-release test-wacc-kernel-release-opt: WACC_KERNEL_EMU_ASSEMBLER := $(ASSEMBLER_RELEASE)
+test-wacc-kernel-release test-wacc-kernel-release-opt: WACC_KERNEL_EMU_EMULATOR := $(EMULATOR_FULL_RELEASE)
+test-wacc-kernel-release-opt: WACC_COMPILER_OPTIONS := -- $(OPT_TEST_FLAGS)
+test-wacc-kernel-release-opt: WACC_TEST_MODE := release, $(OPT_TEST_FLAGS)
+test-wacc-kernel-release: WACC_TEST_MODE := release
+test-wacc-kernel-release test-wacc-kernel-release-opt: $(RELEASE_EXEC) emulator-full-release assembler-release
+	@echo "\nRunning WACC kernel emulator tests ($(WACC_TEST_MODE)):"; \
+	if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_WACC_KERNEL=1 DIOPTASE_ASSEMBLER=$(WACC_KERNEL_EMU_ASSEMBLER) DIOPTASE_EMULATOR_FULL=$(WACC_KERNEL_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(RELEASE_EXEC) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	for ch in $(WACC_EXTRA_CHAPTERS); do \
-		if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_WACC_KERNEL=1 DIOPTASE_ASSEMBLER=$(WACC_KERNEL_EMU_ASSEMBLER) DIOPTASE_EMULATOR_FULL=$(WACC_KERNEL_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(RELEASE_EXEC) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+		if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_WACC_KERNEL=1 DIOPTASE_ASSEMBLER=$(WACC_KERNEL_EMU_ASSEMBLER) DIOPTASE_EMULATOR_FULL=$(WACC_KERNEL_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(RELEASE_EXEC) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	done
 
-test-tac-wacc: $(DEBUG_EXEC)
+test-tac-wacc-opt: WACC_COMPILER_OPTIONS := -- $(OPT_TEST_FLAGS)
+test-tac-wacc-opt: WACC_TEST_MODE := $(OPT_TEST_FLAGS)
+test-tac-wacc test-tac-wacc-opt: $(DEBUG_EXEC)
 	@chmod +x $(WACC_TAC_WRAPPER)
-	@echo "\nRunning WACC TAC interpreter tests:"; \
-	if ! DIOPTASE_BCC=$(DEBUG_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_TAC_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+	@echo "\nRunning WACC TAC interpreter tests ($(WACC_TEST_MODE)):"; \
+	if ! DIOPTASE_BCC=$(DEBUG_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_TAC_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	for ch in $(WACC_EXTRA_CHAPTERS); do \
-		if ! DIOPTASE_BCC=$(DEBUG_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_TAC_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+		if ! DIOPTASE_BCC=$(DEBUG_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_TAC_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	done
 
-test-tac-wacc-release: $(RELEASE_EXEC)
+test-tac-wacc-release-opt: WACC_COMPILER_OPTIONS := -- $(OPT_TEST_FLAGS)
+test-tac-wacc-release-opt: WACC_TEST_MODE := release, $(OPT_TEST_FLAGS)
+test-tac-wacc-release: WACC_TEST_MODE := release
+test-tac-wacc-release test-tac-wacc-release-opt: $(RELEASE_EXEC)
 	@chmod +x $(WACC_TAC_WRAPPER)
-	@echo "\nRunning WACC TAC interpreter tests (release):"; \
-	if ! DIOPTASE_BCC=$(RELEASE_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_TAC_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+	@echo "\nRunning WACC TAC interpreter tests ($(WACC_TEST_MODE)):"; \
+	if ! DIOPTASE_BCC=$(RELEASE_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $(WACC_CORE_CHAPTER) $(WACC_EXTRA_CREDIT) $(WACC_TAC_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	for ch in $(WACC_EXTRA_CHAPTERS); do \
-		if ! DIOPTASE_BCC=$(RELEASE_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_TAC_SKIP_ARGS) $(WACC_ARGS); then exit 1; fi; \
+		if ! DIOPTASE_BCC=$(RELEASE_EXEC) DIOPTASE_TACC_GCC_RUNTIME=1 $(WACC_TEST_RUNNER) $(WACC_TAC_WRAPPER) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_TAC_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	done
 
 # TAC interpreter test build rules
@@ -600,7 +635,9 @@ $(EMU_EXEC_FULL_TEST_EXEC_RELEASE): $(EMU_EXEC_FULL_TEST_OBJ_RELEASE) $(RELEASE_
 	$(CC) $(CFLAGS_RELEASE) $(LDFLAGS_RELEASE) -o $@ $(EMU_EXEC_FULL_TEST_OBJ_RELEASE) $(RELEASE_OBJFILES_NO_MAIN)
 
 # Phony targets
-.PHONY: all debug release clean purge test test-release test-wacc test-wacc-release \
-	test-wacc-kernel test-wacc-kernel-release test-tac-wacc test-tac-wacc-release \
+.PHONY: all debug release clean purge test test-release test-wacc test-wacc-opt \
+	test-wacc-release test-wacc-release-opt test-wacc-kernel test-wacc-kernel-opt \
+	test-wacc-kernel-release test-wacc-kernel-release-opt test-tac-wacc \
+	test-tac-wacc-opt test-tac-wacc-release test-tac-wacc-release-opt \
 	emulator-debug emulator-release emulator-full-debug emulator-full-release \
 	assembler-debug assembler-release

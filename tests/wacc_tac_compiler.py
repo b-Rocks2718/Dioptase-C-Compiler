@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""
-Purpose: Wrapper compiler that adapts the Writing-a-C-Compiler test suite to use the TAC interpreter.
-Inputs: Compiler-style arguments including a single C source file and optional -D defines.
-Outputs: Creates an executable script for valid programs or returns non-zero on compile failures.
-Invariants/Assumptions: The real compiler is provided via DIOPTASE_BCC and supports -interp.
-                      Uses a host gcc-style preprocessor to expand includes/macros first.
-                      Uses the host compiler for -c output because the TAC compiler has no backend.
-                      Optionally uses host GCC for known slow runtime tests when enabled.
+"""Adapt Writing-a-C-Compiler tests to execute through the TAC interpreter.
+
+The wrapper preprocesses one C source file, validates it with the compiler from
+``DIOPTASE_BCC``, and emits an executable launcher. Compile-only invocations and
+explicitly enabled slow tests use the host compiler because TAC has no backend.
 """
 
 from __future__ import annotations
@@ -19,27 +16,31 @@ import sys
 from typing import List, Optional, Tuple
 
 
-# Purpose: Define wrapper exit codes for common failure modes.
-# Inputs/Outputs: Constants returned by main when wrapper setup fails.
-# Invariants/Assumptions: Exit codes are non-zero and do not overlap compiler errors.
+# Define wrapper exit codes for common failure modes.
+# Exit codes are non-zero and do not overlap compiler errors.
 EXIT_USAGE = 64
 EXIT_UNSUPPORTED = 65
 EXIT_WRITE_FAILED = 66
 EXIT_PREPROCESS_FAILED = 67
 
-# Purpose: Enumerate accepted wrapper flags for the test suite bridge.
-# Inputs/Outputs: Used by argument parsing to classify options.
-# Invariants/Assumptions: -lm is ignored; -D macros pass through to the real compiler.
+# Enumerate accepted wrapper flags for the test suite bridge.
 IGNORED_FLAGS = {"-lm"}
 UNSUPPORTED_FLAGS = {"-S", "--lex", "--parse", "--validate", "--tacky", "--codegen"}
-# Purpose: Allow overriding the host preprocessor command for portability.
-# Inputs/Outputs: Read by get_preprocessor_command to pick a gcc-compatible preprocessor.
-# Invariants/Assumptions: The command accepts -E/-P and -D flags.
+COMPILER_ONLY_FLAGS = {
+    "-constant-fold",
+    "-copy-prop",
+    "-dead-code",
+    "-dead-store",
+    "-inline",
+    "-opt",
+    "-peephole",
+    "-reg-alloc",
+    "-tail-call",
+}
+# Allow overriding the host preprocessor command for portability.
 PREPROCESSOR_ENV = "DIOPTASE_GCC"
 PREPROCESSOR_FLAGS = ["-E", "-P"]
-# Purpose: Optionally swap slow runtime tests to host GCC execution.
-# Inputs/Outputs: Controlled by SLOW_RUNTIME_ENV and the SLOW_RUNTIME_TESTS list.
-# Invariants/Assumptions: Used to avoid interpreter timeouts for long-running programs.
+# Optionally swap slow runtime tests to host GCC execution.
 SLOW_RUNTIME_ENV = "DIOPTASE_TACC_GCC_RUNTIME"
 SLOW_RUNTIME_TESTS = {"empty_loop_body.c", "test_for_memory_leaks.c"}
 SLOW_RUNTIME_ENV = "DIOPTASE_TACC_GCC_RUNTIME"
@@ -47,12 +48,7 @@ SLOW_RUNTIME_TESTS = {"empty_loop_body.c", "test_for_memory_leaks.c"}
 
 
 def get_compiler_path(env_var: str) -> Path:
-    """
-    Purpose: Resolve the real compiler path from the environment.
-    Inputs: env_var names the environment variable to consult.
-    Outputs: Returns an absolute Path to the compiler executable.
-    Invariants/Assumptions: The environment variable is set and points to an executable file.
-    """
+    """Resolve and validate the compiler executable named by an environment variable."""
     raw = os.environ.get(env_var)
     if raw is None or raw.strip() == "":
         raise ValueError(
@@ -66,16 +62,12 @@ def get_compiler_path(env_var: str) -> Path:
     return path
 
 
-def parse_args(argv: List[str]) -> Tuple[Path, Path, List[str], bool]:
-    """
-    Purpose: Parse wrapper arguments and extract the source and output paths.
-    Inputs: argv is the argument vector excluding the program name.
-    Outputs: Returns (source_path, output_path, pass_through_args, compile_only).
-    Invariants/Assumptions: Exactly one C source file is provided and any -o has a value.
-    """
+def parse_args(argv: List[str]) -> Tuple[Path, Path, List[str], List[str], bool]:
+    """Parse one source file plus the subset of compiler flags supported by the wrapper."""
     source: Optional[Path] = None
     output: Optional[Path] = None
-    pass_through: List[str] = []
+    preprocessor_options: List[str] = []
+    compiler_options: List[str] = []
     compile_only = False
     i = 0
     while i < len(argv):
@@ -95,8 +87,13 @@ def parse_args(argv: List[str]) -> Tuple[Path, Path, List[str], bool]:
         if arg in IGNORED_FLAGS:
             i += 1
             continue
+        if arg in COMPILER_ONLY_FLAGS:
+            compiler_options.append(arg)
+            i += 1
+            continue
         if arg.startswith("-D"):
-            pass_through.append(arg)
+            preprocessor_options.append(arg)
+            compiler_options.append(arg)
             i += 1
             continue
         if arg.startswith("-"):
@@ -112,16 +109,11 @@ def parse_args(argv: List[str]) -> Tuple[Path, Path, List[str], bool]:
     if output is None:
         output = source.with_suffix(".o" if compile_only else "")
 
-    return source, output, pass_through, compile_only
+    return source, output, preprocessor_options, compiler_options, compile_only
 
 
 def get_preprocessor_command(env_var: str) -> str:
-    """
-    Purpose: Resolve the preprocessor command from the environment.
-    Inputs: env_var names the environment variable to consult.
-    Outputs: Returns the executable name to invoke.
-    Invariants/Assumptions: The command is a single executable name, not a full shell string.
-    """
+    """Select the configured preprocessor executable, defaulting to ``gcc``."""
     raw = os.environ.get(env_var)
     if raw is None or raw.strip() == "":
         return "gcc"
@@ -129,49 +121,30 @@ def get_preprocessor_command(env_var: str) -> str:
 
 
 def build_preprocessed_path(output: Path) -> Path:
-    """
-    Purpose: Choose a stable on-disk path for the preprocessed source file.
-    Inputs: output is the expected executable path for the test case.
-    Outputs: Returns a sibling path with a .i suffix appended to the output name.
-    Invariants/Assumptions: The test harness cleans up non-source artifacts afterward.
-    """
+    """Place the temporary preprocessed source beside the requested output."""
     return output.with_name(output.name + ".i")
 
 
 def should_use_gcc_runtime(source: Path) -> bool:
-    """
-    Purpose: Decide whether to run a test binary via host GCC for slow cases.
-    Inputs: source is the original C source file path.
-    Outputs: Returns true when GCC runtime should be used instead of the TAC interpreter.
-    Invariants/Assumptions: Activated only when SLOW_RUNTIME_ENV is set.
-    """
+    """Select the opt-in host runtime for test cases that are prohibitively slow in TAC."""
     enabled = os.environ.get(SLOW_RUNTIME_ENV)
     if enabled is None or enabled.strip() == "":
         return False
     return source.name in SLOW_RUNTIME_TESTS
 
 
+# Run the host preprocessor without shell interpretation and capture diagnostics.
 def preprocess_source(preprocessor: str,
                       source: Path,
                       output: Path,
                       pass_through: List[str]) -> subprocess.CompletedProcess[str]:
-    """
-    Purpose: Run the host preprocessor to expand includes and macros.
-    Inputs: preprocessor is the command name; source is the input file; output is the destination.
-    Outputs: Returns the CompletedProcess containing stdout/stderr and exit status.
-    Invariants/Assumptions: Uses gcc-style -E/-P flags to suppress #line directives.
-    """
+    """Expand includes and macros while suppressing host ``#line`` directives."""
     args = [preprocessor, *PREPROCESSOR_FLAGS, *pass_through, str(source), "-o", str(output)]
     return subprocess.run(args, capture_output=True, text=True)
 
 
 def remove_path(path: Path) -> None:
-    """
-    Purpose: Remove a file if it exists to keep test output directories clean.
-    Inputs: path is the file path to remove.
-    Outputs: None; errors are ignored if the file is missing.
-    Invariants/Assumptions: Only files (not directories) are removed.
-    """
+    """Remove a generated file or symlink while tolerating a missing path."""
     try:
         if path.is_file() or path.is_symlink():
             path.unlink()
@@ -179,17 +152,13 @@ def remove_path(path: Path) -> None:
         pass
 
 
+# Emit an executable launcher that converts the interpreted main result to an exit status.
 def write_exec_script(output_path: Path,
                       compiler: Path,
-                      pass_through: List[str],
+                      compiler_options: List[str],
                       input_path: Path) -> None:
-    """
-    Purpose: Emit an executable script that runs the TAC interpreter for a test case.
-    Inputs: output_path is the executable path; compiler is the real compiler; pass_through holds -D args; input_path is the preprocessed file.
-    Outputs: Writes the script to output_path with executable permissions.
-    Invariants/Assumptions: The host can execute Python scripts with /usr/bin/env.
-    """
-    args_literal = repr([str(compiler), "-interp", *pass_through, str(input_path)])
+    """Write the TAC-interpreter launcher and mark it executable for the test harness."""
+    args_literal = repr([str(compiler), "-interp", *compiler_options, str(input_path)])
     script = f"""#!/usr/bin/env python3
 import os
 import subprocess
@@ -199,10 +168,8 @@ EXIT_PARSE_FAILURE = 1
 EXIT_CODE_MASK = 0xFF
 RESULT_ENV = "DIOPTASE_TACC_RESULT_STDERR"
 
-# Purpose: Execute the TAC interpreter and return its exit status as a process code.
-# Inputs: Uses an embedded compiler command line for the source under test.
-# Outputs: Exits with the interpreted main() result modulo 256; prints diagnostics on failure.
-# Invariants/Assumptions: The compiler prints exactly one integer result on stderr when RESULT_ENV is set.
+# Execute the TAC interpreter and return its exit status as a process code.
+# Exits with the interpreted main() result modulo 256; prints diagnostics on failure.
 def main() -> int:
     args = {args_literal}
     env = dict(os.environ)
@@ -239,15 +206,10 @@ if __name__ == "__main__":
 
 
 def main(argv: List[str]) -> int:
-    """
-    Purpose: Drive the compiler wrapper by validating arguments and emitting the run script.
-    Inputs: argv is the argument list including the program name.
-    Outputs: Returns a process exit code for the test harness.
-    Invariants/Assumptions: The real compiler path is configured via DIOPTASE_BCC.
-    """
+    """Validate the source and emit either a host object or TAC launcher."""
     try:
         compiler = get_compiler_path("DIOPTASE_BCC")
-        source, output, pass_through, compile_only = parse_args(argv[1:])
+        source, output, preprocessor_options, compiler_options, compile_only = parse_args(argv[1:])
     except RuntimeError as exc:
         sys.stderr.write(f"TAC runner error: {exc}\n")
         return EXIT_UNSUPPORTED
@@ -258,7 +220,9 @@ def main(argv: List[str]) -> int:
     preprocessor = get_preprocessor_command(PREPROCESSOR_ENV)
     preprocessed = build_preprocessed_path(output)
     try:
-        preprocess_result = preprocess_source(preprocessor, source, preprocessed, pass_through)
+        preprocess_result = preprocess_source(
+            preprocessor, source, preprocessed, preprocessor_options
+        )
     except FileNotFoundError:
         sys.stderr.write(
             f"TAC runner error: preprocessor '{preprocessor}' was not found in PATH\n"
@@ -273,7 +237,7 @@ def main(argv: List[str]) -> int:
         return preprocess_result.returncode
 
     # Stop after TAC lowering to avoid invoking the assembler during wrapper compilation.
-    compile_args = [str(compiler), *pass_through, "-tac", str(preprocessed)]
+    compile_args = [str(compiler), *compiler_options, "-tac", str(preprocessed)]
     result = subprocess.run(compile_args, capture_output=True, text=True)
     if result.returncode != 0:
         sys.stdout.write(result.stdout)
@@ -312,7 +276,7 @@ def main(argv: List[str]) -> int:
                 return cc_result.returncode
             remove_path(preprocessed)
         else:
-            write_exec_script(output, compiler, pass_through, preprocessed)
+            write_exec_script(output, compiler, compiler_options, preprocessed)
     except OSError as exc:
         sys.stderr.write(f"TAC runner failed to write executable {output}: {exc}\n")
         remove_path(output)

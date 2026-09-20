@@ -1,4 +1,4 @@
-int main(void){
+int main(void){ /* Exercise nested switch case list behavior. */
   switch (0) {
     case 0: {
       switch (1) {

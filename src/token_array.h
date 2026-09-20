@@ -5,6 +5,7 @@
 
 #include "token.h"
 
+// The token array stores tokens, size, capacity.
 struct TokenArray {
   struct Token* tokens;
   size_t size;

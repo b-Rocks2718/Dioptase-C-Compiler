@@ -1,4 +1,4 @@
-int main(void){
+int main(void){ /* Exercise dup local var behavior. */
   int x = 1;
   int x = 2;
   return x;
