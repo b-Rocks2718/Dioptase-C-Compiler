@@ -1,4 +1,4 @@
-// Purpose: Exercise arithmetic, bitwise, shift, and unary ops for TAC lowering.
+// Exercise arithmetic, bitwise, shift, and unary ops for TAC lowering.
 // Expected: main returns 250.
 int main(void) {
   int a = 6;

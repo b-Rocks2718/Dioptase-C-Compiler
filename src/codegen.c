@@ -6,10 +6,9 @@
 #include <stdint.h>
 #include <stdarg.h>
 
-// Purpose: Allocate a machine instruction node with predictable defaults.
-// Inputs: type is the machine instruction opcode to emit.
-// Outputs: Returns a zeroed instruction node owned by the arena.
-// Invariants/Assumptions: arena has been initialized before codegen runs.
+// Allocate a machine instruction node with predictable defaults.
+// Returns a zeroed instruction node owned by the arena.
+// arena has been initialized before codegen runs.
 static struct MachineInstr* alloc_machine_instr(enum MachineInstrType type) {
   struct MachineInstr* instr = arena_alloc(sizeof(struct MachineInstr));
   instr->type = type;
@@ -26,10 +25,7 @@ static struct MachineInstr* alloc_machine_instr(enum MachineInstrType type) {
   return instr;
 }
 
-// Purpose: Append an instruction node to a single-instruction list builder.
-// Inputs: head/tail track the list, instr is the node to append.
-// Outputs: Updates head/tail to include instr.
-// Invariants/Assumptions: instr is a standalone node (next == NULL).
+// Append an instruction node to a single-instruction list builder.
 static void append_instr(struct MachineInstr** head,
                          struct MachineInstr** tail,
                          struct MachineInstr* instr) {
@@ -42,10 +38,7 @@ static void append_instr(struct MachineInstr** head,
   *tail = instr;
 }
 
-// Purpose: Materialize a data label address into a register, optionally with a byte offset.
-// Inputs: addr_reg receives the absolute address; pc_reg is a scratch for PC; label is the data symbol.
-// Outputs: Appends machine instructions to compute the address.
-// Invariants/Assumptions: addr_reg and pc_reg are distinct scratch registers.
+// Materialize a data label address into a register, optionally with a byte offset.
 static void emit_label_address(struct MachineInstr** head,
                                struct MachineInstr** tail,
                                enum Reg addr_reg,
@@ -78,14 +71,9 @@ static void emit_label_address(struct MachineInstr** head,
   }
 }
 
-// Purpose: Load from a data label (optionally with an offset) into a register.
-// Inputs: dst_reg receives the loaded value; data is the label operand.
-// Outputs: Appends the appropriate load sequence.
-// Invariants/Assumptions: data->type is OPERAND_DATA.
-// Purpose: Find the first source location marker in a function body.
-// Inputs: instrs is the ASM instruction list for the function body.
-// Outputs: Returns the loc pointer for the first ASM_BOUNDARY, or NULL if none.
-// Invariants/Assumptions: instrs is a well-formed list produced by asm_gen.
+// Load from a data label (optionally with an offset) into a register.
+// Find the first source location marker in a function body.
+// Returns the loc pointer for the first ASM_BOUNDARY, or NULL if none.
 static const char* find_function_entry_loc(const struct AsmInstr* instrs) {
   for (const struct AsmInstr* cur = instrs; cur != NULL; cur = cur->next) {
     if (cur->type == ASM_BOUNDARY) {
@@ -95,10 +83,9 @@ static const char* find_function_entry_loc(const struct AsmInstr* instrs) {
   return NULL;
 }
 
-// Purpose: Report a codegen error with context, then exit.
-// Inputs: func_name is the current function (may be NULL), instr_type is the ASM opcode.
-// Outputs: Prints an actionable message to stderr and terminates.
-// Invariants/Assumptions: fmt is a printf-style format string.
+// Report a codegen error with context, then exit.
+// func_name is the current function (may be NULL), instr_type is the ASM opcode.
+// Prints an actionable message to stderr and terminates.
 ANALYSIS_NORETURN static void codegen_errorf(const struct Slice* func_name,
                            enum AsmInstrType instr_type,
                            const char* fmt,
@@ -117,10 +104,10 @@ ANALYSIS_NORETURN static void codegen_errorf(const struct Slice* func_name,
   exit(1);
 }
 
-// Purpose: Select a scratch register that avoids two disallowed registers.
-// Inputs: avoid_a/avoid_b are registers that must not be selected.
-// Outputs: Returns a scratch register distinct from avoid_a and avoid_b.
-// Invariants/Assumptions: At least one scratch register remains available.
+// Select a scratch register that avoids two disallowed registers.
+// avoid_a/avoid_b are registers that must not be selected.
+// Returns a scratch register distinct from avoid_a and avoid_b.
+// At least one scratch register remains available.
 static enum Reg pick_scratch_reg(const struct Slice* func_name,
                                  enum AsmInstrType instr_type,
                                  enum Reg avoid_a,
@@ -154,10 +141,7 @@ static struct Slice kFunctionEpilogueLabel = {"Function Epilogue", 17};
 static struct Slice kFunctionPrologueLabel = {"Function Prologue", 17};
 static struct Slice kFunctionBodyLabel = {"Function Body", 13};
 
-// Purpose: Emit a call sequence for a binary builtin that expects args in R1/R2.
-// Inputs: head/tail are the instruction list; label identifies the builtin entry.
-// Outputs: Appends mov/call/mov to set args and capture the result in scratch A.
-// Invariants/Assumptions: Uses caller-saved registers R1/R2 to pass arguments.
+// Emit a call sequence for a binary builtin that expects args in R1/R2.
 static void append_builtin_call(struct MachineInstr** head,
                                 struct MachineInstr** tail,
                                 struct Slice* label) {
@@ -189,10 +173,7 @@ static const int kSavedBpOffset = 0;
 static const int kSavedRaOffset = 4;
 static const int kEpilogueStackBytes = 8;
 
-// Purpose: Load from a data label (optionally with an offset) into a register.
-// Inputs: dst_reg receives the loaded value; data is the label operand.
-// Outputs: Appends the appropriate load sequence.
-// Invariants/Assumptions: data->type is OPERAND_DATA.
+// Load from a data label (optionally with an offset) into a register.
 static void emit_data_load(struct MachineInstr** head,
                            struct MachineInstr** tail,
                            const struct Slice* func_name,
@@ -249,6 +230,7 @@ static void emit_data_load(struct MachineInstr** head,
 
 static struct MachineInstr* make_data(struct InitList* init, struct AsmType* type);
 
+// Lower one TAC instruction to machine instructions.
 struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* instr){
   // Uses R9/R10/R11 as scratch registers to avoid clobbering argument registers.
   struct MachineProg* machine_prog = arena_alloc(sizeof(struct MachineProg));
@@ -1185,6 +1167,7 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
   return machine_prog;
 }
 
+// Lower one top-level TAC object to machine code.
 struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
   struct MachineProg* machine_prog = arena_alloc(sizeof(struct MachineProg));
   machine_prog->head = NULL;
@@ -1353,6 +1336,7 @@ struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
   return machine_prog;
 }
 
+// Convert a static initializer into an assembly data declaration.
 static struct MachineInstr* make_data(struct InitList* init, struct AsmType* type){
   if (init == NULL) {
     // Tentative definitions emit zero-filled storage for the full symbol size.
@@ -1454,6 +1438,7 @@ static struct MachineInstr* make_data(struct InitList* init, struct AsmType* typ
   return instr;
 }
 
+// Lower the complete TAC program to machine code.
 struct MachineProg* prog_to_machine(struct AsmProg* asm_prog){
   struct MachineProg* machine_prog = arena_alloc(sizeof(struct MachineProg));
   machine_prog->head = NULL;

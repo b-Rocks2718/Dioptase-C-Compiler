@@ -16,10 +16,8 @@ static bool debug_info_enabled = 0;
 
 struct IdentAttr kLocalAttrs = {LOCAL_ATTR, true, NONE, {NO_INIT, NULL}};
 
-// Purpose: Lower a compound array initializer into TAC CopyToOffset instructions.
-// Inputs: func_name is the owning function; var_name is the array name.
-// Outputs: Returns TAC instructions for array initialization.
-// Invariants/Assumptions: type is ARRAY_TYPE and inits is size-padded.
+// Lower a compound array initializer into TAC CopyToOffset instructions.
+// Returns TAC instructions for array initialization.
 static struct TACInstr* array_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
     struct InitializerList* inits, struct Type* type, size_t offset);
 static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
@@ -28,10 +26,9 @@ static struct TACInstr* struct_init_to_TAC(struct Slice* func_name, struct Slice
     struct InitializerList* inits, struct Type* type, size_t offset);
 static int init_offset_to_int(size_t offset, const char* loc);
 
-// Purpose: Choose a source location pointer for a declaration.
-// Inputs: dclr is the declaration to describe (may be NULL).
-// Outputs: Returns a source pointer suitable for debug line markers.
-// Invariants/Assumptions: Uses the initializer location when available.
+// Choose a source location pointer for a declaration.
+// dclr is the declaration to describe (may be NULL).
+// Returns a source pointer suitable for debug line markers.
 static const char* declaration_loc(const struct Declaration* dclr) {
   if (dclr == NULL) {
     return NULL;
@@ -48,10 +45,9 @@ static const char* declaration_loc(const struct Declaration* dclr) {
   return NULL;
 }
 
-// Purpose: Print a TAC error with optional source location context and exit.
-// Inputs: loc may be NULL; fmt is a printf-style format.
-// Outputs: Writes a message to stdout; terminates with non-zero exit code.
-// Invariants/Assumptions: Source context must be initialized for locations.
+// Print a TAC error with optional source location context and exit.
+// loc may be NULL; fmt is a printf-style format.
+// Source context must be initialized for locations.
 static void tac_error_at(const char* loc, const char* fmt, ...) {
   struct SourceLocation where = source_location_from_ptr(loc);
   const char* filename = source_filename_for_ptr(loc);
@@ -68,10 +64,9 @@ static void tac_error_at(const char* loc, const char* fmt, ...) {
   exit(EXIT_FAILURE);
 }
 
-// Purpose: Allocate and initialize a single TAC instruction node.
-// Inputs: type selects the instruction variant to populate later.
-// Outputs: Returns a node with next == NULL and last == self.
-// Invariants/Assumptions: Callers must fill the variant fields.
+// Allocate and initialize a single TAC instruction node.
+// Returns a node with next == NULL and last == self.
+// Callers must fill the variant fields.
 static struct TACInstr* tac_instr_create(enum TACInstrType type) {
   struct TACInstr* instr = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
   instr->type = type;
@@ -80,10 +75,8 @@ static struct TACInstr* tac_instr_create(enum TACInstrType type) {
   return instr;
 }
 
-// Purpose: Find the last node in a TAC instruction list.
-// Inputs: instr is the head of a TAC list.
-// Outputs: Returns the final node (or NULL if instr is NULL).
-// Invariants/Assumptions: List links are well-formed (acyclic).
+// Find the last node in a TAC instruction list.
+// Returns the final node (or NULL if instr is NULL).
 static struct TACInstr* tac_find_last(struct TACInstr* instr) {
   if (instr == NULL) {
     return NULL;
@@ -95,10 +88,8 @@ static struct TACInstr* tac_find_last(struct TACInstr* instr) {
   return cur;
 }
 
-// Purpose: Provide canonical scalar types for TAC constants.
-// Inputs: kind is the scalar type to return.
-// Outputs: Returns a stable Type pointer for the requested kind.
-// Invariants/Assumptions: Only basic scalar types are cached here.
+// Provide canonical scalar types for TAC constants.
+// Returns a stable Type pointer for the requested kind.
 static struct Type* tac_builtin_type(enum TypeType kind) {
   static struct Type char_type = {CHAR_TYPE};
   static struct Type short_type = {SHORT_TYPE};
@@ -132,10 +123,8 @@ static struct Type* tac_builtin_type(enum TypeType kind) {
   }
 }
 
-// Purpose: Allocate a constant TAC value.
-// Inputs: value is the literal bits; type describes width/sign for conversions.
-// Outputs: Returns a Val tagged as CONSTANT.
-// Invariants/Assumptions: type is non-NULL for typed constants.
+// Allocate a constant TAC value.
+// Returns a Val tagged as CONSTANT.
 static struct Val* tac_make_const(uint64_t value, struct Type* type) {
   struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
   val->val_type = CONSTANT;
@@ -144,10 +133,10 @@ static struct Val* tac_make_const(uint64_t value, struct Type* type) {
   return val;
 }
 
-// Purpose: Allocate a variable TAC value referencing an existing name.
-// Inputs: name is a Slice that must outlive the TAC; type is the variable type.
-// Outputs: Returns a Val tagged as VARIABLE.
-// Invariants/Assumptions: The Slice points to stable memory (arena or source).
+// Allocate a variable TAC value referencing an existing name.
+// name is a Slice that must outlive the TAC; type is the variable type.
+// Returns a Val tagged as VARIABLE.
+// The Slice points to stable memory (arena or source).
 static struct Val* tac_make_var(struct Slice* name, struct Type* type) {
   struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
   val->val_type = VARIABLE;
@@ -156,10 +145,9 @@ static struct Val* tac_make_var(struct Slice* name, struct Type* type) {
   return val;
 }
 
-// Purpose: Copy a Val payload into a pre-allocated destination.
-// Inputs: dst must be non-NULL; src must be non-NULL.
-// Outputs: dst receives a shallow copy of src.
-// Invariants/Assumptions: This does not deep-copy slices.
+// Copy a Val payload into a pre-allocated destination.
+// dst must be non-NULL; src must be non-NULL.
+// dst receives a shallow copy of src.
 static void tac_copy_val(struct Val* dst, const struct Val* src) {
   if (dst == NULL || src == NULL) {
     return;
@@ -167,10 +155,9 @@ static void tac_copy_val(struct Val* dst, const struct Val* src) {
   *dst = *src;
 }
 
-// Purpose: Build a unique TAC label under the current function name.
-// Inputs: func_name is the owning function; suffix differentiates labels.
-// Outputs: Returns a new Slice for the label name.
-// Invariants/Assumptions: Uses a monotonically increasing counter.
+// Build a unique TAC label under the current function name.
+// Returns a new Slice for the label name.
+// Uses a monotonically increasing counter.
 static struct Slice* tac_make_label(struct Slice* func_name, const char* suffix) {
   size_t suffix_len = 0;
   while (suffix[suffix_len] != '\0') {
@@ -204,10 +191,8 @@ static struct Slice* tac_make_label(struct Slice* func_name, const char* suffix)
   return unique_label;
 }
 
-// Purpose: Identify relational binary operators that yield boolean results.
-// Inputs: op is the AST binary operator.
-// Outputs: Returns true if op is a relational comparison.
-// Invariants/Assumptions: Equality and ordering ops are the only relational ops.
+// Identify relational binary operators that yield boolean results.
+// Returns true if op is a relational comparison.
 static bool is_relational_op(enum BinOp op) {
   switch (op) {
     case BOOL_EQ:
@@ -222,10 +207,8 @@ static bool is_relational_op(enum BinOp op) {
   }
 }
 
-// Purpose: Identify compound-assignment operators.
-// Inputs: op is the AST binary operator.
-// Outputs: Returns true for +=, -=, etc.
-// Invariants/Assumptions: ASSIGN_OP is handled separately.
+// Identify compound-assignment operators.
+// Returns true for +=, -=, etc.
 static bool is_compound_op(enum BinOp op) {
   switch (op) {
     case PLUS_EQ_OP:
@@ -244,10 +227,10 @@ static bool is_compound_op(enum BinOp op) {
   }
 }
 
-// Purpose: Map a compound-assignment operator to its binary operator.
-// Inputs: op must satisfy is_compound_op(op).
-// Outputs: Returns the underlying arithmetic/bitwise operator.
-// Invariants/Assumptions: Caller must validate op.
+// Map a compound-assignment operator to its binary operator.
+// op must satisfy is_compound_op(op).
+// Returns the underlying arithmetic/bitwise operator.
+// Caller must validate op.
 static enum BinOp compound_to_binop(enum BinOp op) {
   switch (op) {
     case PLUS_EQ_OP:
@@ -275,10 +258,8 @@ static enum BinOp compound_to_binop(enum BinOp op) {
   }
 }
 
-// Purpose: Map a relational operator to a TAC condition, using signedness.
-// Inputs: op is a relational operator; type describes the operand type.
-// Outputs: Returns the TAC condition used for a successful comparison.
-// Invariants/Assumptions: type is arithmetic; signedness follows typechecking.
+// Map a relational operator to a TAC condition, using signedness.
+// Returns the TAC condition used for a successful comparison.
 static enum TACCondition relation_to_cond(enum BinOp op, struct Type* type) {
   bool is_signed = is_signed_type(type);
   switch (op) {
@@ -300,10 +281,8 @@ static enum TACCondition relation_to_cond(enum BinOp op, struct Type* type) {
   }
 }
 
-// Purpose: Map a binary operator to an ALU op, using signedness.
-// Inputs: op is a binary operator; type describes the operand type.
-// Outputs: Returns the ALU op used
-// Invariants/Assumptions: type is arithmetic; signedness follows typechecking.
+// Map a binary operator to an ALU op, using signedness.
+// Returns the ALU op used
 static enum TACCondition binop_to_aluop(enum BinOp op, struct Type* type) {
   bool is_signed = is_signed_type(type);
   switch (op) {
@@ -335,10 +314,8 @@ static enum TACCondition binop_to_aluop(enum BinOp op, struct Type* type) {
   }
 }
 
-// Purpose: Emit TAC for signed division/modulo when the LHS is a narrower unsigned type.
-// Inputs: func_name scopes fresh labels; dst is the result lvalue; lhs/rhs are operands.
-// Outputs: Returns a TAC instruction list that computes dst from lhs and rhs.
-// Invariants/Assumptions: Handles only 32-bit operands, using unsigned ops plus sign fixes.
+// Emit TAC for signed division/modulo when the LHS is a narrower unsigned type.
+// Returns a TAC instruction list that computes dst from lhs and rhs.
 static struct TACInstr* emit_unsigned_lhs_signed_divmod(struct Slice* func_name,
                                                         struct Val* dst,
                                                         struct Val* lhs,
@@ -428,10 +405,9 @@ static struct TACInstr* emit_unsigned_lhs_signed_divmod(struct Slice* func_name,
   return instrs;
 }
 
-// Purpose: Allocate a new temporary variable for TAC lowering.
-// Inputs: func_name identifies the owning function; type documents the value type.
-// Outputs: Returns a Val naming the temporary.
-// Invariants/Assumptions: The temp counter is global and monotonically increasing.
+// Allocate a new temporary variable for TAC lowering.
+// Returns a Val naming the temporary.
+// The temp counter is global and monotonically increasing.
 struct Val* make_temp(struct Slice* func_name, struct Type* type) {
   if (type->type == VOID_TYPE) {
     // no destination for void type
@@ -475,6 +451,7 @@ struct Val* make_temp(struct Slice* func_name, struct Type* type) {
   return val;
 }
 
+// Create a unique label for string-literal data emitted by the current function.
 struct Val* make_str_label(struct StringExpr* str_expr){
   struct Slice name_slice = {"string.label", 12};
   struct Slice* string_label = make_unique(&name_slice);
@@ -488,10 +465,8 @@ struct Val* make_str_label(struct StringExpr* str_expr){
   return val;
 }
 
-// Purpose: Lower a full program into a TAC program containing top-level items.
-// Inputs: program is a fully labeled and typechecked AST.
-// Outputs: Returns a TAC program with a linked list of TopLevel entries.
-// Invariants/Assumptions: Program declarations are in source order.
+// Lower a full program into a TAC program containing top-level items.
+// Returns a TAC program with a linked list of TopLevel entries.
 struct TACProg* prog_to_TAC(struct Program* program, bool emit_debug_info) {
   debug_info_enabled = emit_debug_info;
 
@@ -539,10 +514,8 @@ struct TACProg* prog_to_TAC(struct Program* program, bool emit_debug_info) {
   return tac_prog;
 }
 
-// Purpose: Lower a file-scope declaration into a TopLevel TAC node.
-// Inputs: declaration points to a parsed, typechecked declaration.
-// Outputs: Returns a TopLevel node or NULL if no TAC is generated.
-// Invariants/Assumptions: Non-function definitions are handled via the symbol table.
+// Lower a file-scope declaration into a TopLevel TAC node.
+// Returns a TopLevel node or NULL if no TAC is generated.
 struct TopLevel* file_scope_dclr_to_TAC(struct Declaration* declaration) {
   switch (declaration->type) {
     case FUN_DCLR:
@@ -560,10 +533,8 @@ struct TopLevel* file_scope_dclr_to_TAC(struct Declaration* declaration) {
   }
 }
 
-// Purpose: Lower a symbol table entry into a TopLevel static variable node.
-// Inputs: symbol is a file-scope entry from the global symbol table.
-// Outputs: Returns a TopLevel node or NULL if not a static variable.
-// Invariants/Assumptions: Only STATIC_ATTR entries produce TAC output.
+// Lower a symbol table entry into a TopLevel static variable node.
+// Returns a TopLevel node or NULL if not a static variable.
 struct TopLevel* symbol_to_TAC(struct SymbolEntry* symbol) {
   switch (symbol->attrs->attr_type) {
     case FUN_ATTR:
@@ -612,10 +583,9 @@ struct TopLevel* symbol_to_TAC(struct SymbolEntry* symbol) {
   }
 }
 
-// Purpose: Lower a function definition into a TopLevel TAC node.
-// Inputs: declaration points to a function declaration with an optional body.
-// Outputs: Returns a TopLevel node or NULL for declarations without a body.
-// Invariants/Assumptions: The symbol table entry must already exist.
+// Lower a function definition into a TopLevel TAC node.
+// Returns a TopLevel node or NULL for declarations without a body.
+// The symbol table entry must already exist.
 struct TopLevel* func_to_TAC(struct FunctionDclr* declaration) {
   if (declaration->body == NULL) {
     // function declaration without body; return NULL
@@ -663,10 +633,8 @@ struct TopLevel* func_to_TAC(struct FunctionDclr* declaration) {
   return top_level;
 }
 
-// Purpose: Lower a block of statements/declarations into a TAC instruction list.
-// Inputs: func_name is the owning function; block is the linked list of items.
-// Outputs: Returns the head of the TAC instruction list (or NULL if empty).
-// Invariants/Assumptions: Block items are lowered in source order.
+// Lower a block of statements/declarations into a TAC instruction list.
+// Returns the head of the TAC instruction list (or NULL if empty).
 struct TACInstr* block_to_TAC(struct Slice* func_name, struct Block* block) {
   struct TACInstr* head = NULL;
 
@@ -728,18 +696,11 @@ struct TACInstr* block_to_TAC(struct Slice* func_name, struct Block* block) {
       }
     }
   }
-  if (block->idents != NULL) {
-    destroy_ident_map(block->idents);
-    block->idents = NULL;
-  }
-
   return head;
 }
 
-// Purpose: Lower a local declaration into TAC instructions.
-// Inputs: func_name is the owning function; dclr is a local declaration.
-// Outputs: Returns a TAC list for initialization, or NULL if no code emitted.
-// Invariants/Assumptions: Local function definitions are rejected earlier.
+// Lower a local declaration into TAC instructions.
+// Returns a TAC list for initialization, or NULL if no code emitted.
 struct TACInstr* local_dclr_to_TAC(struct Slice* func_name, struct Declaration* dclr) {
   switch (dclr->type) {
     case VAR_DCLR:
@@ -763,6 +724,7 @@ struct TACInstr* local_dclr_to_TAC(struct Slice* func_name, struct Declaration* 
   }
 }
 
+// Set up compound to tac.
 struct TACInstr* compound_init_to_TAC(struct Slice* func_name,
                                       struct Slice* base_var,
                                       struct InitializerList* inits,
@@ -781,10 +743,8 @@ struct TACInstr* compound_init_to_TAC(struct Slice* func_name,
   }
 }
 
-// Purpose: Lower a single initializer for a scalar or aggregate element.
-// Inputs: func_name is the owning function; base_var is the target variable name.
-// Outputs: Returns TAC instructions that perform the initialization.
-// Invariants/Assumptions: offset is a byte offset into base_var storage.
+// Lower a single initializer for a scalar or aggregate element.
+// Returns TAC instructions that perform the initialization.
 struct TACInstr* single_init_to_TAC(struct Slice* func_name,
                                     struct Slice* base_var,
                                     struct Expr* init,
@@ -837,6 +797,7 @@ struct TACInstr* single_init_to_TAC(struct Slice* func_name,
   return expr_to_TAC_convert(func_name, &assign_expr, NULL);
 }
 
+// Set up to tac.
 struct TACInstr* init_to_TAC(struct Slice* func_name,
                                  struct Slice* base_var,
                                  struct Initializer* init,
@@ -859,10 +820,8 @@ struct TACInstr* init_to_TAC(struct Slice* func_name,
   }
 }
 
-// Purpose: Lower a local variable declaration initializer into TAC.
-// Inputs: func_name is the owning function; dclr is a variable declaration.
-// Outputs: Returns TAC instructions for the initializer, or NULL if none.
-// Invariants/Assumptions: Static initializers are handled at file scope.
+// Lower a local variable declaration initializer into TAC.
+// Returns TAC instructions for the initializer, or NULL if none.
 struct TACInstr* var_dclr_to_TAC(struct Slice* func_name, struct Declaration* dclr) {
   struct VariableDclr* var_dclr = &dclr->dclr.var_dclr;
   if (var_dclr->init == NULL) {
@@ -890,10 +849,9 @@ struct TACInstr* var_dclr_to_TAC(struct Slice* func_name, struct Declaration* dc
   }
 }
 
-// Purpose: Normalize initializer offsets to the TAC int field width.
-// Inputs: offset is a byte offset; loc is the initializer location for errors.
-// Outputs: Returns the offset as an int for TAC encodings.
-// Invariants/Assumptions: Offsets must fit in int for the TAC representation.
+// Normalize initializer offsets to the TAC int field width.
+// Returns the offset as an int for TAC encodings.
+// Offsets must fit in int for the TAC representation.
 static int init_offset_to_int(size_t offset, const char* loc) {
   if (offset > (size_t)INT_MAX) {
     tac_error_at(loc, "initializer offset too large");
@@ -901,10 +859,8 @@ static int init_offset_to_int(size_t offset, const char* loc) {
   return (int)offset;
 }
 
-// Purpose: Lower a string literal initializer for a local char array into TAC stores.
-// Inputs: var_name is the array name; str_expr is the literal.
-// Outputs: Returns TAC instructions that write the string bytes into the array storage.
-// Invariants/Assumptions: type is ARRAY_TYPE with a char-like element type.
+// Lower a string literal initializer for a local char array into TAC stores.
+// Returns TAC instructions that write the string bytes into the array storage.
 static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
                                            struct StringExpr* str_expr, struct Type* type, size_t offset) {
   if (type == NULL || type->type != ARRAY_TYPE) {
@@ -956,6 +912,7 @@ static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice
   return instrs;
 }
 
+// Set up struct to tac.
 static struct TACInstr* struct_init_to_TAC(struct Slice* func_name, struct Slice* base,
                                            struct InitializerList* inits,
                                            struct Type* type,
@@ -979,10 +936,8 @@ static struct TACInstr* struct_init_to_TAC(struct Slice* func_name, struct Slice
   return instrs;
 }
 
-// Purpose: Lower a compound array initializer into TAC CopyToOffset instructions.
-// Inputs: func_name is the owning function; var_name is the array name.
-// Outputs: Returns TAC instructions for array initialization.
-// Invariants/Assumptions: type is ARRAY_TYPE and inits is size-padded.
+// Lower a compound array initializer into TAC CopyToOffset instructions.
+// Returns TAC instructions for array initialization.
 static struct TACInstr* array_init_to_TAC(struct Slice* func_name, struct Slice* var_name,
     struct InitializerList* inits, struct Type* type, size_t offset) {
   if (inits == NULL) {
@@ -1020,10 +975,8 @@ static struct TACInstr* array_init_to_TAC(struct Slice* func_name, struct Slice*
   return instrs;
 }
 
-// Purpose: Lower a statement into a TAC instruction list.
-// Inputs: func_name is the owning function; stmt is a typechecked statement.
-// Outputs: Returns the TAC list for the statement, or NULL for empty statements.
-// Invariants/Assumptions: Loop/switch labels are resolved before lowering.
+// Lower a statement into a TAC instruction list.
+// Returns the TAC list for the statement, or NULL for empty statements.
 struct TACInstr* stmt_to_TAC(struct Slice* func_name, struct Statement* stmt) {
   switch (stmt->type) {
     case RETURN_STMT: {
@@ -1188,10 +1141,8 @@ struct TACInstr* stmt_to_TAC(struct Slice* func_name, struct Statement* stmt) {
   }
 }
 
-// Purpose: Emit TAC comparisons and jumps for a switch case list.
-// Inputs: label is the switch label; cases is the collected CaseList; rslt is the switch value.
-// Outputs: Returns a TAC list that dispatches to case/default or break.
-// Invariants/Assumptions: Case labels are unique; default is optional.
+// Emit TAC comparisons and jumps for a switch case list.
+// Returns a TAC list that dispatches to case/default or break.
 struct TACInstr* cases_to_TAC(struct Slice* label, struct CaseList* cases, struct Val* rslt) {
   struct TACInstr* case_instrs = NULL;
   struct Slice* default_label = NULL;
@@ -1239,10 +1190,9 @@ struct TACInstr* cases_to_TAC(struct Slice* label, struct CaseList* cases, struc
   return case_instrs;
 }
 
-// Purpose: Lower a for-loop initializer into TAC instructions.
-// Inputs: func_name is the owning function; init_ may be a declaration or expression.
-// Outputs: Returns a TAC list for the initializer, or NULL if empty.
-// Invariants/Assumptions: The initializer is already typechecked.
+// Lower a for-loop initializer into TAC instructions.
+// func_name is the owning function; init_ may be a declaration or expression.
+// Returns a TAC list for the initializer, or NULL if empty.
 struct TACInstr* for_init_to_TAC(struct Slice* func_name, struct ForInit* init_) {
   if (init_ == NULL) {
     return NULL;
@@ -1272,10 +1222,9 @@ struct TACInstr* for_init_to_TAC(struct Slice* func_name, struct ForInit* init_)
   }
 }
 
-// Purpose: Lower a while loop into TAC control-flow instructions.
-// Inputs: func_name is the owning function; condition/body are loop components.
-// Outputs: Returns a TAC list implementing the loop.
-// Invariants/Assumptions: label must be non-NULL after loop labeling.
+// Lower a while loop into TAC control-flow instructions.
+// Returns a TAC list implementing the loop.
+// label must be non-NULL after loop labeling.
 struct TACInstr* while_to_TAC(struct Slice* func_name,
                                      struct Expr* condition,
                                      struct Statement* body,
@@ -1329,10 +1278,9 @@ struct TACInstr* while_to_TAC(struct Slice* func_name,
   return instrs;
 }
 
-// Purpose: Lower a do-while loop into TAC control-flow instructions.
-// Inputs: func_name is the owning function; condition/body are loop components.
-// Outputs: Returns a TAC list implementing the loop.
-// Invariants/Assumptions: label must be non-NULL after loop labeling.
+// Lower a do-while loop into TAC control-flow instructions.
+// Returns a TAC list implementing the loop.
+// label must be non-NULL after loop labeling.
 struct TACInstr* do_while_to_TAC(struct Slice* func_name,
                                         struct Statement* body,
                                         struct Expr* condition,
@@ -1388,10 +1336,9 @@ struct TACInstr* do_while_to_TAC(struct Slice* func_name,
   return instrs;
 }
 
-// Purpose: Lower a for loop into TAC control-flow instructions.
-// Inputs: func_name is the owning function; init/condition/end/body form the loop.
-// Outputs: Returns a TAC list implementing the loop.
-// Invariants/Assumptions: label must be non-NULL after loop labeling.
+// Lower a for loop into TAC control-flow instructions.
+// Returns a TAC list implementing the loop.
+// label must be non-NULL after loop labeling.
 struct TACInstr* for_to_TAC(struct Slice* func_name,
                                    struct ForInit* init_,
                                    struct Expr* condition,
@@ -1495,17 +1442,11 @@ struct TACInstr* for_to_TAC(struct Slice* func_name,
       }
     }
   }
-  if (idents != NULL){
-    destroy_ident_map(idents);
-  }
-
   return instrs;
 }
 
-// Purpose: Lower an if statement without an else into TAC control flow.
-// Inputs: func_name is the owning function; condition/if_stmt are the branches.
-// Outputs: Returns a TAC list implementing the conditional.
-// Invariants/Assumptions: condition is typechecked to an arithmetic value.
+// Lower an if statement without an else into TAC control flow.
+// Returns a TAC list implementing the conditional.
 struct TACInstr* if_to_TAC(struct Slice* func_name, struct Expr* condition, struct Statement* if_stmt) {
   struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
   struct TACInstr* cond_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
@@ -1538,10 +1479,8 @@ struct TACInstr* if_to_TAC(struct Slice* func_name, struct Expr* condition, stru
   return instrs;
 }
 
-// Purpose: Lower an if/else statement into TAC control flow.
-// Inputs: func_name is the owning function; condition/if_stmt/else_stmt define branches.
-// Outputs: Returns a TAC list implementing the conditional.
-// Invariants/Assumptions: condition is typechecked to an arithmetic value.
+// Lower an if/else statement into TAC control flow.
+// Returns a TAC list implementing the conditional.
 struct TACInstr* if_else_to_TAC(struct Slice* func_name,
                                 struct Expr* condition,
                                 struct Statement* if_stmt,
@@ -1590,10 +1529,8 @@ struct TACInstr* if_else_to_TAC(struct Slice* func_name,
   return instrs;
 }
 
-// Purpose: Lower a function call argument list into TAC and collect argument values.
-// Inputs: func_name is the owning function; args is the linked list of expressions.
-// Outputs: Returns TAC instructions for argument evaluation and fills out_args/count.
-// Invariants/Assumptions: Arguments are evaluated left-to-right.
+// Lower a function call argument list into TAC and collect argument values.
+// Returns TAC instructions for argument evaluation and fills out_args/count.
 struct TACInstr* args_to_TAC(struct Slice* func_name,
                                     struct ArgList* args,
                                     struct Val** out_args,
@@ -1623,10 +1560,8 @@ struct TACInstr* args_to_TAC(struct Slice* func_name,
   return instrs;
 }
 
-// Purpose: Lower a relational expression into TAC that yields a boolean int.
-// Inputs: func_name is the owning function; expr/op/left/right describe the comparison.
-// Outputs: Returns a TAC list and sets result to the boolean value.
-// Invariants/Assumptions: Operand types are already typechecked for comparison.
+// Lower a relational expression into TAC that yields a boolean int.
+// Returns a TAC list and sets result to the boolean value.
 struct TACInstr* relational_to_TAC(struct Slice* func_name,
                                           struct Expr* expr,
                                           enum BinOp op,
@@ -1683,10 +1618,8 @@ struct TACInstr* relational_to_TAC(struct Slice* func_name,
   return instrs;
 }
 
-// Purpose: Lower an expression and ensure the result is a plain operand.
-// Inputs: func_name is the owning function; expr is the expression to lower.
-// Outputs: Returns TAC instructions; out_val receives the computed value if provided.
-// Invariants/Assumptions: Loads are emitted when an lvalue is dereferenced.
+// Lower an expression and ensure the result is a plain operand.
+// Returns TAC instructions; out_val receives the computed value if provided.
 struct TACInstr* expr_to_TAC_convert(struct Slice* func_name, struct Expr* expr, struct Val* dst) {
   struct ExprResult raw_result;
   struct TACInstr* instrs = expr_to_TAC(func_name, expr, &raw_result);
@@ -1739,10 +1672,8 @@ struct TACInstr* expr_to_TAC_convert(struct Slice* func_name, struct Expr* expr,
   }
 }
 
-// Purpose: Lower an expression into TAC instructions and an ExprResult.
-// Inputs: func_name is the owning function; expr is the expression to lower.
-// Outputs: Returns TAC instruction list; result describes the computed value.
-// Invariants/Assumptions: Expression types are already validated by typechecking.
+// Lower an expression into TAC instructions and an ExprResult.
+// Returns TAC instruction list; result describes the computed value.
 struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct ExprResult* result) {
   if (result == NULL) {
     tac_error_at(expr ? expr->loc : NULL, "expr_to_TAC requires a result output");
@@ -2574,7 +2505,7 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
       }
 
       if (target_size < src_size) {
-        // Truncating cast.
+        // Narrow the value to the destination width before storing it.
         struct Val* dst = make_temp(func_name, cast_expr->target);
         // AST:
         // (T)expr
@@ -2597,7 +2528,7 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
 
       // can assume target type is signed here, so we sign extend
       if (target_size > src_size) {
-        // Extending cast.
+        // Widen the value and preserve signedness before storing it.
         struct Val* dst = make_temp(func_name, cast_expr->target);
         // AST:
         // (T)expr
@@ -2962,10 +2893,7 @@ struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct 
   }
 }
 
-// Purpose: Append a TAC instruction list onto an existing list.
-// Inputs: old_instrs points to the head pointer; new_instrs is the list to append.
-// Outputs: Updates *old_instrs to include new_instrs at the tail.
-// Invariants/Assumptions: Both lists use the `last` pointer for O(1) concatenation.
+// Append a TAC instruction list onto an existing list.
 void concat_TAC_instrs(struct TACInstr** old_instrs, struct TACInstr* new_instrs) {
   if (new_instrs == NULL) {
     return;
@@ -2988,6 +2916,7 @@ void concat_TAC_instrs(struct TACInstr** old_instrs, struct TACInstr* new_instrs
   (*old_instrs)->last = new_instrs->last;
 }
 
+// Compare TAC instruction lists structurally, including operands and control flow.
 bool compare_instrs(struct TACInstr* instr1, struct TACInstr* instr2) {
   if (instr1->type != instr2->type) {
     return false;
@@ -3060,6 +2989,7 @@ bool compare_instrs(struct TACInstr* instr1, struct TACInstr* instr2) {
   return false;
 }
 
+// Compare function bodies structurally for optimization and test equivalence.
 bool compare_bodies(struct TACInstr* body1, struct TACInstr* body2) {
   struct TACInstr* cur1 = body1;
   struct TACInstr* cur2 = body2;

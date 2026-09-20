@@ -16,10 +16,8 @@ static struct Type kTestPtrType = {
   .type_data.pointer_type = { .referenced_type = &kTestIntType },
 };
 
-// Purpose: Build a Slice from a string literal for test data.
-// Inputs: text is a null-terminated C string.
-// Outputs: Returns a Slice referencing the literal.
-// Invariants/Assumptions: The literal outlives the test execution.
+// Build a Slice from a string literal for test data.
+// Returns a Slice referencing the literal.
 static struct Slice tac_slice_literal(const char* text) {
   struct Slice slice;
   slice.start = text;
@@ -27,10 +25,8 @@ static struct Slice tac_slice_literal(const char* text) {
   return slice;
 }
 
-// Purpose: Build a constant TAC value for test data.
-// Inputs: value is the integer literal to store; type describes its width/sign.
-// Outputs: Returns a Val tagged as CONSTANT.
-// Invariants/Assumptions: value is already in the host int range.
+// Build a constant TAC value for test data.
+// Returns a Val tagged as CONSTANT.
 static struct Val tac_val_const(int value, struct Type* type) {
   struct Val val;
   val.val_type = CONSTANT;
@@ -39,10 +35,8 @@ static struct Val tac_val_const(int value, struct Type* type) {
   return val;
 }
 
-// Purpose: Build a constant TAC value from an exact 64-bit bit pattern.
-// Inputs: value is the raw integer representation; type supplies width/sign.
-// Outputs: Returns a Val tagged as CONSTANT.
-// Invariants/Assumptions: The caller chooses a value valid for the test type.
+// Build a constant TAC value from an exact 64-bit bit pattern.
+// Returns a Val tagged as CONSTANT.
 static struct Val tac_val_const_bits(uint64_t value, struct Type* type) {
   struct Val val;
   val.val_type = CONSTANT;
@@ -51,10 +45,9 @@ static struct Val tac_val_const_bits(uint64_t value, struct Type* type) {
   return val;
 }
 
-// Purpose: Build a variable TAC value for test data.
-// Inputs: name is the variable identifier slice; type describes its width/sign.
-// Outputs: Returns a Val tagged as VARIABLE.
-// Invariants/Assumptions: name must outlive the test execution.
+// Build a variable TAC value for test data.
+// Returns a Val tagged as VARIABLE.
+// name must outlive the test execution.
 static struct Val tac_val_var(struct Slice* name, struct Type* type) {
   struct Val val;
   val.val_type = VARIABLE;
@@ -63,10 +56,8 @@ static struct Val tac_val_var(struct Slice* name, struct Type* type) {
   return val;
 }
 
-// Purpose: Initialize a TAC instruction node for tests.
-// Inputs: instr is the node to initialize; type is the instruction type.
-// Outputs: Clears the node and sets its type/links.
-// Invariants/Assumptions: instr points to writable memory.
+// Initialize a TAC instruction node for tests.
+// Clears the node and sets its type/links.
 static void tac_init_instr(struct TACInstr* instr, enum TACInstrType type) {
   memset(instr, 0, sizeof(*instr));
   instr->type = type;
@@ -74,19 +65,14 @@ static void tac_init_instr(struct TACInstr* instr, enum TACInstrType type) {
   instr->last = instr;
 }
 
-// Purpose: Link two TAC instruction nodes in a test list.
-// Inputs: first is the head; second is appended after first.
-// Outputs: Updates first->next to second.
-// Invariants/Assumptions: Caller maintains list ordering.
+// Link two TAC instruction nodes in a test list.
 static void tac_link_instr(struct TACInstr* first, struct TACInstr* second) {
   first->next = second;
   first->last = second->last ? second->last : second;
 }
 
-// Purpose: Compare interpreter output against an expected value.
-// Inputs: name is the test name; got/expected are the result values.
-// Outputs: Returns true on success and prints a failure message otherwise.
-// Invariants/Assumptions: Outputs are integer results from TAC interpretation.
+// Compare interpreter output against an expected value.
+// Returns true on success and prints a failure message otherwise.
 static bool tac_expect_result(const char* name, int got, int expected) {
   if (got == expected) {
     return true;
@@ -96,10 +82,7 @@ static bool tac_expect_result(const char* name, int got, int expected) {
 }
 
 /*
-Purpose: Verify that a constant return from main is propagated.
-Inputs: None (builds a TACProg in-place).
-Outputs: Returns true when the interpreter returns 7.
-Invariants/Assumptions: Exercises TACRETURN with a constant value.
+Verify that TACRETURN propagates the constant 7 from main.
 
 Readable TAC:
   func main:
@@ -132,10 +115,7 @@ static bool tac_test_return_const(void) {
 }
 
 /*
-Purpose: Verify arithmetic and copies in main.
-Inputs: None (builds a TACProg in-place).
-Outputs: Returns true when the interpreter returns 14.
-Invariants/Assumptions: Exercises TACCOPY and TACBINARY operators.
+Verify that TACCOPY and TACBINARY evaluate an arithmetic chain to 14.
 
 Readable TAC:
   func main:
@@ -215,10 +195,7 @@ static bool tac_test_arithmetic(void) {
 }
 
 /*
-Purpose: Verify fused comparison and conditional jump handling.
-Inputs: None (builds a TACProg in-place).
-Outputs: Returns true when the interpreter returns 1.
-Invariants/Assumptions: TACCOND_JUMP carries both comparison operands.
+Verify that TACCOND_JUMP compares both operands and selects the taken result.
 
 Readable TAC:
   func main:
@@ -279,10 +256,7 @@ static bool tac_test_cond_jump(void) {
 }
 
 /*
-Purpose: Verify function calls and parameter passing.
-Inputs: None (builds a TACProg in-place).
-Outputs: Returns true when the interpreter returns 13.
-Invariants/Assumptions: Exercises TACCALL with two parameters.
+Verify that TACCALL passes two parameters and returns their sum from a callee.
 
 Readable TAC:
   func add(p, q):
@@ -365,10 +339,7 @@ static bool tac_test_call(void) {
 }
 
 /*
-Purpose: Verify address-of, load, and store operations.
-Inputs: None (builds a TACProg in-place).
-Outputs: Returns true when the interpreter returns 42.
-Invariants/Assumptions: Exercises TACGET_ADDRESS, TACSTORE, and TACLOAD.
+Verify that address-of, store, and load round-trip the value 42 through memory.
 
 Readable TAC:
   func main:
@@ -437,10 +408,7 @@ static bool tac_test_memory_ops(void) {
 }
 
 /*
-Purpose: Verify unary operators and result aggregation.
-Inputs: None (builds a TACProg in-place).
-Outputs: Returns true when the interpreter matches C unary semantics.
-Invariants/Assumptions: Exercises TACUNARY with NEGATE, COMPLEMENT, and BOOL_NOT.
+Verify that TACUNARY implements C negation, complement, and logical-not semantics.
 
 Readable TAC:
   func main:
@@ -538,10 +506,7 @@ static bool tac_test_unary_ops(void) {
 }
 
 /*
-Purpose: Verify unconditional jumps and label dispatch.
-Inputs: None (builds a TACProg in-place).
-Outputs: Returns true when the interpreter returns 9.
-Invariants/Assumptions: Exercises TACJUMP and TACLABEL.
+Verify that TACJUMP finds its label and skips the intervening return.
 
 Readable TAC:
   func main:
@@ -596,10 +561,7 @@ static bool tac_test_jump(void) {
 }
 
 /*
-Purpose: Verify CopyToOffset and address arithmetic for loads.
-Inputs: None (builds a TACProg in-place).
-Outputs: Returns true when the interpreter returns 99.
-Invariants/Assumptions: Exercises TACCOPY_TO_OFFSET, TACGET_ADDRESS, and TACLOAD.
+Verify that CopyToOffset and pointer arithmetic load from the selected byte offset.
 
 Readable TAC:
   func main:
@@ -680,11 +642,9 @@ static bool tac_test_copy_to_offset(void) {
   return tac_expect_result("copy_to_offset", result, kExpected);
 }
 
-// Purpose: Check a constant-folding replacement and its typed result.
-// Inputs: name identifies the case; instr is the original instruction;
+// Check a constant-folding replacement and its typed result.
 // expected_dst/type/value describe the required TACCOPY.
-// Outputs: Returns true when all replacement fields match.
-// Invariants/Assumptions: The compiler arena is initialized.
+// Returns true when all replacement fields match.
 static bool tac_expect_folded_constant(const char* name,
                                        struct TACInstr* instr,
                                        struct Val* expected_dst,
@@ -707,11 +667,9 @@ static bool tac_expect_folded_constant(const char* name,
 }
 
 /*
-Purpose: Verify constant folding for operand selection, integer signedness,
+Verify constant folding for operand selection, integer signedness,
 truncation, sign extension, and fused conditional jumps.
-Inputs: None (builds isolated TAC instructions in-place).
-Outputs: Returns true when each instruction has the expected folded form.
-Invariants/Assumptions: Constants use the TAC raw-bit representation.
+Constants use TAC's raw-bit representation when checking the folded forms.
 */
 static bool tac_test_constant_folding(void) {
   struct Type long_type = { .type = LONG_TYPE };
@@ -857,10 +815,8 @@ static bool tac_test_constant_folding(void) {
   return ok;
 }
 
-// Purpose: Check one expected result from TAC body comparison.
-// Inputs: name identifies the field under test; left/right are TAC bodies.
-// Outputs: Returns true when compare_bodies produces expected.
-// Invariants/Assumptions: The bodies are acyclic.
+// Check one expected result from TAC body comparison.
+// Returns true when compare_bodies produces expected.
 static bool tac_expect_body_comparison(const char* name, struct TACInstr* left,
                                        struct TACInstr* right, bool expected) {
   bool actual = compare_bodies(left, right);
@@ -873,11 +829,8 @@ static bool tac_expect_body_comparison(const char* name, struct TACInstr* left,
 }
 
 /*
-Purpose: Verify equality for every TAC instruction payload.
-Inputs: None (builds isolated instruction nodes in-place).
-Outputs: Returns true when identical payloads compare equal and every changed
-field compares different.
-Invariants/Assumptions: TAC references intentionally use pointer identity.
+Verify equality for every TAC instruction payload by changing each field in
+turn. TAC references intentionally compare by pointer identity.
 */
 static bool tac_test_compare_bodies(void) {
   const size_t kFirstCount = 1;
@@ -1064,13 +1017,10 @@ static bool tac_test_compare_bodies(void) {
 }
 
 /*
-Purpose: Verify that TAC-to-CFG-to-TAC round trips are idempotent and that
+Verify that TAC-to-CFG-to-TAC round trips are idempotent and that
 CFG-to-TAC rebuilding is repeatable and non-destructive.
-Inputs: None (builds a three-block TAC body in-place).
-Outputs: Returns true when two complete round trips equal the input, repeated
-rebuilds have valid tail links, and every CFG block remains independently
-terminated.
-Invariants/Assumptions: build_cfg preserves basic blocks in TAC layout order.
+Two complete round trips must equal the input, keep valid tail links, and leave
+each CFG block independently terminated. build_cfg preserves TAC layout order.
 */
 static bool tac_test_cfg_rebuild(void) {
   const unsigned kExpectedNodeCount = 5;
@@ -1167,10 +1117,8 @@ static bool tac_test_cfg_rebuild(void) {
   return ok;
 }
 
-// Purpose: Run all TAC interpreter tests.
-// Inputs: None.
-// Outputs: Returns 0 on success and non-zero on failure.
-// Invariants/Assumptions: Each test builds its own TAC program.
+// Run all TAC interpreter tests.
+// Returns 0 on success and non-zero on failure.
 int main(void) {
   bool ok = true;
   printf("- tac_test_return_const\n");

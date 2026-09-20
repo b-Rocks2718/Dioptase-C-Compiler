@@ -1,4 +1,4 @@
-int main(void){
+int main(void){ /* Exercise switch case behavior. */
   int x = 2;
   switch (x) {
     case 1: return 10;

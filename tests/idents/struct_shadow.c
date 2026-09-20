@@ -1,11 +1,11 @@
 
-struct Test {
+struct Test { /* Define the struct used by the struct shadow test. */
   int a;
 };
 
-int main() {
+int main() { /* Exercise struct shadow behavior. */
   {
-    struct Test {
+    struct Test { /* Define the struct used by the struct shadow test. */
       short b;
     };
     struct Test t2;

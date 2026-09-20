@@ -1,4 +1,4 @@
-// Purpose: Exercise while, do-while, and for loops with break/continue.
+// Exercise while, do-while, and for loops with break/continue.
 // Expected: main returns 14.
 int main(void) {
   int sum = 0;

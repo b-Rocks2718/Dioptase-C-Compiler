@@ -1,4 +1,4 @@
-int main(void){
+int main(void){ /* Exercise goto in blocks behavior. */
 start:
   if (1) {
     goto done;

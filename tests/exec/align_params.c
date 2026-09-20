@@ -1,4 +1,4 @@
-// Purpose: Check alignment of interleaved short/int function parameters.
+// Check alignment of interleaved short/int function parameters.
 // Expected: main returns 0.
 static int check_params(short a, int b, short c, int d) {
   unsigned int align_short = 2;
@@ -20,6 +20,6 @@ static int check_params(short a, int b, short c, int d) {
   return 0;
 }
 
-int main(void) {
+int main(void) { /* Exercise align params behavior. */
   return check_params(1, 2, 3, 4);
 }

@@ -1,4 +1,4 @@
-// Purpose: Verify cleanup runs for nested scopes with shadowed names.
+// Verify cleanup runs for nested scopes with shadowed names.
 // Expected: main returns 0.
 #define TEST_OK 0
 #define TEST_FAIL 1
@@ -8,11 +8,11 @@
 
 int sum = 0;
 
-void cleanup_add(int *p) {
+void cleanup_add(int *p) { /* Add the cleaned-up value to the test total. */
   sum += *p;
 }
 
-int main(void) {
+int main(void) { /* Exercise cleanup nested scopes behavior. */
   {
     int value __attribute__((cleanup(cleanup_add))) = OUTER_VALUE;
     {

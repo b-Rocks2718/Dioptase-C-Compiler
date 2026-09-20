@@ -3,6 +3,7 @@
 #include "identifier_resolution.h"
 #include "label_resolution.h"
 #include "lexer.h"
+#include "optimization.h"
 #include "parser.h"
 #include "preprocessor.h"
 #include "source_location.h"
@@ -27,9 +28,7 @@
 // Note: These tests intentionally rely on POSIX process and directory APIs plus
 // a host C compiler to compare TAC execution results against native execution.
 
-// Purpose: Configure test runner paths and sizing limits.
-// Inputs/Outputs: Constants used by the TAC execution tests.
-// Invariants/Assumptions: Paths are relative to the compiler root.
+// Configure test runner paths and sizing limits.
 static const char* kTacExecBuildDir = "build";
 static const char* kTacExecOutDir = "build/tac_exec";
 static const char* kTacExecTestsDir = "tests/exec";
@@ -45,35 +44,70 @@ static const size_t kTacExecTestSuffixLen = sizeof(kTacExecTestSuffix) - 1;
 static const int kTacExecChildPassExitCode = 0;
 static const int kTacExecChildFailExitCode = 1;
 
-// Purpose: Describe a TAC execution test case.
-// Inputs/Outputs: name identifies the test; path points to the C source.
-// Invariants/Assumptions: path is a NUL-terminated file system path.
+// Describe a TAC execution test case.
+// path is a NUL-terminated file system path.
 struct TacExecTest {
   char* name;
   char* path;
 };
 
-// Purpose: Own a growable list of execution tests discovered on disk.
-// Inputs/Outputs: tests holds owned strings; count/capacity track usage.
-// Invariants/Assumptions: Each test name/path is heap allocated.
+// Own a growable list of execution tests discovered on disk.
+// tests holds owned strings; count/capacity track usage.
 struct TacExecTestList {
   struct TacExecTest* tests;
   size_t count;
   size_t capacity;
 };
 
-// Purpose: Check whether a directory entry is "." or "..".
-// Inputs: name is the directory entry name.
-// Outputs: Returns true if the name is a dot entry.
-// Invariants/Assumptions: name is a NUL-terminated string.
+// Parse the same optimization switches accepted by bcc.
+// Returns false and prints an actionable diagnostic for any non-optimization flag.
+static bool tac_exec_parse_optimization_options(int argc,
+                                                char** argv,
+                                                struct OptimizationOptions* options) {
+  for (int i = 1; i < argc; i++) {
+    const char* arg = argv[i];
+    if (strcmp(arg, "-constant-fold") == 0) {
+      options->constant_fold = true;
+    } else if (strcmp(arg, "-dead-code") == 0) {
+      options->dead_code_elim = true;
+    } else if (strcmp(arg, "-copy-prop") == 0) {
+      options->copy_prop = true;
+    } else if (strcmp(arg, "-dead-store") == 0) {
+      options->dead_store_elim = true;
+    } else if (strcmp(arg, "-tail-call") == 0) {
+      options->tail_call_opt = true;
+    } else if (strcmp(arg, "-inline") == 0) {
+      options->inline_opt = true;
+    } else if (strcmp(arg, "-peephole") == 0) {
+      options->peephole_opt = true;
+    } else if (strcmp(arg, "-reg-alloc") == 0) {
+      options->reg_alloc = true;
+    } else if (strcmp(arg, "-opt") == 0) {
+      options->constant_fold = true;
+      options->dead_code_elim = true;
+      options->copy_prop = true;
+      options->dead_store_elim = true;
+      options->tail_call_opt = true;
+      options->inline_opt = true;
+      options->peephole_opt = true;
+      options->reg_alloc = true;
+    } else {
+      fprintf(stderr, "TAC exec tests: unsupported optimization flag '%s'\n", arg);
+      return false;
+    }
+  }
+  return true;
+}
+
+// Check whether a directory entry is "." or "..".
+// Returns true if the name is a dot entry.
+// name is a NUL-terminated string.
 static bool tac_exec_is_dot_entry(const char* name) {
   return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
 }
 
-// Purpose: Check whether a name ends with a given suffix.
-// Inputs: name is the string to inspect; suffix is the expected suffix.
-// Outputs: Returns true when suffix matches the tail of name.
-// Invariants/Assumptions: suffix_len equals strlen(suffix).
+// Check whether a name ends with a given suffix.
+// Returns true when suffix matches the tail of name.
 static bool tac_exec_has_suffix(const char* name, const char* suffix, size_t suffix_len) {
   size_t name_len = strlen(name);
   if (name_len < suffix_len) {
@@ -82,10 +116,9 @@ static bool tac_exec_has_suffix(const char* name, const char* suffix, size_t suf
   return memcmp(name + (name_len - suffix_len), suffix, suffix_len) == 0;
 }
 
-// Purpose: Ensure the test list has space for at least min_capacity entries.
-// Inputs: list is the list to grow; min_capacity is the required capacity.
-// Outputs: Returns true on success; list may be reallocated.
-// Invariants/Assumptions: list is initialized to zeroed memory.
+// Ensure the test list has space for at least min_capacity entries.
+// list is the list to grow; min_capacity is the required capacity.
+// Returns true on success; list may be reallocated.
 static bool tac_exec_ensure_test_capacity(struct TacExecTestList* list, size_t min_capacity) {
   if (list->capacity >= min_capacity) {
     return true;
@@ -110,10 +143,8 @@ static bool tac_exec_ensure_test_capacity(struct TacExecTestList* list, size_t m
   return true;
 }
 
-// Purpose: Append a test entry derived from a filename.
-// Inputs: list stores the test entries; filename is the leaf name.
-// Outputs: Returns true on success and appends to list.
-// Invariants/Assumptions: filename ends with kTacExecTestSuffix.
+// Append a test entry derived from a filename.
+// Returns true on success and appends to list.
 static bool tac_exec_append_test(struct TacExecTestList* list, const char* filename) {
   size_t filename_len = strlen(filename);
   size_t name_len = filename_len - kTacExecTestSuffixLen;
@@ -166,20 +197,17 @@ static bool tac_exec_append_test(struct TacExecTestList* list, const char* filen
   return true;
 }
 
-// Purpose: Sort test entries by name for stable output.
-// Inputs: lhs and rhs are TacExecTest pointers cast from qsort.
-// Outputs: Returns <0, 0, >0 like strcmp.
-// Invariants/Assumptions: name fields are non-NULL.
+// Sort test entries by name for stable output.
+// Returns <0, 0, >0 like strcmp.
+// name fields are non-NULL.
 static int tac_exec_compare_tests(const void* lhs, const void* rhs) {
   const struct TacExecTest* left = (const struct TacExecTest*)lhs;
   const struct TacExecTest* right = (const struct TacExecTest*)rhs;
   return strcmp(left->name, right->name);
 }
 
-// Purpose: Release memory allocated for a test list.
-// Inputs: list is the list to free.
-// Outputs: list is reset to an empty state.
-// Invariants/Assumptions: list entries own their name/path strings.
+// Release memory allocated for a test list.
+// list is reset to an empty state.
 static void tac_exec_free_test_list(struct TacExecTestList* list) {
   if (list == NULL) {
     return;
@@ -194,10 +222,8 @@ static void tac_exec_free_test_list(struct TacExecTestList* list) {
   list->capacity = 0;
 }
 
-// Purpose: Populate a test list from the tests/exec directory.
-// Inputs: out_list receives the populated test list.
-// Outputs: Returns true on success; out_list owns the entries.
-// Invariants/Assumptions: tests/exec contains the desired .c sources.
+// Populate a test list from the tests/exec directory.
+// Returns true on success; out_list owns the entries.
 static bool tac_exec_collect_tests(struct TacExecTestList* out_list) {
   if (out_list == NULL) {
     return false;
@@ -247,10 +273,8 @@ static bool tac_exec_collect_tests(struct TacExecTestList* out_list) {
   return true;
 }
 
-// Purpose: Print a formatted failure message for a test stage.
-// Inputs: test is the test name; stage is the pipeline stage; fmt is the detail.
-// Outputs: Writes a diagnostic message to stderr.
-// Invariants/Assumptions: fmt is a printf-style format string.
+// Print a formatted failure message for a test stage.
+// Writes a diagnostic message to stderr.
 static void tac_exec_error(const char* test, const char* stage, const char* fmt, ...) {
   va_list args;
   fprintf(stderr, "TAC exec test %s failed at %s: ", test, stage);
@@ -260,10 +284,8 @@ static void tac_exec_error(const char* test, const char* stage, const char* fmt,
   fprintf(stderr, "\n");
 }
 
-// Purpose: Read a file into a newly allocated, NUL-terminated buffer.
-// Inputs: path is the file path to read.
-// Outputs: Returns true on success and fills out_text.
-// Invariants/Assumptions: Caller frees *out_text with free().
+// Read a file into a newly allocated, NUL-terminated buffer.
+// Returns true on success and fills out_text.
 static bool tac_exec_read_file(const char* path, char** out_text) {
   FILE* fp = fopen(path, "rb");
   if (fp == NULL) {
@@ -298,10 +320,8 @@ static bool tac_exec_read_file(const char* path, char** out_text) {
   return true;
 }
 
-// Purpose: Ensure a directory exists for build outputs.
-// Inputs: path is the directory to create.
-// Outputs: Returns true on success or if it already exists.
-// Invariants/Assumptions: Uses POSIX mkdir semantics.
+// Ensure a directory exists for build outputs.
+// Returns true on success or if it already exists.
 static bool tac_exec_ensure_dir(const char* path) {
   if (mkdir(path, 0755) == 0) {
     return true;
@@ -309,10 +329,8 @@ static bool tac_exec_ensure_dir(const char* path) {
   return errno == EEXIST;
 }
 
-// Purpose: Spawn a child process and capture its exit code.
-// Inputs: argv is the command array; search_path selects execvp vs execv.
-// Outputs: Returns true on success and fills exit_code.
-// Invariants/Assumptions: Uses POSIX fork/exec/wait APIs.
+// Spawn a child process and capture its exit code.
+// Returns true on success and fills exit_code.
 static bool tac_exec_run_process(const char* const* argv, bool search_path, int* exit_code) {
   pid_t pid = fork();
   if (pid < 0) {
@@ -344,10 +362,8 @@ static bool tac_exec_run_process(const char* const* argv, bool search_path, int*
   return false;
 }
 
-// Purpose: Compile a test with the host compiler for reference output.
-// Inputs: source_path is the test file; out_path is the output binary.
-// Outputs: Returns true if the compile succeeds; exit_code receives the process status.
-// Invariants/Assumptions: Uses gcc/cc via PATH to match host behavior.
+// Compile a test with the host compiler for reference output.
+// Returns true if the compile succeeds; exit_code receives the process status.
 static bool tac_exec_compile_with_host(const char* source_path,
                                        const char* out_path,
                                        int* exit_code) {
@@ -370,19 +386,15 @@ static bool tac_exec_compile_with_host(const char* source_path,
   return local_exit == 0;
 }
 
-// Purpose: Execute a compiled test binary and collect its exit code.
-// Inputs: path is the binary path to execute.
-// Outputs: Returns true on success and fills exit_code.
-// Invariants/Assumptions: Exit status matches main() return value.
+// Execute a compiled test binary and collect its exit code.
+// Returns true on success and fills exit_code.
 static bool tac_exec_run_binary(const char* path, int* exit_code) {
   const char* argv[] = {path, NULL};
   return tac_exec_run_process(argv, false, exit_code);
 }
 
-// Purpose: Collect static variable TAC entries for a program.
-// Inputs: prog is the TAC program built from the AST.
-// Outputs: Stores static variables from the symbol table in prog->statics.
-// Invariants/Assumptions: global_symbol_table is valid until arena_destroy().
+// Collect static variable TAC entries for a program.
+// global_symbol_table is valid until arena_destroy().
 static void tac_exec_collect_statics(struct TACProg* prog) {
   if (prog == NULL || global_symbol_table == NULL) {
     return;
@@ -408,11 +420,11 @@ static void tac_exec_collect_statics(struct TACProg* prog) {
   prog->statics = statics_head;
 }
 
-// Purpose: Build TAC from a source file and interpret it.
-// Inputs: test is the test descriptor to run.
-// Outputs: Returns true on success and fills out_result.
-// Invariants/Assumptions: Uses the same pipeline as the compiler frontend.
-static bool tac_exec_run_tac(const struct TacExecTest* test, int* out_result) {
+// Build TAC from a source file and interpret it.
+// Returns true on success and fills out_result.
+static bool tac_exec_run_tac(const struct TacExecTest* test,
+                             struct OptimizationOptions optimization_options,
+                             int* out_result) {
   bool ok = false;
   char* source = NULL;
   struct PreprocessResult preprocessed = {0};
@@ -459,6 +471,7 @@ static bool tac_exec_run_tac(const struct TacExecTest* test, int* out_result) {
     tac_exec_error(test->name, "tac", "TAC lowering failed");
     goto cleanup;
   }
+  optimize(tac_prog, optimization_options);
   tac_exec_collect_statics(tac_prog);
 
   *out_result = tac_interpret_prog(tac_prog);
@@ -475,13 +488,12 @@ cleanup:
   return ok;
 }
 
-// Purpose: Run one TAC execution test and compare against the host compiler.
-// Inputs: test is the test descriptor to run.
-// Outputs: Returns true if TAC and host results match.
-// Invariants/Assumptions: The host compiler result matches main()'s return value.
-static bool tac_exec_run_test_internal(const struct TacExecTest* test) {
+// Run one TAC execution test and compare against the host compiler.
+// Returns true if TAC and host results match.
+static bool tac_exec_run_test_internal(const struct TacExecTest* test,
+                                       struct OptimizationOptions optimization_options) {
   int tac_result = 0;
-  if (!tac_exec_run_tac(test, &tac_result)) {
+  if (!tac_exec_run_tac(test, optimization_options, &tac_result)) {
     return false;
   }
 
@@ -516,11 +528,11 @@ static bool tac_exec_run_test_internal(const struct TacExecTest* test) {
   return true;
 }
 
-// Purpose: Run one TAC execution test in a child process to isolate fatal errors.
-// Inputs: test is the test descriptor to run.
-// Outputs: Returns true if the child process reports a passing result.
-// Invariants/Assumptions: Uses POSIX fork/wait to allow the suite to continue.
-static bool tac_exec_run_test(const struct TacExecTest* test) {
+// Run one TAC execution test in a child process to isolate fatal errors.
+// Returns true if the child process reports a passing result.
+static bool tac_exec_run_test(const struct TacExecTest* test,
+                              struct OptimizationOptions optimization_options,
+                              struct TacExecTestList* inherited_tests) {
   fflush(NULL);
   pid_t pid = fork();
   if (pid < 0) {
@@ -528,7 +540,10 @@ static bool tac_exec_run_test(const struct TacExecTest* test) {
     return false;
   }
   if (pid == 0) {
-    bool ok = tac_exec_run_test_internal(test);
+    bool ok = tac_exec_run_test_internal(test, optimization_options);
+    // The forked child owns a copy of the parent's discovered-test list. Release
+    // that copy before _exit so leak checking sees the child's true live state.
+    tac_exec_free_test_list(inherited_tests);
     fflush(NULL);
     _exit(ok ? kTacExecChildPassExitCode : kTacExecChildFailExitCode);
   }
@@ -556,7 +571,13 @@ static bool tac_exec_run_test(const struct TacExecTest* test) {
   return false;
 }
 
-int main(void) {
+int main(int argc, char** argv) { /* Exercise tac exec tests behavior. */
+  struct OptimizationOptions optimization_options = {false};
+  if (!tac_exec_parse_optimization_options(argc, argv, &optimization_options)) {
+    return 1;
+  }
+  bool optimizations_enabled = argc > 1;
+
   if (!tac_exec_ensure_dir(kTacExecBuildDir) || !tac_exec_ensure_dir(kTacExecOutDir)) {
     fprintf(stderr, "TAC exec tests: failed to create %s\n", kTacExecOutDir);
     return 1;
@@ -569,10 +590,10 @@ int main(void) {
 
   size_t total = tests.count;
   size_t passed = 0;
-  printf("TAC execution results:\n");
+  printf("TAC execution results%s:\n", optimizations_enabled ? " (optimized)" : "");
   for (size_t i = 0; i < total; i++) {
     printf("- tac_exec_%s\n", tests.tests[i].name);
-    if (tac_exec_run_test(&tests.tests[i])) {
+    if (tac_exec_run_test(&tests.tests[i], optimization_options, &tests)) {
       passed++;
     }
   }

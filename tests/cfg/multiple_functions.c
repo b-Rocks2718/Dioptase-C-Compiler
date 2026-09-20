@@ -7,6 +7,6 @@ static int helper(void) {
   return 7;
 }
 
-int main(void) {
+int main(void) { /* Exercise multiple functions behavior. */
   return helper();
 }

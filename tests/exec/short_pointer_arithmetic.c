@@ -1,4 +1,4 @@
-// Purpose: Check short* vs int* pointer arithmetic stride differences.
+// Check short* vs int* pointer arithmetic stride differences.
 // Expected: main returns 3.
 int main(void) {
   int kPointerStep = 1;

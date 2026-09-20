@@ -18,9 +18,7 @@
 // Note: These tests intentionally rely on POSIX process and directory APIs plus
 // a host C compiler to compare emulator execution results against native execution.
 
-// Purpose: Configure test runner paths and sizing limits.
-// Inputs/Outputs: Constants used by the emulator execution tests.
-// Invariants/Assumptions: Paths are relative to the compiler root.
+// Configure test runner paths and sizing limits.
 static const char* kEmuExecBuildDir = "build";
 static const char* kEmuExecOutDir = "build/emu_exec";
 static const char* kEmuExecTestsDir = "tests/exec";
@@ -37,6 +35,7 @@ static const size_t kEmuExecTestListInitialCapacity = 8; // Handles small suites
 static const size_t kEmuExecTestListGrowthFactor = 2; // Doubling keeps append amortized constant time.
 static const char kEmuExecTestSuffix[] = ".c";
 static const size_t kEmuExecTestSuffixLen = sizeof(kEmuExecTestSuffix) - 1;
+enum { kEmuExecBccFixedArgCount = 5 }; // Compiler, source, -o, output, and NULL.
 
 enum { kEmuExecDefaultBccPathCount = 2 };
 static const char* const kEmuExecDefaultBccPaths[kEmuExecDefaultBccPathCount] = {
@@ -50,35 +49,47 @@ static const char* const kEmuExecDefaultEmulatorPaths[kEmuExecDefaultEmulatorPat
     "../../Dioptase-Emulators/Dioptase-Emulator-Simple/target/release/Dioptase-Emulator-Simple",
 };
 
-// Purpose: Describe an emulator execution test case.
-// Inputs/Outputs: name identifies the test; path points to the C source.
-// Invariants/Assumptions: path is a NUL-terminated file system path.
+// Describe an emulator execution test case.
+// path is a NUL-terminated file system path.
 struct EmuExecTest {
   char* name;
   char* path;
 };
 
-// Purpose: Own a growable list of execution tests discovered on disk.
-// Inputs/Outputs: tests holds owned strings; count/capacity track usage.
-// Invariants/Assumptions: Each test name/path is heap allocated.
+// Own a growable list of execution tests discovered on disk.
+// tests holds owned strings; count/capacity track usage.
 struct EmuExecTestList {
   struct EmuExecTest* tests;
   size_t count;
   size_t capacity;
 };
 
-// Purpose: Check whether a directory entry is "." or "..".
-// Inputs: name is the directory entry name.
-// Outputs: Returns true if the name is a dot entry.
-// Invariants/Assumptions: name is a NUL-terminated string.
+// Restrict runner arguments to optimization switches accepted by bcc.
+// Returns false and diagnoses the first unsupported option.
+static bool emu_exec_validate_optimization_options(int argc, char** argv) {
+  for (int i = 1; i < argc; i++) {
+    const char* arg = argv[i];
+    if (strcmp(arg, "-constant-fold") != 0 && strcmp(arg, "-dead-code") != 0 &&
+        strcmp(arg, "-copy-prop") != 0 && strcmp(arg, "-dead-store") != 0 &&
+        strcmp(arg, "-tail-call") != 0 && strcmp(arg, "-inline") != 0 &&
+        strcmp(arg, "-peephole") != 0 && strcmp(arg, "-reg-alloc") != 0 &&
+        strcmp(arg, "-opt") != 0) {
+      fprintf(stderr, "Emu exec tests: unsupported optimization flag '%s'\n", arg);
+      return false;
+    }
+  }
+  return true;
+}
+
+// Check whether a directory entry is "." or "..".
+// Returns true if the name is a dot entry.
+// name is a NUL-terminated string.
 static bool emu_exec_is_dot_entry(const char* name) {
   return strcmp(name, ".") == 0 || strcmp(name, "..") == 0;
 }
 
-// Purpose: Check whether a name ends with a given suffix.
-// Inputs: name is the string to inspect; suffix is the expected suffix.
-// Outputs: Returns true when suffix matches the tail of name.
-// Invariants/Assumptions: suffix_len equals strlen(suffix).
+// Check whether a name ends with a given suffix.
+// Returns true when suffix matches the tail of name.
 static bool emu_exec_has_suffix(const char* name, const char* suffix, size_t suffix_len) {
   size_t name_len = strlen(name);
   if (name_len < suffix_len) {
@@ -87,10 +98,9 @@ static bool emu_exec_has_suffix(const char* name, const char* suffix, size_t suf
   return memcmp(name + (name_len - suffix_len), suffix, suffix_len) == 0;
 }
 
-// Purpose: Ensure the test list has space for at least min_capacity entries.
-// Inputs: list is the list to grow; min_capacity is the required capacity.
-// Outputs: Returns true on success; list may be reallocated.
-// Invariants/Assumptions: list is initialized to zeroed memory.
+// Ensure the test list has space for at least min_capacity entries.
+// list is the list to grow; min_capacity is the required capacity.
+// Returns true on success; list may be reallocated.
 static bool emu_exec_ensure_test_capacity(struct EmuExecTestList* list, size_t min_capacity) {
   if (list->capacity >= min_capacity) {
     return true;
@@ -115,10 +125,8 @@ static bool emu_exec_ensure_test_capacity(struct EmuExecTestList* list, size_t m
   return true;
 }
 
-// Purpose: Append a test entry derived from a filename.
-// Inputs: list stores the test entries; filename is the leaf name.
-// Outputs: Returns true on success and appends to list.
-// Invariants/Assumptions: filename ends with kEmuExecTestSuffix.
+// Append a test entry derived from a filename.
+// Returns true on success and appends to list.
 static bool emu_exec_append_test(struct EmuExecTestList* list, const char* filename) {
   size_t filename_len = strlen(filename);
   size_t name_len = filename_len - kEmuExecTestSuffixLen;
@@ -171,20 +179,17 @@ static bool emu_exec_append_test(struct EmuExecTestList* list, const char* filen
   return true;
 }
 
-// Purpose: Sort test entries by name for stable output.
-// Inputs: lhs and rhs are EmuExecTest pointers cast from qsort.
-// Outputs: Returns <0, 0, >0 like strcmp.
-// Invariants/Assumptions: name fields are non-NULL.
+// Sort test entries by name for stable output.
+// Returns <0, 0, >0 like strcmp.
+// name fields are non-NULL.
 static int emu_exec_compare_tests(const void* lhs, const void* rhs) {
   const struct EmuExecTest* left = (const struct EmuExecTest*)lhs;
   const struct EmuExecTest* right = (const struct EmuExecTest*)rhs;
   return strcmp(left->name, right->name);
 }
 
-// Purpose: Release memory allocated for a test list.
-// Inputs: list is the list to free.
-// Outputs: list is reset to an empty state.
-// Invariants/Assumptions: list entries own their name/path strings.
+// Release memory allocated for a test list.
+// list is reset to an empty state.
 static void emu_exec_free_test_list(struct EmuExecTestList* list) {
   if (list == NULL) {
     return;
@@ -199,10 +204,8 @@ static void emu_exec_free_test_list(struct EmuExecTestList* list) {
   list->capacity = 0;
 }
 
-// Purpose: Populate a test list from the tests/exec directory.
-// Inputs: out_list receives the populated test list.
-// Outputs: Returns true on success; out_list owns the entries.
-// Invariants/Assumptions: tests/exec contains the desired .c sources.
+// Populate a test list from the tests/exec directory.
+// Returns true on success; out_list owns the entries.
 static bool emu_exec_collect_tests(struct EmuExecTestList* out_list) {
   if (out_list == NULL) {
     return false;
@@ -252,10 +255,8 @@ static bool emu_exec_collect_tests(struct EmuExecTestList* out_list) {
   return true;
 }
 
-// Purpose: Print a formatted failure message for a test stage.
-// Inputs: test is the test name; stage is the pipeline stage; fmt is the detail.
-// Outputs: Writes a diagnostic message to stderr.
-// Invariants/Assumptions: fmt is a printf-style format string.
+// Print a formatted failure message for a test stage.
+// Writes a diagnostic message to stderr.
 static void emu_exec_error(const char* test, const char* stage, const char* fmt, ...) {
   va_list args;
   fprintf(stderr, "Emu exec test %s failed at %s: ", test, stage);
@@ -265,10 +266,8 @@ static void emu_exec_error(const char* test, const char* stage, const char* fmt,
   fprintf(stderr, "\n");
 }
 
-// Purpose: Ensure the output directory exists.
-// Inputs: path is the directory to create.
-// Outputs: Returns true on success or if it already exists.
-// Invariants/Assumptions: Uses POSIX mkdir semantics.
+// Ensure the output directory exists.
+// Returns true on success or if it already exists.
 static bool emu_exec_ensure_dir(const char* path) {
   if (mkdir(path, 0755) == 0) {
     return true;
@@ -276,10 +275,8 @@ static bool emu_exec_ensure_dir(const char* path) {
   return errno == EEXIST;
 }
 
-// Purpose: Check whether a path points to an executable file.
-// Inputs: path is the filesystem path to check.
-// Outputs: Returns true when the file is executable.
-// Invariants/Assumptions: Uses POSIX access().
+// Check whether a path points to an executable file.
+// Returns true when the file is executable.
 static bool emu_exec_is_executable(const char* path) {
   if (path == NULL || path[0] == '\0') {
     return false;
@@ -287,10 +284,8 @@ static bool emu_exec_is_executable(const char* path) {
   return access(path, X_OK) == 0;
 }
 
-// Purpose: Parse a non-zero u32 from a decimal string.
-// Inputs: text is the string to parse.
-// Outputs: Returns true on success and fills out_value.
-// Invariants/Assumptions: Rejects values outside the uint32_t range or zero.
+// Parse a non-zero u32 from a decimal string.
+// Returns true on success and fills out_value.
 static bool emu_exec_parse_u32_nonzero(const char* text, uint32_t* out_value) {
   if (text == NULL || out_value == NULL) {
     return false;
@@ -317,10 +312,8 @@ static bool emu_exec_parse_u32_nonzero(const char* text, uint32_t* out_value) {
   return true;
 }
 
-// Purpose: Select a tool path from an environment override or defaults.
-// Inputs: env_name is the environment variable to check; defaults list fallbacks.
-// Outputs: Returns a usable tool path or NULL if none are available.
-// Invariants/Assumptions: Defaults are relative to the compiler root.
+// Select a tool path from an environment override or defaults.
+// Returns a usable tool path or NULL if none are available.
 static const char* emu_exec_select_tool(const char* env_name,
                                         const char* const* defaults,
                                         size_t default_count) {
@@ -342,10 +335,8 @@ static const char* emu_exec_select_tool(const char* env_name,
   return NULL;
 }
 
-// Purpose: Spawn a child process and capture its exit code.
-// Inputs: argv is the command array; search_path selects execvp vs execv.
-// Outputs: Returns true on success and fills exit_code.
-// Invariants/Assumptions: Uses POSIX fork/exec/wait APIs.
+// Spawn a child process and capture its exit code.
+// Returns true on success and fills exit_code.
 static bool emu_exec_run_process(const char* const* argv, bool search_path, int* exit_code) {
   pid_t pid = fork();
   if (pid < 0) {
@@ -377,10 +368,9 @@ static bool emu_exec_run_process(const char* const* argv, bool search_path, int*
   return false;
 }
 
-// Purpose: Spawn a child process and capture stdout output.
-// Inputs: argv is the command array; search_path selects execvp vs execv.
-// Outputs: Returns true on success, fills exit_code, and writes output to buffer.
-// Invariants/Assumptions: buffer_size must be > 0; output is NUL-terminated.
+// Spawn a child process and capture stdout output.
+// Returns true on success, fills exit_code, and writes output to buffer.
+// buffer_size must be > 0; output is NUL-terminated.
 static bool emu_exec_run_process_capture(const char* const* argv,
                                          bool search_path,
                                          char* buffer,
@@ -447,10 +437,8 @@ static bool emu_exec_run_process_capture(const char* const* argv,
   return false;
 }
 
-// Purpose: Compile a test with the host compiler for reference output.
-// Inputs: source_path is the test file; out_path is the output binary.
-// Outputs: Returns true if the compile succeeds; exit_code receives the process status.
-// Invariants/Assumptions: Uses gcc/cc via PATH to match host behavior.
+// Compile a test with the host compiler for reference output.
+// Returns true if the compile succeeds; exit_code receives the process status.
 static bool emu_exec_compile_with_host(const char* source_path,
                                        const char* out_path,
                                        int* exit_code) {
@@ -473,12 +461,12 @@ static bool emu_exec_compile_with_host(const char* source_path,
   return local_exit == 0;
 }
 
-// Purpose: Compile a test with the Dioptase compiler to a hex image.
-// Inputs: source_path is the test file; out_path is the output hex file.
-// Outputs: Returns true if the compile succeeds; exit_code receives the process status.
-// Invariants/Assumptions: Uses DIOPTASE_BCC or local build paths.
+// Compile a test with the Dioptase compiler to a hex image.
+// Returns true if the compile succeeds; exit_code receives the process status.
 static bool emu_exec_compile_with_bcc(const char* source_path,
                                       const char* out_path,
+                                      int compiler_option_count,
+                                      char* const* compiler_options,
                                       int* exit_code) {
   const char* compiler = emu_exec_select_tool(kEmuExecBccEnv,
                                               kEmuExecDefaultBccPaths,
@@ -491,24 +479,41 @@ static bool emu_exec_compile_with_bcc(const char* source_path,
     }
     return false;
   }
-  const char* argv[] = {compiler, source_path, "-o", out_path, NULL};
-  int local_exit = 0;
-  if (!emu_exec_run_process(argv, true, &local_exit)) {
+  size_t argv_count = (size_t)compiler_option_count + kEmuExecBccFixedArgCount;
+  const char** bcc_argv = (const char**)malloc(argv_count * sizeof(*bcc_argv));
+  if (bcc_argv == NULL) {
+    fprintf(stderr, "Emu exec tests: out of memory while preparing bcc for %s\n", source_path);
     if (exit_code != NULL) {
       *exit_code = -1;
     }
     return false;
   }
+  size_t arg_index = 0;
+  bcc_argv[arg_index++] = compiler;
+  for (int i = 0; i < compiler_option_count; i++) {
+    bcc_argv[arg_index++] = compiler_options[i];
+  }
+  bcc_argv[arg_index++] = source_path;
+  bcc_argv[arg_index++] = "-o";
+  bcc_argv[arg_index++] = out_path;
+  bcc_argv[arg_index] = NULL;
+  int local_exit = 0;
+  if (!emu_exec_run_process(bcc_argv, true, &local_exit)) {
+    free(bcc_argv);
+    if (exit_code != NULL) {
+      *exit_code = -1;
+    }
+    return false;
+  }
+  free(bcc_argv);
   if (exit_code != NULL) {
     *exit_code = local_exit;
   }
   return local_exit == 0;
 }
 
-// Purpose: Parse a hex string result from the emulator into a signed int.
-// Inputs: text is the emulator output buffer.
-// Outputs: Returns true on success and fills out_value.
-// Invariants/Assumptions: Emulator output is a single hex number.
+// Parse a hex string result from the emulator into a signed int.
+// Returns true on success and fills out_value.
 static bool emu_exec_parse_emulator_result(const char* text, int* out_value) {
   if (text == NULL || out_value == NULL) {
     return false;
@@ -532,10 +537,8 @@ static bool emu_exec_parse_emulator_result(const char* text, int* out_value) {
   return true;
 }
 
-// Purpose: Run the Dioptase emulator on a hex image and capture its result.
-// Inputs: hex_path is the hex file to execute.
-// Outputs: Returns true on success and fills out_result.
-// Invariants/Assumptions: Emulator prints the return value as a hex number.
+// Run the Dioptase emulator on a hex image and capture its result.
+// Returns true on success and fills out_result.
 static bool emu_exec_run_emulator(const char* hex_path, int* out_result) {
   const char* emulator = emu_exec_select_tool(kEmuExecEmulatorEnv,
                                               kEmuExecDefaultEmulatorPaths,
@@ -576,20 +579,18 @@ static bool emu_exec_run_emulator(const char* hex_path, int* out_result) {
   return true;
 }
 
-// Purpose: Execute a compiled test binary and collect its exit code.
-// Inputs: path is the binary path to execute.
-// Outputs: Returns true on success and fills exit_code.
-// Invariants/Assumptions: Exit status matches main() return value.
+// Execute a compiled test binary and collect its exit code.
+// Returns true on success and fills exit_code.
 static bool emu_exec_run_binary(const char* path, int* exit_code) {
   const char* argv[] = {path, NULL};
   return emu_exec_run_process(argv, false, exit_code);
 }
 
-// Purpose: Run one emulator execution test and compare against the host compiler.
-// Inputs: test is the test descriptor to run.
-// Outputs: Returns true if emulator and host results match.
-// Invariants/Assumptions: The host compiler result matches main()'s return value.
-static bool emu_exec_run_test(const struct EmuExecTest* test) {
+// Run one emulator execution test and compare against the host compiler.
+// Returns true if emulator and host results match.
+static bool emu_exec_run_test(const struct EmuExecTest* test,
+                              int compiler_option_count,
+                              char* const* compiler_options) {
   char out_path[kEmuExecMaxPath];
   int written = snprintf(out_path, sizeof(out_path), "%s/%s.gcc", kEmuExecOutDir, test->name);
   if (written < 0 || (size_t)written >= sizeof(out_path)) {
@@ -621,7 +622,8 @@ static bool emu_exec_run_test(const struct EmuExecTest* test) {
   }
 
   int bcc_exit = 0;
-  if (!emu_exec_compile_with_bcc(test->path, hex_path, &bcc_exit)) {
+  if (!emu_exec_compile_with_bcc(test->path, hex_path, compiler_option_count,
+                                  compiler_options, &bcc_exit)) {
     if (bcc_exit >= 0) {
       emu_exec_error(test->name, "bcc", "compiler exited with %d", bcc_exit);
     } else {
@@ -644,7 +646,13 @@ static bool emu_exec_run_test(const struct EmuExecTest* test) {
   return true;
 }
 
-int main(void) {
+int main(int argc, char** argv) { /* Exercise emu exec tests behavior. */
+  if (!emu_exec_validate_optimization_options(argc, argv)) {
+    return 1;
+  }
+  int compiler_option_count = argc - 1;
+  char* const* compiler_options = argv + 1;
+
   if (!emu_exec_ensure_dir(kEmuExecBuildDir) || !emu_exec_ensure_dir(kEmuExecOutDir)) {
     fprintf(stderr, "Emu exec tests: failed to create %s\n", kEmuExecOutDir);
     return 1;
@@ -658,10 +666,11 @@ int main(void) {
   size_t total = tests.count;
   size_t passed = 0;
 
-  printf("Emulator execution results:\n");
+  printf("Emulator execution results%s:\n",
+         compiler_option_count > 0 ? " (optimized)" : "");
   for (size_t i = 0; i < total; i++) {
     printf("- emu_exec_%s\n", tests.tests[i].name);
-    if (emu_exec_run_test(&tests.tests[i])) {
+    if (emu_exec_run_test(&tests.tests[i], compiler_option_count, compiler_options)) {
       passed++;
     }
   }

@@ -1,13 +1,13 @@
-// Purpose: Verify logical operators and short-circuit evaluation.
+// Verify logical operators and short-circuit evaluation.
 // Expected: main returns 14 (bump() is never called).
 static int side_effect = 0;
 
-static int bump(void) {
+static int bump(void) { /* Increment the test state used by this fixture. */
   side_effect = side_effect + 1;
   return 1;
 }
 
-int main(void) {
+int main(void) { /* Exercise logical behavior. */
   int result = 0;
   if (0 && bump()) {
     result = 10;

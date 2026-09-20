@@ -1,4 +1,4 @@
-int main(void){
+int main(void){ /* Exercise goto duplicate label behavior. */
 label:
   ;
 label:

@@ -1,4 +1,4 @@
-int main(){
+int main(){ /* Exercise local str size behavior. */
   // Error: initializer string too large for array
   char str[10] = "hello world";
   return 0;

@@ -42,6 +42,30 @@ Accepted flags:
 
 Flags can be combined to dump multiple stages. `-preprocess` exits early unless `-tokens` or `-ast` is also specified.
 
+### Optimization flags
+
+Optimizations are disabled by default. The following passes are currently implemented and can be enabled independently:
+
+```text
+-constant-fold        fold constant TAC expressions and branches
+-dead-code            remove unreachable TAC blocks and redundant control flow
+```
+
+`-opt` enables every optimization switch. At present, its effective optimizations are constant folding and dead-code elimination; it also enables the reserved switches below so that newly implemented passes will automatically become part of `-opt`.
+
+These optimization switches are accepted by the compiler, but their passes are not implemented yet and they currently have no effect:
+
+```text
+-copy-prop            copy propagation
+-dead-store           dead-store elimination
+-tail-call            tail-call optimization
+-inline               function inlining
+-peephole             low-level peephole optimization
+-reg-alloc            register allocation
+```
+
+Optimization flags may be combined. For example, `bcc -constant-fold -dead-code input.c` runs both currently implemented passes. The `make release` target only optimizes the `bcc` executable itself; it does not enable optimization of compiled C programs.
+
 For user-mode links, `bcc` always passes `-crt <dir>` through to the assembler. Without an explicit override, it prefers the compiler-local CRT under `Dioptase-Languages/Dioptase-C-Compiler/crt` when `DIOPTASE_ROOT` is set.
 
 ## Supported Features
@@ -81,7 +105,7 @@ Limitations:
 - No multiple declarators per declaration (e.g., `int a, b;`)
 - No variadic functions
 - No inline assembly
-- No optimizations or register allocation
+- Optimization support is currently limited to constant folding and dead-code elimination; register allocation and the other passes listed above are not implemented yet
 
 In the future I plan to fix most of these limitations. I'd also like to add a few extensions to C, like classes, templates, and lambdas.  
 
@@ -105,20 +129,26 @@ make test
 make test-release
 ```
 
-`make test` and `make test-release` also build and run the TAC interpreter, TAC execution, emulator execution, and full emulator execution tests from `tests/tac_interpreter_tests.c`, `tests/tac_exec_tests.c`, `tests/emu_exec_tests.c`, and `tests/emu_exec_full_tests.c` (the execution tests use sources in `tests/tac_exec/` and `tests/exec/`).
+`make test` and `make test-release` also build and run the TAC interpreter, TAC execution, emulator execution, and full emulator execution tests from `tests/tac_interpreter_tests.c`, `tests/tac_exec_tests.c`, `tests/emu_exec_tests.c`, and `tests/emu_exec_full_tests.c` (the execution tests use sources in `tests/tac_exec/` and `tests/exec/`). Each execution suite runs once without optimizations and once with `OPT_TEST_FLAGS`, which defaults to `-opt` near the top of the Makefile.
 
 I also use [test cases from Writing a C Compiler](https://github.com/nlsandler/writing-a-c-compiler-tests#) via the wrapper in `tests/wacc_tac_compiler.py`. Run them with:
 
 ```sh
 make test-wacc
+make test-wacc-opt
 make test-wacc-release
+make test-wacc-release-opt
 make test-wacc-kernel
+make test-wacc-kernel-opt
 make test-wacc-kernel-release
+make test-wacc-kernel-release-opt
 make test-tac-wacc
+make test-tac-wacc-opt
 make test-tac-wacc-release
+make test-tac-wacc-release-opt
 ```
 
-`test-wacc*` runs the WACC tests via the emulator + assembler pipeline (simple emulator), `test-wacc-kernel*` runs them via the full emulator using kernel-mode assembly plus `tests/kernel/init.s` and `tests/kernel/arithmetic.s`, and `test-tac-wacc*` uses the TAC interpreter wrapper. The WACC runner defaults can be overridden with `WACC_CORE_CHAPTER`, `WACC_EXTRA_CHAPTERS`, `WACC_EXTRA_CREDIT`, `WACC_SKIP_TYPES`, and `WACC_ARGS`. Kernel runs can also override `DIOPTASE_EMULATOR_FULL`, `DIOPTASE_WACC_KERNEL_INIT`, and `DIOPTASE_WACC_KERNEL_ARITH`.
+`test-wacc*` runs the WACC tests via the emulator + assembler pipeline (simple emulator), `test-wacc-kernel*` runs them via the full emulator using kernel-mode assembly plus `tests/kernel/init.s` and `tests/kernel/arithmetic.s`, and `test-tac-wacc*` uses the TAC interpreter wrapper. Targets ending in `-opt` are separate slower runs that also pass `OPT_TEST_FLAGS` to the compiler. For example, `make test-wacc-opt OPT_TEST_FLAGS=-constant-fold` isolates constant folding in WACC tests, while `make test OPT_TEST_FLAGS=-constant-fold` does the same for the normal execution suites. The existing WACC targets continue to test without compiler optimizations. The WACC runner defaults can be overridden with `WACC_CORE_CHAPTER`, `WACC_EXTRA_CHAPTERS`, `WACC_EXTRA_CREDIT`, `WACC_SKIP_TYPES`, and `WACC_ARGS`. Kernel runs can also override `DIOPTASE_EMULATOR_FULL`, `DIOPTASE_WACC_KERNEL_INIT`, and `DIOPTASE_WACC_KERNEL_ARITH`.
 
 ## Makefile Targets
 
@@ -135,11 +165,17 @@ Test suites:
 - `make test`
 - `make test-release`
 - `make test-wacc`
+- `make test-wacc-opt`
 - `make test-wacc-release`
+- `make test-wacc-release-opt`
 - `make test-wacc-kernel`
+- `make test-wacc-kernel-opt`
 - `make test-wacc-kernel-release`
+- `make test-wacc-kernel-release-opt`
 - `make test-tac-wacc`
+- `make test-tac-wacc-opt`
 - `make test-tac-wacc-release`
+- `make test-tac-wacc-release-opt`
 
 Tooling helpers:
 

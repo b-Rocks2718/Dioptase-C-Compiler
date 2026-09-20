@@ -1,12 +1,12 @@
 
 int x;
 
-void inc(){
+void inc(){ /* Return the incremented value used by this test. */
   x++;
   return;
 }
 
-int main(){
+int main(){ /* Exercise void behavior. */
   inc();
   inc();
   inc();

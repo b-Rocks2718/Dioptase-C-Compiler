@@ -1,5 +1,5 @@
 
-enum Test {
+enum Test { /* Define the struct used by the enum test. */
   VALUE_ONE,
   VALUE_TWO = 1,
   VALUE_THREE = 10,
@@ -8,7 +8,7 @@ enum Test {
 
 enum Test g = VALUE_THREE;
 
-int main(){
+int main(){ /* Exercise enum behavior. */
   enum Test value = VALUE_TWO;
   enum Test next_value = value + 1;
   if (value == VALUE_ONE) return 1;
@@ -18,7 +18,7 @@ int main(){
   return 0;
 }
 
-void func(enum Test s, enum Test* t){
+void func(enum Test s, enum Test* t){ /* Copy the aggregate arguments to exercise parameter passing. */
   switch (s){
     case VALUE_ONE:
       break;

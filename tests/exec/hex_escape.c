@@ -1,4 +1,4 @@
-int main(void){
+int main(void){ /* Exercise hex escape behavior. */
   char esc = '\x1b';
   char* color = "\x1b[31m";
 

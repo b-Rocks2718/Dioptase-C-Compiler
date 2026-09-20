@@ -1,12 +1,12 @@
 
 union Test;
 
-union Test {
+union Test { /* Define the struct used by the union test. */
   int a;
   short b;
 };
 
-int main(){
+int main(){ /* Exercise union behavior. */
   union Test t = { 0 };
   union Test* p = &t;
   p->a = 5;
@@ -17,6 +17,6 @@ int main(){
   return sum;
 }
 
-void func(union Test u, union Test* v){
+void func(union Test u, union Test* v){ /* Copy the aggregate arguments to exercise parameter passing. */
   return;
 }

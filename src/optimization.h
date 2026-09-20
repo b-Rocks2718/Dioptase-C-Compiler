@@ -5,6 +5,7 @@
 #include "TAC.h"
 #include "cfg.h"
 
+// Configure optimization options.
 struct OptimizationOptions {
   // within function body
   bool constant_fold;

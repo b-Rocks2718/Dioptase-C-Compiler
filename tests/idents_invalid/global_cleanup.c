@@ -1,5 +1,5 @@
 
-void free_int(int* p) {
+void free_int(int* p) { /* Release the integer supplied to the cleanup callback. */
   return;
 }
 

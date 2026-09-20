@@ -1,4 +1,4 @@
-// Purpose: Verify explicit label and goto lowering.
+// Verify explicit label and goto lowering.
 // Expected: main returns 2.
 int main(void) {
   int x = 0;

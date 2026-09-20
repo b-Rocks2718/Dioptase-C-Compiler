@@ -1,4 +1,4 @@
-int main(void){
+int main(void){ /* Exercise local func body behavior. */
   int helper(void){
     return 1;
   }

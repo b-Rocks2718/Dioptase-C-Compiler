@@ -11,13 +11,13 @@
 
 static size_t live_allocations;
 
-static void* tracked_malloc(size_t size) {
+static void* tracked_malloc(size_t size) { /* Allocate memory and record the allocation for the test. */
   void* ptr = malloc(size);
   if (ptr != NULL) live_allocations++;
   return ptr;
 }
 
-static void tracked_free(void* ptr) {
+static void tracked_free(void* ptr) { /* Release memory and record the deallocation for the test. */
   if (ptr != NULL) {
     assert(live_allocations > 0 && "free must match a tracked allocation");
     live_allocations--;
@@ -32,7 +32,7 @@ static void tracked_free(void* ptr) {
 #undef malloc
 #undef free
 
-int main(void) {
+int main(void) { /* Exercise parser allocation test behavior. */
   char* cases[] = {
     "int values[bad];",
     "int values[2][bad];",

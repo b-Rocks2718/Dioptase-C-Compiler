@@ -1,10 +1,10 @@
 
-union Test {
+union Test { /* Define the struct used by the union test. */
   int a;
   short b;
 };
 
-int main(){
+int main(){ /* Exercise union behavior. */
   union Test t;
   union Test* p = &t;
   p->a = 5;

@@ -1,4 +1,4 @@
-int main(void){
+int main(void){ /* Exercise loops behavior. */
   int i = 0;
   while (i < 3) {
     i = i + 1;

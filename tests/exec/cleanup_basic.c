@@ -1,4 +1,4 @@
-// Purpose: Verify cleanup runs at block exit for a local variable.
+// Verify cleanup runs at block exit for a local variable.
 // Expected: main returns 0.
 #define TEST_OK 0
 #define TEST_FAIL 1
@@ -6,11 +6,11 @@
 
 int result = 0;
 
-void cleanup_int(int *p) {
+void cleanup_int(int *p) { /* Record cleanup of the integer object. */
   result = *p;
 }
 
-int main(void) {
+int main(void) { /* Exercise cleanup basic behavior. */
   {
     int value __attribute__((cleanup(cleanup_int))) = TEST_VALUE;
   }

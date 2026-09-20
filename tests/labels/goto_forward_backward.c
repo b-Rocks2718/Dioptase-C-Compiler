@@ -1,4 +1,4 @@
-int main(void){
+int main(void){ /* Exercise goto forward backward behavior. */
   goto end;
 start:
   goto end;
