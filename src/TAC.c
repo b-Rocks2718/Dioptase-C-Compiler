@@ -2768,7 +2768,7 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
       for (struct Block* cur = stmt_expr->block; cur != NULL; cur = cur->next) {
         // loop though each item here instead of doing it recursively,
         // that way we can get the result from the last item easily
-        struct TACInstrList item_instrs = tac_instr_list(NULL);
+        struct TACInstrList item_instrs;
         bool is_last = (cur == last_item);
 
         switch (cur->item->type) {
