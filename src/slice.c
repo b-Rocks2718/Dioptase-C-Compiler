@@ -125,3 +125,41 @@ size_t hash_slice(const struct Slice* key) {
   }
   return out;
 }
+
+// Append slice onto list. A NULL slice is ignored.
+void slice_list_add(struct SliceList* list, struct Slice* slice) {
+  if (list == NULL || slice == NULL) {
+    return;
+  }
+  struct SliceListNode* node = (struct SliceListNode*)arena_alloc(sizeof(struct SliceListNode));
+  node->slice = slice;
+  node->next = NULL;
+  if (list->last != NULL) {
+    list->last->next = node;
+  } else {
+    list->head = node;
+  }
+  list->last = node;
+}
+
+// Return true if list contains a slice equal to slice.
+bool slice_list_contains(struct SliceList list, struct Slice* slice) {
+  if (slice == NULL) {
+    return false;
+  }
+  for (struct SliceListNode* curr = list.head; curr != NULL; curr = curr->next) {
+    if (curr->slice != NULL && compare_slice_to_slice(curr->slice, slice)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Copy list nodes, sharing the original slice pointers.
+struct SliceList copy_slice_list(struct SliceList src) {
+  struct SliceList copy = {0};
+  for (struct SliceListNode* curr = src.head; curr != NULL; curr = curr->next) {
+    slice_list_add(&copy, curr->slice);
+  }
+  return copy;
+}

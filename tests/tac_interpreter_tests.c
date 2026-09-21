@@ -3,6 +3,7 @@
 #include "cfg.h"
 #include "optimization.h"
 #include "slice.h"
+#include "constant_fold.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -11,9 +12,16 @@
 // Construct TAC programs directly to verify interpreter and optimization behavior.
 
 static struct Type kTestIntType = { .type = INT_TYPE };
+static struct Type kTestUintType = { .type = UINT_TYPE };
+static struct Type kTestCharType = { .type = CHAR_TYPE };
+static struct Type kTestScharType = { .type = SCHAR_TYPE };
 static struct Type kTestPtrType = {
   .type = POINTER_TYPE,
   .type_data.pointer_type = { .referenced_type = &kTestIntType },
+};
+static struct Type kTestUintPtrType = {
+  .type = POINTER_TYPE,
+  .type_data.pointer_type = { .referenced_type = &kTestUintType },
 };
 
 // Build a Slice from a string literal for test data.
@@ -57,18 +65,35 @@ static struct Val tac_val_var(struct Slice* name, struct Type* type) {
 }
 
 // Initialize a TAC instruction node for tests.
-// Clears the node and sets its type/links.
+// Clears the node and sets its type, empty reaching-copy list, and links.
 static void tac_init_instr(struct TACInstr* instr, enum TACInstrType type) {
   memset(instr, 0, sizeof(*instr));
   instr->type = type;
+  instr->reaching_copies.head = NULL;
+  instr->reaching_copies.last = NULL;
   instr->next = NULL;
-  instr->last = instr;
+}
+
+// Initialize a TAC function top-level node for tests.
+// Clears the node and fills the function variant.
+static void tac_init_func(struct TopLevel* top,
+                          struct Slice* name,
+                          struct TACInstr* body,
+                          struct Slice** params,
+                          size_t num_params) {
+  memset(top, 0, sizeof(*top));
+  top->type = FUNC;
+  top->top.tac_func.name = name;
+  top->top.tac_func.global = true;
+  top->top.tac_func.body = body;
+  top->top.tac_func.params = params;
+  top->top.tac_func.num_params = num_params;
+  top->next = NULL;
 }
 
 // Link two TAC instruction nodes in a test list.
 static void tac_link_instr(struct TACInstr* first, struct TACInstr* second) {
   first->next = second;
-  first->last = second->last ? second->last : second;
 }
 
 // Compare interpreter output against an expected value.
@@ -95,16 +120,10 @@ static bool tac_test_return_const(void) {
 
   struct TACInstr ret_instr;
   tac_init_instr(&ret_instr, TACRETURN);
-  ret_instr.instr.tac_return.dst = &ret_val;
+  ret_instr.instr.tac_return.src = &ret_val;
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &ret_instr;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -170,21 +189,15 @@ static bool tac_test_arithmetic(void) {
   mul_instr.instr.tac_binary.src1 = &t0_val;
   mul_instr.instr.tac_binary.src2 = &const_2;
 
-  ret_instr.instr.tac_return.dst = &t1_val;
+  ret_instr.instr.tac_return.src = &t1_val;
 
   tac_link_instr(&copy_a, &copy_b);
   tac_link_instr(&copy_b, &add_instr);
   tac_link_instr(&add_instr, &mul_instr);
   tac_link_instr(&mul_instr, &ret_instr);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &copy_a;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &copy_a, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -230,22 +243,16 @@ static bool tac_test_cond_jump(void) {
   cond_jump.instr.tac_cond_jump.src2 = &const_10;
   cond_jump.instr.tac_cond_jump.condition = CondL;
   cond_jump.instr.tac_cond_jump.label = &then_label;
-  ret_false.instr.tac_return.dst = &const_2;
+  ret_false.instr.tac_return.src = &const_2;
   label.instr.tac_label.label = &then_label;
-  ret_true.instr.tac_return.dst = &const_1;
+  ret_true.instr.tac_return.src = &const_1;
 
   tac_link_instr(&cond_jump, &ret_false);
   tac_link_instr(&ret_false, &label);
   tac_link_instr(&label, &ret_true);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &cond_jump;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &cond_jump, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -291,18 +298,12 @@ static bool tac_test_call(void) {
   add_bin.instr.tac_binary.dst = &t0_val;
   add_bin.instr.tac_binary.src1 = &p_val;
   add_bin.instr.tac_binary.src2 = &q_val;
-  add_ret.instr.tac_return.dst = &t0_val;
+  add_ret.instr.tac_return.src = &t0_val;
   tac_link_instr(&add_bin, &add_ret);
 
   struct Slice* add_params[kArgCount] = { &p_name, &q_name };
-  struct TopLevel add_func = {0};
-  add_func.type = FUNC;
-  add_func.name = &add_name;
-  add_func.global = true;
-  add_func.body = &add_bin;
-  add_func.params = add_params;
-  add_func.num_params = kArgCount;
-  add_func.next = NULL;
+  struct TopLevel add_func;
+  tac_init_func(&add_func, &add_name, &add_bin, add_params, kArgCount);
 
   struct Val call_args[kArgCount];
   call_args[0] = tac_val_const(kArg0, &kTestIntType);
@@ -316,17 +317,11 @@ static bool tac_test_call(void) {
   call_instr.instr.tac_call.dst = &t1_val;
   call_instr.instr.tac_call.args = call_args;
   call_instr.instr.tac_call.num_args = kArgCount;
-  main_ret.instr.tac_return.dst = &t1_val;
+  main_ret.instr.tac_return.src = &t1_val;
   tac_link_instr(&call_instr, &main_ret);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &call_instr;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &call_instr, NULL, 0);
 
   add_func.next = &main_func;
 
@@ -383,21 +378,15 @@ static bool tac_test_memory_ops(void) {
   store.instr.tac_store.src = &const_42;
   load.instr.tac_load.dst = &t0_val;
   load.instr.tac_load.src_ptr = &p_val;
-  ret_instr.instr.tac_return.dst = &t0_val;
+  ret_instr.instr.tac_return.src = &t0_val;
 
   tac_link_instr(&copy_x, &addr_of);
   tac_link_instr(&addr_of, &store);
   tac_link_instr(&store, &load);
   tac_link_instr(&load, &ret_instr);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &copy_x;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &copy_x, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -479,7 +468,7 @@ static bool tac_test_unary_ops(void) {
   add_1.instr.tac_binary.src1 = &t0_val;
   add_1.instr.tac_binary.src2 = &bnot_val;
 
-  ret_instr.instr.tac_return.dst = &t1_val;
+  ret_instr.instr.tac_return.src = &t1_val;
 
   tac_link_instr(&copy_a, &unary_neg);
   tac_link_instr(&unary_neg, &unary_comp);
@@ -488,14 +477,8 @@ static bool tac_test_unary_ops(void) {
   tac_link_instr(&add_0, &add_1);
   tac_link_instr(&add_1, &ret_instr);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &copy_a;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &copy_a, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -535,22 +518,16 @@ static bool tac_test_jump(void) {
   tac_init_instr(&ret_true, TACRETURN);
 
   jump_instr.instr.tac_jump.label = &label_name;
-  ret_false.instr.tac_return.dst = &const_0;
+  ret_false.instr.tac_return.src = &const_0;
   label_instr.instr.tac_label.label = &label_name;
-  ret_true.instr.tac_return.dst = &const_9;
+  ret_true.instr.tac_return.src = &const_9;
 
   tac_link_instr(&jump_instr, &ret_false);
   tac_link_instr(&ret_false, &label_instr);
   tac_link_instr(&label_instr, &ret_true);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &jump_instr;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &jump_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -617,7 +594,7 @@ static bool tac_test_copy_to_offset(void) {
   add_addr.instr.tac_binary.src2 = &const_offset;
   load.instr.tac_load.dst = &t0_val;
   load.instr.tac_load.src_ptr = &addr2_val;
-  ret_instr.instr.tac_return.dst = &t0_val;
+  ret_instr.instr.tac_return.src = &t0_val;
 
   tac_link_instr(&copy_arr0, &addr_of);
   tac_link_instr(&addr_of, &copy_offset);
@@ -625,14 +602,8 @@ static bool tac_test_copy_to_offset(void) {
   tac_link_instr(&add_addr, &load);
   tac_link_instr(&load, &ret_instr);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &copy_arr0;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &copy_arr0, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -710,7 +681,6 @@ static bool tac_test_constant_folding(void) {
   struct TACInstr* folded_move = constant_fold(&instr);
   if (folded_move == NULL || folded_move == &instr ||
       folded_move->type != TACCOPY ||
-      folded_move->last != folded_move ||
       folded_move->instr.tac_copy.dst != &int_dst ||
       folded_move->instr.tac_copy.src != &variable_right) {
     printf("constant-folding test ALU_MOV failed: expected the second operand "
@@ -801,11 +771,10 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_cond_jump.src2 = &uint_zero;
   instr.instr.tac_cond_jump.condition = CondB;
   instr.instr.tac_cond_jump.label = &target_name;
-  return_after_jump.instr.tac_return.dst = &one;
+  return_after_jump.instr.tac_return.src = &one;
   tac_link_instr(&instr, &return_after_jump);
   struct TACInstr* folded_fallthrough = constant_fold(&instr);
-  if (folded_fallthrough != &return_after_jump ||
-      folded_fallthrough->last != &return_after_jump) {
+  if (folded_fallthrough != &return_after_jump) {
     printf("constant-folding test unsigned conditional jump failed: expected "
            "the never-taken jump to be removed\n");
     ok = false;
@@ -866,9 +835,9 @@ static bool tac_test_compare_bodies(void) {
   ok = tac_expect_body_comparison("empty bodies", NULL, NULL, true) && ok;
 
   tac_init_instr(&left, TACRETURN);
-  left.instr.tac_return.dst = &first_val;
+  left.instr.tac_return.src = &first_val;
   EXPECT_MATCH();
-  EXPECT_FIELD_DIFFERENT(instr.tac_return.dst, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_return.src, &second_val);
 
   tac_init_instr(&left, TACUNARY);
   left.instr.tac_unary.op = NEGATE;
@@ -1048,17 +1017,16 @@ static bool tac_test_cfg_rebuild(void) {
   cond_jump.instr.tac_cond_jump.condition = CondNE;
   cond_jump.instr.tac_cond_jump.label = &target_name;
   tac_init_instr(&return_false, TACRETURN);
-  return_false.instr.tac_return.dst = &zero;
+  return_false.instr.tac_return.src = &zero;
   tac_init_instr(&label, TACLABEL);
   label.instr.tac_label.label = &target_name;
   tac_init_instr(&return_true, TACRETURN);
-  return_true.instr.tac_return.dst = &one;
+  return_true.instr.tac_return.src = &one;
 
   copy.next = &cond_jump;
   cond_jump.next = &return_false;
   return_false.next = &label;
   label.next = &return_true;
-  copy.last = &return_true;
 
   struct CFG* cfg = build_cfg(&copy);
   if (cfg == NULL || cfg->num_nodes != kExpectedNodeCount) {
@@ -1074,7 +1042,7 @@ static bool tac_test_cfg_rebuild(void) {
     printf("CFG rebuild test failed: repeated rebuilds changed TAC instruction order\n");
     ok = false;
   }
-  if (first == second || first == cfg->nodes[1]->body) {
+  if (first == second || first == cfg->nodes[1]->body.head) {
     printf("CFG rebuild test failed: rebuilt TAC must use detached instruction copies\n");
     ok = false;
   }
@@ -1098,16 +1066,15 @@ static bool tac_test_cfg_rebuild(void) {
     instr_count++;
   }
   if (instr_count != kExpectedInstrCount || first == NULL ||
-      first->last != rebuilt_tail) {
-    printf("CFG rebuild test failed: expected %u instructions and a valid tail link\n",
+      rebuilt_tail == NULL || rebuilt_tail->next != NULL) {
+    printf("CFG rebuild test failed: expected %u instructions in a well-formed list\n",
            kExpectedInstrCount);
     ok = false;
   }
 
   for (unsigned i = 1; i + 1 < cfg->num_nodes; i++) {
     struct CFGNode* block = cfg->nodes[i];
-    if (block->last_instr == NULL || block->last_instr->next != NULL ||
-        block->body->last != block->last_instr) {
+    if (block->body.last == NULL || block->body.last->next != NULL) {
       printf("CFG rebuild test failed: rebuilding mutated basic block %u\n", i);
       ok = false;
     }
@@ -1117,10 +1084,237 @@ static bool tac_test_cfg_rebuild(void) {
   return ok;
 }
 
+/*
+Classify names by symbol-table storage: static vars are true,
+locals, static consts, functions, and missing names are false.
+*/
+static bool tac_test_is_static_var(void) {
+  const size_t kSymbolBuckets = 8;
+  struct Slice static_name = tac_slice_literal("static_x");
+  struct Slice local_name = tac_slice_literal("local_x");
+  struct Slice const_name = tac_slice_literal("const_x");
+  struct Slice fun_name = tac_slice_literal("fun_x");
+  struct Slice missing_name = tac_slice_literal("missing_x");
+  struct IdentAttr static_attrs = {STATIC_ATTR, true, STATIC, {NO_INIT, NULL}, NULL};
+  struct IdentAttr local_attrs = {LOCAL_ATTR, true, NONE, {NO_INIT, NULL}, NULL};
+  struct IdentAttr const_attrs = {CONST_ATTR, true, STATIC, {NO_INIT, NULL}, NULL};
+  struct IdentAttr fun_attrs = {FUN_ATTR, true, NONE, {NO_INIT, NULL}, NULL};
+  struct SymbolTable* saved_table = global_symbol_table;
+  bool ok = true;
+
+  arena_init(1024);
+  global_symbol_table = create_symbol_table(kSymbolBuckets);
+  symbol_table_insert(global_symbol_table, &static_name, &kTestIntType, &static_attrs);
+  symbol_table_insert(global_symbol_table, &local_name, &kTestIntType, &local_attrs);
+  symbol_table_insert(global_symbol_table, &const_name, &kTestIntType, &const_attrs);
+  symbol_table_insert(global_symbol_table, &fun_name, &kTestIntType, &fun_attrs);
+
+  if (!is_static_var(&static_name)) {
+    printf("is_static_var test failed: STATIC_ATTR variable should be static\n");
+    ok = false;
+  }
+  if (is_static_var(&local_name)) {
+    printf("is_static_var test failed: LOCAL_ATTR variable should not be static\n");
+    ok = false;
+  }
+  if (is_static_var(&const_name)) {
+    printf("is_static_var test failed: CONST_ATTR symbol should not be a static variable\n");
+    ok = false;
+  }
+  if (is_static_var(&fun_name)) {
+    printf("is_static_var test failed: function symbol should not be a static variable\n");
+    ok = false;
+  }
+  if (is_static_var(&missing_name)) {
+    printf("is_static_var test failed: missing symbol should not be static\n");
+    ok = false;
+  }
+  if (is_static_var(NULL)) {
+    printf("is_static_var test failed: NULL should not be static\n");
+    ok = false;
+  }
+
+  global_symbol_table = saved_table;
+  arena_destroy();
+  return ok;
+}
+
+/*
+Verify SliceList append, equality-based membership, and node copy sharing.
+*/
+static bool tac_test_slice_list(void) {
+  struct Slice first = tac_slice_literal("first");
+  struct Slice second = tac_slice_literal("second");
+  struct Slice first_again = tac_slice_literal("first");
+  struct Slice missing = tac_slice_literal("missing");
+  struct SliceList list = {0};
+  bool ok = true;
+
+  arena_init(1024);
+  slice_list_add(&list, &first);
+  slice_list_add(&list, &second);
+  slice_list_add(&list, NULL);
+
+  if (list.head == NULL || list.last == NULL || list.head->next != list.last ||
+      list.last->next != NULL) {
+    printf("slice_list test failed: expected two linked nodes after two adds\n");
+    ok = false;
+  }
+  if (!slice_list_contains(list, &first) || !slice_list_contains(list, &first_again) ||
+      !slice_list_contains(list, &second)) {
+    printf("slice_list test failed: added slices should be found by equality\n");
+    ok = false;
+  }
+  if (slice_list_contains(list, &missing) || slice_list_contains(list, NULL)) {
+    printf("slice_list test failed: missing and NULL slices should not be found\n");
+    ok = false;
+  }
+
+  struct SliceList copied = copy_slice_list(list);
+  if (copied.head == NULL || copied.head == list.head || copied.head->slice != list.head->slice ||
+      !slice_list_contains(copied, &second)) {
+    printf("slice_list test failed: copy should duplicate nodes and share slice pointers\n");
+    ok = false;
+  }
+
+  arena_destroy();
+  return ok;
+}
+
+/*
+Copy recording is type-safe for identical types, char/signed char, and
+constant 0 (including null pointers). Signedness-only matches such as
+int vs unsigned or unsigned vs pointer are not safe.
+*/
+static bool tac_test_copy_is_type_safe(void) {
+  struct Slice x_name = tac_slice_literal("x");
+  struct Slice y_name = tac_slice_literal("y");
+  struct Val int_x = tac_val_var(&x_name, &kTestIntType);
+  struct Val int_y = tac_val_var(&y_name, &kTestIntType);
+  struct Val uint_x = tac_val_var(&x_name, &kTestUintType);
+  struct Val char_x = tac_val_var(&x_name, &kTestCharType);
+  struct Val schar_y = tac_val_var(&y_name, &kTestScharType);
+  struct Val int_ptr = tac_val_var(&x_name, &kTestPtrType);
+  struct Val uint_ptr = tac_val_var(&y_name, &kTestUintPtrType);
+  struct Val zero_int = tac_val_const(0, &kTestIntType);
+  struct Val five_int = tac_val_const(5, &kTestIntType);
+  bool ok = true;
+
+  if (!copy_is_type_safe(&int_y, &int_x)) {
+    printf("copy_is_type_safe test failed: identical int types should be safe\n");
+    ok = false;
+  }
+  if (copy_is_type_safe(&int_y, &uint_x)) {
+    printf("copy_is_type_safe test failed: int to unsigned must not be recorded\n");
+    ok = false;
+  }
+  if (!copy_is_type_safe(&char_x, &schar_y)) {
+    printf("copy_is_type_safe test failed: char and signed char should be safe\n");
+    ok = false;
+  }
+  if (copy_is_type_safe(&int_ptr, &uint_x)) {
+    printf("copy_is_type_safe test failed: pointer to unsigned must not be recorded\n");
+    ok = false;
+  }
+  if (copy_is_type_safe(&int_ptr, &uint_ptr)) {
+    printf("copy_is_type_safe test failed: pointers to different types must not be recorded\n");
+    ok = false;
+  }
+  if (!copy_is_type_safe(&zero_int, &int_ptr)) {
+    printf("copy_is_type_safe test failed: constant 0 to a pointer should be safe\n");
+    ok = false;
+  }
+  if (copy_is_type_safe(&five_int, &int_ptr)) {
+    printf("copy_is_type_safe test failed: nonzero int to a pointer must not be recorded\n");
+    ok = false;
+  }
+  if (copy_is_type_safe(NULL, &int_x) || copy_is_type_safe(&int_y, NULL)) {
+    printf("copy_is_type_safe test failed: NULL operands should not be safe\n");
+    ok = false;
+  }
+  return ok;
+}
+
+/*
+Aliased vars include statics and address-taken locals, with each name once.
+A second GetAddress of the same local, and GetAddress of a static already
+taken from the symbol table, must not create duplicates. Locals that are
+not address-taken stay out of the list.
+*/
+static bool tac_test_get_aliased_vars(void) {
+  const size_t kSymbolBuckets = 8;
+  struct Slice static_name = tac_slice_literal("static_x");
+  struct Slice local_name = tac_slice_literal("local_x");
+  struct Slice other_local = tac_slice_literal("other_local");
+  struct IdentAttr static_attrs = {STATIC_ATTR, true, STATIC, {NO_INIT, NULL}, NULL};
+  struct IdentAttr local_attrs = {LOCAL_ATTR, true, NONE, {NO_INIT, NULL}, NULL};
+  struct Val local_val = tac_val_var(&local_name, &kTestIntType);
+  struct Val static_val = tac_val_var(&static_name, &kTestIntType);
+  struct Val ptr_val = tac_val_var(&other_local, &kTestPtrType);
+  struct TACInstr get_local;
+  struct TACInstr get_local_again;
+  struct TACInstr get_static;
+  struct SymbolTable* saved_table = global_symbol_table;
+  bool ok = true;
+
+  arena_init(1024);
+  global_symbol_table = create_symbol_table(kSymbolBuckets);
+  symbol_table_insert(global_symbol_table, &static_name, &kTestIntType, &static_attrs);
+  symbol_table_insert(global_symbol_table, &local_name, &kTestIntType, &local_attrs);
+  symbol_table_insert(global_symbol_table, &other_local, &kTestPtrType, &local_attrs);
+
+  tac_init_instr(&get_local, TACGET_ADDRESS);
+  get_local.instr.tac_get_address.dst = &ptr_val;
+  get_local.instr.tac_get_address.src = &local_val;
+  tac_init_instr(&get_local_again, TACGET_ADDRESS);
+  get_local_again.instr.tac_get_address.dst = &ptr_val;
+  get_local_again.instr.tac_get_address.src = &local_val;
+  tac_init_instr(&get_static, TACGET_ADDRESS);
+  get_static.instr.tac_get_address.dst = &ptr_val;
+  get_static.instr.tac_get_address.src = &static_val;
+  tac_link_instr(&get_local, &get_local_again);
+  tac_link_instr(&get_local_again, &get_static);
+
+  struct SliceList aliased = get_aliased_vars(&get_local);
+  unsigned count = 0;
+  for (struct SliceListNode* node = aliased.head; node != NULL; node = node->next) {
+    count++;
+  }
+
+  if (count != 2) {
+    printf("get_aliased_vars test failed: expected 2 unique names, got %u\n", count);
+    ok = false;
+  }
+  if (!slice_list_contains(aliased, &static_name)) {
+    printf("get_aliased_vars test failed: static variables must be treated as aliased\n");
+    ok = false;
+  }
+  if (!slice_list_contains(aliased, &local_name)) {
+    printf("get_aliased_vars test failed: address-taken locals must be treated as aliased\n");
+    ok = false;
+  }
+  if (slice_list_contains(aliased, &other_local)) {
+    printf("get_aliased_vars test failed: locals that are not address-taken should not be aliased\n");
+    ok = false;
+  }
+
+  global_symbol_table = saved_table;
+  arena_destroy();
+  return ok;
+}
+
 // Run all TAC interpreter tests.
 // Returns 0 on success and non-zero on failure.
 int main(void) {
   bool ok = true;
+  printf("- tac_test_copy_is_type_safe\n");
+  ok = tac_test_copy_is_type_safe() && ok;
+  printf("- tac_test_get_aliased_vars\n");
+  ok = tac_test_get_aliased_vars() && ok;
+  printf("- tac_test_slice_list\n");
+  ok = tac_test_slice_list() && ok;
+  printf("- tac_test_is_static_var\n");
+  ok = tac_test_is_static_var() && ok;
   printf("- tac_test_return_const\n");
   ok = tac_test_return_const() && ok;
   printf("- tac_test_arithmetic\n");

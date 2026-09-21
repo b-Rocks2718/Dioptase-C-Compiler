@@ -73,19 +73,54 @@ enum AsmTopLevelType {
   ASM_ALIGN,
 };
 
-// Describe an ASM function or static data top-level item.
-struct AsmTopLevel {
-  enum AsmTopLevelType type;
+// Store an ASM function name, linkage, body, and debug locals.
+struct AsmFunc {
   struct Slice* name;
   bool global;
+  struct AsmInstr* body;
+  struct DebugLocal* locals;
+  size_t num_locals;
+};
 
-  struct AsmInstr* body; // for Func
-  struct DebugLocal* locals; // for Func debug output
-  size_t num_locals; // for Func debug output
+// Store a file-scope static variable and its initializer.
+struct AsmStaticVar {
+  struct Slice* name;
+  bool global;
+  int alignment;
+  struct InitList* init_values;
+};
 
-  int alignment; // for StaticVar
-  struct InitList* init_values; // for StaticVar
+// Store a file-scope static constant and its initializer.
+struct AsmStaticConst {
+  struct Slice* name;
+  bool global;
+  int alignment;
+  struct InitList* init_values;
+};
 
+// Store an assembler section directive name.
+struct AsmSection {
+  struct Slice* name;
+};
+
+// Store an assembler alignment directive.
+struct AsmAlign {
+  int alignment;
+};
+
+// Select the concrete ASM top-level payload identified by AsmTopLevelType.
+union AsmTopLevelVariant {
+  struct AsmFunc asm_func;
+  struct AsmStaticVar asm_static_var;
+  struct AsmStaticConst asm_static_const;
+  struct AsmSection asm_section;
+  struct AsmAlign asm_align;
+};
+
+// Link one ASM top-level item with its kind and list pointer.
+struct AsmTopLevel {
+  enum AsmTopLevelType type;
+  union AsmTopLevelVariant top;
   struct AsmTopLevel* next;
 };
 
@@ -110,24 +145,125 @@ enum AsmInstrType {
   ASM_EXTEND,
 };
 
-// Store an ASM opcode and its variant-specific operands.
-struct AsmInstr {
-  enum AsmInstrType type;
+// Store source and destination operands for a move.
+struct AsmMov {
+  struct Operand* dst;
+  struct Operand* src;
+};
 
-  enum UnOp unary_op; // for Unary
-  enum ALUOp alu_op;     // for Binary
-  enum TACCondition cond;   // for CondJump
+// Store unary operation, destination, and source operands.
+struct AsmUnary {
+  enum UnOp op;
+  struct Operand* dst;
+  struct Operand* src;
+};
 
-  size_t size; // for truncate/extend
-
+// Store ALU operation and its destination/source operands.
+struct AsmBinary {
+  enum ALUOp alu_op;
   struct Operand* dst;
   struct Operand* src1;
-  struct Operand* src2; // for binary
+  struct Operand* src2;
+};
 
-  struct Slice* label; // for Jump, CondJump, Label
+// Store the two operands compared by a compare instruction.
+struct AsmCmp {
+  struct Operand* src1;
+  struct Operand* src2;
+};
 
-  const char* loc; // for debug line markers
+// Store the value pushed onto the stack.
+struct AsmPush {
+  struct Operand* src;
+};
 
+// Store a direct call target label.
+struct AsmCall {
+  struct Slice* label;
+};
+
+// Store an indirect call target operand.
+struct AsmIndirectCall {
+  struct Operand* src;
+};
+
+// Store an unconditional jump target label.
+struct AsmJump {
+  struct Slice* label;
+};
+
+// Store a branch condition and target label.
+struct AsmCondJump {
+  enum TACCondition cond;
+  struct Slice* label;
+};
+
+// Store the label defined by this instruction.
+struct AsmLabel {
+  struct Slice* label;
+};
+
+// Store destination and source for an address calculation.
+struct AsmGetAddress {
+  struct Operand* dst;
+  struct Operand* src;
+};
+
+// Store destination value and source address for a load.
+struct AsmLoad {
+  struct Operand* dst;
+  struct Operand* src;
+};
+
+// Store destination address and source value for a store.
+struct AsmStore {
+  struct Operand* dst;
+  struct Operand* src;
+};
+
+// Store the source location associated with a debug boundary.
+struct AsmBoundary {
+  const char* loc;
+};
+
+// Describe narrowing conversion from src to target size.
+struct AsmTrunc {
+  struct Operand* dst;
+  struct Operand* src;
+  size_t size;
+};
+
+// Describe widening conversion from src size to destination type.
+struct AsmExtend {
+  struct Operand* dst;
+  struct Operand* src;
+  size_t size;
+};
+
+// Select the concrete ASM instruction payload identified by AsmInstrType.
+union AsmInstrVariant {
+  struct AsmMov asm_mov;
+  struct AsmUnary asm_unary;
+  struct AsmBinary asm_binary;
+  struct AsmCmp asm_cmp;
+  struct AsmPush asm_push;
+  struct AsmCall asm_call;
+  struct AsmIndirectCall asm_indirect_call;
+  struct AsmJump asm_jump;
+  struct AsmCondJump asm_cond_jump;
+  struct AsmLabel asm_label;
+  struct AsmGetAddress asm_get_address;
+  struct AsmLoad asm_load;
+  struct AsmStore asm_store;
+  struct AsmBoundary asm_boundary;
+  struct AsmTrunc asm_trunc;
+  struct AsmExtend asm_extend;
+};
+
+// Link one ASM instruction with the next instruction in its list.
+struct AsmInstr {
+  enum AsmInstrType type;
+  union AsmInstrVariant instr;
   struct AsmInstr* next;
 };
 
@@ -181,14 +317,54 @@ static const enum Reg BP = R30; // base pointer register
 static const enum Reg SP = R31; // stack pointer register
 static const enum Reg RA = R29; // return address register
 
-// Store an ASM operand kind, type, register, literal, or symbol payload.
+// Immediate integer operand.
+struct OperandLit {
+  int value;
+};
+
+// Direct architectural register operand.
+struct OperandReg {
+  enum Reg reg;
+};
+
+// Compiler pseudo-register identified by name.
+struct OperandPseudo {
+  struct Slice* name;
+};
+
+// Named object accessed at a byte offset (aggregates and stack slots).
+struct OperandPseudoMem {
+  struct Slice* name;
+  int offset;
+};
+
+// Address formed from a base register and a displacement.
+struct OperandMemory {
+  enum Reg base;
+  int offset;
+};
+
+// Address formed from a data label and an optional displacement.
+struct OperandData {
+  struct Slice* label;
+  int offset;
+};
+
+// Select the concrete operand payload identified by OperandType.
+union OperandVariant {
+  struct OperandLit lit;
+  struct OperandReg reg;
+  struct OperandPseudo pseudo;
+  struct OperandPseudoMem pseudo_mem;
+  struct OperandMemory memory;
+  struct OperandData data;
+};
+
+// Store an ASM operand kind, assembly type, and the payload for that kind.
 struct Operand {
   enum OperandType type;
   struct AsmType* asm_type;
-  
-  enum Reg reg;          // for Reg / Memory
-  int lit_value;        // for Lit / PsuedoMem / Memory / Data
-  struct Slice* pseudo;  // for Pseudo
+  union OperandVariant op;
 };
 
 // Map one pseudo-register name to its allocated location.

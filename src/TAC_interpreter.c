@@ -516,15 +516,57 @@ static struct TacFunctionEntry* tac_function_table_find_address(struct TacFuncti
   return NULL;
 }
 
+// Return the name stored in a TAC top-level variant.
+// Returns NULL if top is NULL or the type is unrecognized.
+static struct Slice* tac_top_name(const struct TopLevel* top) {
+  if (top == NULL) {
+    return NULL;
+  }
+  switch (top->type) {
+    case FUNC:
+      return top->top.tac_func.name;
+    case STATIC_VAR:
+      return top->top.tac_static_var.name;
+    case STATIC_CONST:
+      return top->top.tac_static_const.name;
+  }
+  return NULL;
+}
+
+// Return static-variable or static-constant payload fields.
+// Returns true if top is a static item and fills the out parameters.
+static bool tac_top_static_fields(const struct TopLevel* top,
+                                  struct Slice** name,
+                                  struct Type** var_type,
+                                  struct InitList** init_values) {
+  if (top == NULL) {
+    return false;
+  }
+  if (top->type == STATIC_VAR) {
+    *name = top->top.tac_static_var.name;
+    *var_type = top->top.tac_static_var.var_type;
+    *init_values = top->top.tac_static_var.init_values;
+    return true;
+  }
+  if (top->type == STATIC_CONST) {
+    *name = top->top.tac_static_const.name;
+    *var_type = top->top.tac_static_const.var_type;
+    *init_values = top->top.tac_static_const.init_values;
+    return true;
+  }
+  return false;
+}
+
 // Register a function in the table and return its synthetic address.
 // Returns the assigned synthetic address for func.
 // Each function name is registered at most once.
 static int tac_function_table_register(struct TacFunctionTable* table,
                                        const struct TopLevel* func) {
-  if (func == NULL || func->name == NULL) {
+  if (func == NULL || func->type != FUNC || func->top.tac_func.name == NULL) {
     tac_interp_error("attempted to register a null function in TAC function table");
   }
-  struct TacFunctionEntry* existing = tac_function_table_find_name(table, func->name);
+  struct Slice* func_name = func->top.tac_func.name;
+  struct TacFunctionEntry* existing = tac_function_table_find_name(table, func_name);
   if (existing != NULL) {
     return existing->address;
   }
@@ -533,7 +575,7 @@ static int tac_function_table_register(struct TacFunctionTable* table,
   }
   tac_function_table_reserve(table);
   struct TacFunctionEntry* entry = &table->entries[table->count++];
-  entry->name = func->name;
+  entry->name = func_name;
   entry->func = func;
   entry->address = table->next_address;
   table->next_address += kTacInterpWordBytes;
@@ -915,25 +957,26 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
   if (func == NULL || func->type != FUNC) {
     tac_interp_error("attempted to call a non-function top-level entry");
   }
-  if (func->num_params != num_args) {
+  const struct TACFunc* fn = &func->top.tac_func;
+  if (fn->num_params != num_args) {
     tac_interp_error("argument count mismatch calling %.*s (expected %zu, got %zu)",
-                     (int)func->name->len, func->name->start,
-                     func->num_params, num_args);
+                     (int)fn->name->len, fn->name->start,
+                     fn->num_params, num_args);
   }
 
   struct TacFrame frame;
-  tac_frame_init(&frame, interp, func->body);
+  tac_frame_init(&frame, interp, fn->body);
 
   for (size_t i = 0; i < num_args; i++) {
-    tac_write_var(interp, &frame, func->params[i], args[i]);
+    tac_write_var(interp, &frame, fn->params[i], args[i]);
   }
 
-  struct TACInstr* pc = func->body;
+  struct TACInstr* pc = fn->body;
   while (pc != NULL) {
     switch (pc->type) {
       case TACRETURN: {
-        uint64_t value = pc->instr.tac_return.dst
-                             ? tac_eval_val(interp, &frame, pc->instr.tac_return.dst)
+        uint64_t value = pc->instr.tac_return.src
+                             ? tac_eval_val(interp, &frame, pc->instr.tac_return.src)
                              : 0;
         tac_frame_destroy(&frame);
         return value;
@@ -991,7 +1034,7 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
         }
         const struct TopLevel* callee = NULL;
         for (const struct TopLevel* cur = interp->prog->head; cur != NULL; cur = cur->next) {
-          if (cur->type == FUNC && compare_slice_to_slice(cur->name, pc->instr.tac_call.func_name)) {
+          if (cur->type == FUNC && compare_slice_to_slice(cur->top.tac_func.name, pc->instr.tac_call.func_name)) {
             callee = cur;
             break;
           }
@@ -1172,7 +1215,7 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
 
   tac_frame_destroy(&frame);
   tac_interp_error("function %.*s terminated without TACRETURN",
-                   (int)func->name->len, func->name->start);
+                   (int)fn->name->len, fn->name->start);
   return 0;
 }
 
@@ -1180,32 +1223,38 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
 static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg* prog) {
   const struct TopLevel* cur = (prog->statics != NULL) ? prog->statics : prog->head;
   for (; cur != NULL; cur = cur->next) {
-    if (cur->type != STATIC_VAR && cur->type != STATIC_CONST) {
+    struct Slice* name = NULL;
+    struct Type* var_type = NULL;
+    struct InitList* init_values = NULL;
+    if (!tac_top_static_fields(cur, &name, &var_type, &init_values)) {
       continue;
     }
-    size_t slots = tac_slots_for_type(cur->var_type);
-    (void)tac_bindings_get_or_add_range(&interp->globals, &interp->memory, cur->name, slots);
+    size_t slots = tac_slots_for_type(var_type);
+    (void)tac_bindings_get_or_add_range(&interp->globals, &interp->memory, name, slots);
   }
 
   for (cur = (prog->statics != NULL) ? prog->statics : prog->head; cur != NULL; cur = cur->next) {
-    if (cur->type != STATIC_VAR && cur->type != STATIC_CONST) {
+    struct Slice* name = NULL;
+    struct Type* var_type = NULL;
+    struct InitList* init_values = NULL;
+    if (!tac_top_static_fields(cur, &name, &var_type, &init_values)) {
       continue;
     }
-    struct TacBinding* binding = tac_bindings_find(&interp->globals, cur->name);
+    struct TacBinding* binding = tac_bindings_find(&interp->globals, name);
     if (binding == NULL) {
       tac_interp_error("missing static binding for %.*s",
-                       (int)cur->name->len, cur->name->start);
+                       (int)name->len, name->start);
     }
     int base_addr = binding->address;
-    size_t total_bytes = get_type_size(cur->var_type);
+    size_t total_bytes = get_type_size(var_type);
     if (total_bytes == 0) {
       tac_interp_error("zero-sized static allocation for %.*s",
-                       (int)cur->name->len, cur->name->start);
+                       (int)name->len, name->start);
     }
-    size_t elem_size = tac_base_element_size(cur->var_type);
+    size_t elem_size = tac_base_element_size(var_type);
     if (elem_size == 0) {
       tac_interp_error("unknown static element size for %.*s",
-                       (int)cur->name->len, cur->name->start);
+                       (int)name->len, name->start);
     }
 
     // Zero-fill the full allocation first to handle implicit zero init.
@@ -1213,13 +1262,13 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
       tac_memory_store(&interp->memory, base_addr + (int)offset, 0);
     }
 
-    struct InitList* init = cur->init_values;
+    struct InitList* init = init_values;
     size_t offset = 0;
     while (init != NULL) {
       struct StaticInit* init_value = init->value;
       if (init_value == NULL) {
         tac_interp_error("null static initializer for %.*s",
-                         (int)cur->name->len, cur->name->start);
+                         (int)name->len, name->start);
       }
 
       if (init_value->int_type == ZERO_INIT) {
@@ -1236,7 +1285,7 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
         const struct Slice* str = init_value->value.string;
         if (str == NULL) {
           tac_interp_error("null string initializer for %.*s",
-                           (int)cur->name->len, cur->name->start);
+                           (int)name->len, name->start);
         }
         for (size_t i = 0; i < str->len; i++) {
           unsigned char byte = (unsigned char)str->start[i];
@@ -1251,7 +1300,7 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
         struct Slice* target = init_value->value.pointer;
         if (target == NULL) {
           tac_interp_error("null pointer initializer for %.*s",
-                           (int)cur->name->len, cur->name->start);
+                           (int)name->len, name->start);
         }
         struct TacBinding* target_binding = tac_bindings_find(&interp->globals, target);
         if (target_binding == NULL) {
@@ -1269,7 +1318,7 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
       if (init_size == 0) {
         tac_interp_error("unsupported static init type %d for %.*s",
                          (int)init_value->int_type,
-                         (int)cur->name->len, cur->name->start);
+                         (int)name->len, name->start);
       }
       tac_memory_store(&interp->memory, base_addr + (int)offset, init_value->value.num);
       offset += init_size;
@@ -1282,7 +1331,7 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
 // Returns the matching function node or NULL if missing.
 static const struct TopLevel* tac_find_function(const struct TACProg* prog, const struct Slice* name) {
   for (const struct TopLevel* cur = prog->head; cur != NULL; cur = cur->next) {
-    if (cur->type == FUNC && compare_slice_to_slice(cur->name, name)) {
+    if (cur->type == FUNC && compare_slice_to_slice(cur->top.tac_func.name, name)) {
       return cur;
     }
   }
@@ -1293,31 +1342,40 @@ static const struct TopLevel* tac_find_function(const struct TACProg* prog, cons
 static void tac_report_missing_main(const struct TACProg* prog) {
   fprintf(stderr, "TAC Interpreter Error: no main function found in TAC program\n");
   fprintf(stderr, "TAC Interpreter Error: expected main length %zu\n", kTacInterpMainNameLen);
-  if (prog->head != NULL) {
+  struct Slice* head_name = tac_top_name(prog->head);
+  if (head_name != NULL) {
     fprintf(stderr, "TAC Interpreter Error: head=%.*s(len=%zu)\n",
-            (int)prog->head->name->len,
-            prog->head->name->start,
-            prog->head->name->len);
+            (int)head_name->len,
+            head_name->start,
+            head_name->len);
   }
-  if (prog->tail != NULL) {
+  struct Slice* tail_name = tac_top_name(prog->tail);
+  if (prog->tail != NULL && tail_name != NULL) {
     fprintf(stderr, "TAC Interpreter Error: tail=%.*s(len=%zu) type=%d\n",
-            (int)prog->tail->name->len,
-            prog->tail->name->start,
-            prog->tail->name->len,
+            (int)tail_name->len,
+            tail_name->start,
+            tail_name->len,
             (int)prog->tail->type);
   }
   for (const struct TopLevel* cur = prog->head; cur != NULL; cur = cur->next) {
-    fprintf(stderr, "TAC Interpreter Error: node type=%d name=%.*s(len=%zu)\n",
-            (int)cur->type,
-            (int)cur->name->len,
-            cur->name->start,
-            cur->name->len);
+    struct Slice* cur_name = tac_top_name(cur);
+    if (cur_name == NULL) {
+      fprintf(stderr, "TAC Interpreter Error: node type=%d name=<null>\n",
+              (int)cur->type);
+    } else {
+      fprintf(stderr, "TAC Interpreter Error: node type=%d name=%.*s(len=%zu)\n",
+              (int)cur->type,
+              (int)cur_name->len,
+              cur_name->start,
+              cur_name->len);
+    }
   }
   fprintf(stderr, "TAC Interpreter Error: available functions:");
   bool found = false;
   for (const struct TopLevel* cur = prog->head; cur != NULL; cur = cur->next) {
     if (cur->type == FUNC) {
-      fprintf(stderr, " %.*s(len=%zu)", (int)cur->name->len, cur->name->start, cur->name->len);
+      struct Slice* cur_name = cur->top.tac_func.name;
+      fprintf(stderr, " %.*s(len=%zu)", (int)cur_name->len, cur_name->start, cur_name->len);
       found = true;
     }
   }
@@ -1347,15 +1405,15 @@ int tac_interpret_prog(const struct TACProg* prog) {
   if (main_func == NULL) {
     if (prog->tail != NULL &&
         prog->tail->type == FUNC &&
-        compare_slice_to_slice(prog->tail->name, &main_name)) {
+        compare_slice_to_slice(prog->tail->top.tac_func.name, &main_name)) {
       main_func = prog->tail;
     } else {
       tac_report_missing_main(prog);
     }
   }
-  if (main_func->num_params != 0) {
+  if (main_func->top.tac_func.num_params != 0) {
     tac_interp_error("main function expects %zu parameters; interpreter requires 0",
-                     main_func->num_params);
+                     main_func->top.tac_func.num_params);
   }
 
   tac_init_globals(&interp, prog);

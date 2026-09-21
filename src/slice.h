@@ -27,4 +27,27 @@ void print_slice_with_escapes(struct Slice* slice);
 
 size_t hash_slice(const struct Slice* key);
 
+// One node in an insertion-ordered list of slices.
+struct SliceListNode {
+  struct Slice* slice;
+  struct SliceListNode* next;
+};
+
+// Linked list of slices with O(1) append via last.
+// Empty lists have head == last == NULL. Nodes store slice pointers
+// and do not copy slice contents.
+struct SliceList {
+  struct SliceListNode* head;
+  struct SliceListNode* last;
+};
+
+// Append slice onto list. A NULL slice is ignored.
+void slice_list_add(struct SliceList* list, struct Slice* slice);
+
+// Return true if list contains a slice equal to slice.
+bool slice_list_contains(struct SliceList list, struct Slice* slice);
+
+// Copy list nodes, sharing the original slice pointers.
+struct SliceList copy_slice_list(struct SliceList src);
+
 #endif // SLICE_H

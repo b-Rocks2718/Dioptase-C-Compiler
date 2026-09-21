@@ -3,6 +3,7 @@
 
 #include "AST.h"
 #include "typechecking.h"
+#include "copy_prop.h"
 
 #include <stdint.h>
 
@@ -20,19 +21,42 @@ enum TopLevelType {
   STATIC_CONST,
 };
 
-// Describe one TAC global, function, or static top-level item.
-struct TopLevel {
-  enum TopLevelType type;
+// Store function name, linkage, parameters, and TAC body.
+struct TACFunc {
   struct Slice* name;
   bool global;
+  struct TACInstr* body;
+  struct Slice** params;
+  size_t num_params;
+};
 
-  struct TACInstr* body; // for Func
-  struct Slice** params; // for Func
-  size_t num_params;    // for Func
-  
-  struct Type* var_type; // for StaticVar and StaticConst
-  struct InitList* init_values; // for StaticVar and StaticConst
-  
+// Store a file-scope static variable and its initializer.
+struct TACStaticVar {
+  struct Slice* name;
+  bool global;
+  struct Type* var_type;
+  struct InitList* init_values;
+};
+
+// Store a file-scope static constant and its initializer.
+struct TACStaticConst {
+  struct Slice* name;
+  bool global;
+  struct Type* var_type;
+  struct InitList* init_values;
+};
+
+// Select the concrete TAC top-level payload identified by TopLevelType.
+union TopLevelVariant {
+  struct TACFunc tac_func;
+  struct TACStaticVar tac_static_var;
+  struct TACStaticConst tac_static_const;
+};
+
+// Link one TAC top-level item with its kind and list pointer.
+struct TopLevel {
+  enum TopLevelType type;
+  union TopLevelVariant top;
   struct TopLevel* next;
 };
 
@@ -92,7 +116,7 @@ enum TACCondition {
 
 // Store the optional return operand.
 struct TACReturn {
-  struct Val* dst;
+  struct Val* src;
 };
 
 // Store unary operation, destination, and source operands.
@@ -243,12 +267,21 @@ union TACInstrVariant {
   struct TACExtend tac_extend;
 };
 
-// Link one TAC instruction with its kind and list-tail pointer.
+// Link one TAC instruction with the next instruction in its list.
+// reaching_copies is empty until copy-propagation analysis fills it.
 struct TACInstr {
   enum TACInstrType type;
   union TACInstrVariant instr;
+  struct ReachingCopyList reaching_copies;
   struct TACInstr* next;
-  struct TACInstr* last; // for convenience in building lists
+};
+
+// Own a TAC instruction list with O(1) append via an explicit tail pointer.
+// Empty lists have head == last == NULL. Non-empty lists have last as the
+// final node of the head-linked chain (last->next == NULL).
+struct TACInstrList {
+  struct TACInstr* head;
+  struct TACInstr* last;
 };
 
 // Classify whether an expression result is a value or aggregate location.
@@ -278,49 +311,49 @@ struct TopLevel* symbol_to_TAC(struct SymbolEntry* symbol);
 
 struct TopLevel* func_to_TAC(struct FunctionDclr* declaration);
 
-struct TACInstr* block_to_TAC(struct Slice* func_name, struct Block* block);
+struct TACInstrList block_to_TAC(struct Slice* func_name, struct Block* block);
 
-struct TACInstr* local_dclr_to_TAC(struct Slice* func_name, struct Declaration* dclr);
+struct TACInstrList local_dclr_to_TAC(struct Slice* func_name, struct Declaration* dclr);
 
-struct TACInstr* var_dclr_to_TAC(struct Slice* func_name, struct Declaration* dclr);
+struct TACInstrList var_dclr_to_TAC(struct Slice* func_name, struct Declaration* dclr);
 
-struct TACInstr* stmt_to_TAC(struct Slice* func_name, struct Statement* stmt);
+struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt);
 
-struct TACInstr* expr_to_TAC_convert(struct Slice* func_name, struct Expr* expr, struct Val* out_val);
+struct TACInstrList expr_to_TAC_convert(struct Slice* func_name, struct Expr* expr, struct Val* out_val);
 
-struct TACInstr* expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct ExprResult* result);
+struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct ExprResult* result);
 
-struct TACInstr* if_to_TAC(struct Slice* func_name, struct Expr* condition, struct Statement* if_stmt);
+struct TACInstrList if_to_TAC(struct Slice* func_name, struct Expr* condition, struct Statement* if_stmt);
 
-struct TACInstr* if_else_to_TAC(struct Slice* func_name, struct Expr* condition, struct Statement* if_stmt, struct Statement* else_stmt);
+struct TACInstrList if_else_to_TAC(struct Slice* func_name, struct Expr* condition, struct Statement* if_stmt, struct Statement* else_stmt);
 
-struct TACInstr* cases_to_TAC(struct Slice* label, struct CaseList* cases, struct Val* rslt);
+struct TACInstrList cases_to_TAC(struct Slice* func_name, struct Slice* label, struct CaseList* cases, struct Val* rslt);
 
-struct TACInstr* relational_to_TAC(struct Slice* func_name,
+struct TACInstrList relational_to_TAC(struct Slice* func_name,
                                           struct Expr* expr,
                                           enum BinOp op,
                                           struct Expr* left,
                                           struct Expr* right,
                                           struct ExprResult* result);
 
-struct TACInstr* args_to_TAC(struct Slice* func_name,
+struct TACInstrList args_to_TAC(struct Slice* func_name,
                                     struct ArgList* args,
                                     struct Val** out_args,
                                     size_t* out_count);
 
-struct TACInstr* for_init_to_TAC(struct Slice* func_name, struct ForInit* init_);
+struct TACInstrList for_init_to_TAC(struct Slice* func_name, struct ForInit* init_);
 
-struct TACInstr* while_to_TAC(struct Slice* func_name,
+struct TACInstrList while_to_TAC(struct Slice* func_name,
                                      struct Expr* condition,
                                      struct Statement* body,
                                      struct Slice* label);
 
-struct TACInstr* do_while_to_TAC(struct Slice* func_name,
+struct TACInstrList do_while_to_TAC(struct Slice* func_name,
                                         struct Statement* body,
                                         struct Expr* condition,
                                         struct Slice* label);
 
-struct TACInstr* for_to_TAC(struct Slice* func_name,
+struct TACInstrList for_to_TAC(struct Slice* func_name,
                                    struct ForInit* init_,
                                    struct Expr* condition,
                                    struct Expr* end,
@@ -330,9 +363,22 @@ struct TACInstr* for_to_TAC(struct Slice* func_name,
 
 // ----- Utility functions -----
 
-void concat_TAC_instrs(struct TACInstr** old_instrs, struct TACInstr* new_instrs);
+// Build a one-element list, or an empty list if instr is NULL.
+struct TACInstrList tac_instr_list(struct TACInstr* instr);
+
+// Append src onto dst. Empty src is a no-op; empty dst becomes src.
+void concat_TAC_instrs(struct TACInstrList* dst, struct TACInstrList src);
 
 struct Val* make_temp(struct Slice* func_name, struct Type* type);
+
+// Return true if name refers to a variable with static storage duration.
+// Temps, function symbols, static constants, and missing symbol-table
+// entries are not static variables.
+bool is_static_var(struct Slice* name);
+
+// returns true for signed long, int, char
+// returns false for unsigned long, int, char, and pointer types
+bool tac_signedness(struct Type* type);
 
 void print_static_init(const struct InitList* init);
 
@@ -355,8 +401,6 @@ int tac_interpret_prog(const struct TACProg* prog);
 static void tac_error_at(const char* loc, const char* fmt, ...);
 
 static struct TACInstr* tac_instr_create(enum TACInstrType type);
-
-static struct TACInstr* tac_find_last(struct TACInstr* instr);
 
 static struct Val* tac_make_const(uint64_t value, struct Type* type);
 

@@ -14,8 +14,9 @@ static struct CFGNode* make_start_node(void) {
   node->predecessors.tail = NULL;
   node->successors.head = NULL;
   node->successors.tail = NULL;
-  node->body = NULL;
-  node->last_instr = NULL;
+  node->body = tac_instr_list(NULL);
+  node->reaching_copies.head = NULL;
+  node->reaching_copies.last = NULL;
   node->marked = false;
   return node;
 }
@@ -28,8 +29,9 @@ static struct CFGNode* make_exit_node(void) {
   node->predecessors.tail = NULL;
   node->successors.head = NULL;
   node->successors.tail = NULL;
-  node->body = NULL;
-  node->last_instr = NULL;
+  node->body = tac_instr_list(NULL);
+  node->reaching_copies.head = NULL;
+  node->reaching_copies.last = NULL;
   node->marked = false;
   return node;
 }
@@ -42,8 +44,9 @@ static struct CFGNode* make_basic_block_node(void) {
   node->predecessors.tail = NULL;
   node->successors.head = NULL;
   node->successors.tail = NULL;
-  node->body = NULL;
-  node->last_instr = NULL;
+  node->body = tac_instr_list(NULL);
+  node->reaching_copies.head = NULL;
+  node->reaching_copies.last = NULL;
   node->marked = false;
   return node;
 }
@@ -54,8 +57,9 @@ static struct TACInstr* copy_instr(const struct TACInstr* instr) {
   // links belong exclusively to the new instruction list.
   struct TACInstr* instr_copy = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
   *instr_copy = *instr;
+  instr_copy->reaching_copies.head = NULL;
+  instr_copy->reaching_copies.last = NULL;
   instr_copy->next = NULL;
-  instr_copy->last = instr_copy;
   return instr_copy;
 }
 
@@ -70,14 +74,7 @@ static void append_instr(struct CFGNode* block, const struct TACInstr* instr) {
   }
 
   struct TACInstr* instr_copy = copy_instr(instr);
-
-  if (block->body == NULL) {
-    block->body = instr_copy;
-  } else {
-    block->last_instr->next = instr_copy;
-    block->body->last = instr_copy;
-  }
-  block->last_instr = instr_copy;
+  concat_TAC_instrs(&block->body, tac_instr_list(instr_copy));
 }
 
 // Allocate an empty CFGNodeList.
@@ -96,10 +93,25 @@ static struct CFGNodeEntry* make_cfg_node_entry(struct CFGNode* node) {
   return entry;
 }
 
-// append a CFGNode to a CFGNodeList
-static void append_cfg_node(struct CFGNodeList* list, struct CFGNode* node) {
+// Return whether list contains no nodes.
+bool cfg_node_list_is_empty(const struct CFGNodeList* list) {
+  return list->head == NULL;
+}
+
+// Return whether list holds node. Membership is pointer identity.
+bool cfg_node_list_contains(const struct CFGNodeList* list, const struct CFGNode* node) {
+  for (const struct CFGNodeEntry* entry = list->head; entry != NULL; entry = entry->next) {
+    if (entry->node == node) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Append node at the end of list, keeping earlier entries in order.
+void cfg_node_list_append(struct CFGNodeList* list, struct CFGNode* node) {
   struct CFGNodeEntry* entry = make_cfg_node_entry(node);
-  if (list->tail == NULL) {
+  if (cfg_node_list_is_empty(list)) {
     list->head = entry;
     list->tail = entry;
   } else {
@@ -108,23 +120,32 @@ static void append_cfg_node(struct CFGNodeList* list, struct CFGNode* node) {
   }
 }
 
+// Remove the oldest node. Append adds at the tail, so repeated removal drains in insertion order.
+// An empty list returns NULL and is left with both head and tail NULL.
+struct CFGNode* cfg_node_list_remove_front(struct CFGNodeList* list) {
+  if (cfg_node_list_is_empty(list)) {
+    return NULL;
+  }
+  struct CFGNodeEntry* entry = list->head;
+  list->head = entry->next;
+  if (list->head == NULL) {
+    list->tail = NULL;
+  }
+  return entry->node;
+}
+
 // Skip CFG nodes that already have predecessor/successor links.
 static bool nodes_already_linked(const struct CFGNode* parent,
                                  const struct CFGNode* child) {
-  for (struct CFGNodeEntry* entry = parent->successors.head; entry != NULL; entry = entry->next) {
-    if (entry->node == child) {
-      return true;
-    }
-  }
-  return false;
+  return cfg_node_list_contains(&parent->successors, child);
 }
 
 // Link two CFGNodes bidirectionally:
 // `parent` a predecessor of `child` and `child` a successor of `parent`
 static void link_nodes(struct CFGNode* parent, struct CFGNode* child) {
   if (!nodes_already_linked(parent, child)) {
-    append_cfg_node(&parent->successors, child);
-    append_cfg_node(&child->predecessors, parent);
+    cfg_node_list_append(&parent->successors, child);
+    cfg_node_list_append(&child->predecessors, parent);
   }
 }
 
@@ -156,8 +177,8 @@ static struct CFG* partition_into_basic_blocks(const struct TACInstr* body) {
     switch (instr->type) {
       case TACLABEL:
         // start a new basic block and add the label to it
-        if (cur_block->body != NULL) {
-          append_cfg_node(list, cur_block);
+        if (cur_block->body.head != NULL) {
+          cfg_node_list_append(list, cur_block);
           num_blocks++;
           cur_block = make_basic_block_node();
         }
@@ -168,7 +189,7 @@ static struct CFG* partition_into_basic_blocks(const struct TACInstr* body) {
       case TACRETURN:
         // append jump/return to current block, then begin a new one
         append_instr(cur_block, instr);
-        append_cfg_node(list, cur_block);
+        cfg_node_list_append(list, cur_block);
         num_blocks++;
         cur_block = make_basic_block_node();
         break;
@@ -179,8 +200,8 @@ static struct CFG* partition_into_basic_blocks(const struct TACInstr* body) {
     }
   }
 
-  if (cur_block->body != NULL) {
-    append_cfg_node(list, cur_block);
+  if (cur_block->body.head != NULL) {
+    cfg_node_list_append(list, cur_block);
     num_blocks++;
   }
 
@@ -206,10 +227,10 @@ static struct CFGNode* find_target_of_jump(const struct CFG* cfg,
 
   for (unsigned i = 0; i < cfg->num_nodes; i++) {
     struct CFGNode* node = cfg->nodes[i];
-    if (node->body != NULL) {
+    if (node->body.head != NULL) {
       // need only check first instruction of the block
       // labels cannot appear in the middle of a basic block, only at the beginning
-      struct TACInstr* instr = node->body;
+      struct TACInstr* instr = node->body.head;
       if (instr->type == TACLABEL &&
           compare_slice_to_slice(instr->instr.tac_label.label, target_label)) {
         return node;
@@ -231,8 +252,8 @@ static struct CFG* link_cfg(struct CFG* cfg) {
   for (unsigned i = 1; i < cfg->num_nodes - 1; i++) {
     struct CFGNode* cur = cfg->nodes[i];
     struct CFGNode* next = cfg->nodes[i + 1];
-    if (cur->body != NULL) {
-      struct TACInstr* last_instr = cur->last_instr;
+    if (cur->body.head != NULL) {
+      struct TACInstr* last_instr = cur->body.last;
       switch (last_instr->type) {
         case TACCOND_JUMP: // link to next and jump target
           link_nodes(cur, next);
@@ -320,13 +341,13 @@ static const char* cfg_edge_kind(const struct CFG* cfg,
   if (parent->type == CFG_ENTRY) {
     return "entry";
   }
-  if (parent->type != CFG_BASIC_BLOCK || parent->last_instr == NULL) {
+  if (parent->type != CFG_BASIC_BLOCK || parent->body.last == NULL) {
     return "edge";
   }
 
-  switch (parent->last_instr->type) {
+  switch (parent->body.last->type) {
     case TACCOND_JUMP: {
-      const struct CFGNode* target = find_target_of_jump(cfg, parent->last_instr);
+      const struct CFGNode* target = find_target_of_jump(cfg, parent->body.last);
       unsigned parent_index = cfg_node_index(cfg, parent);
       const struct CFGNode* fallthrough =
           parent_index + 1 < cfg->num_nodes ? cfg->nodes[parent_index + 1] : NULL;
@@ -872,10 +893,10 @@ void print_cfg(const struct CFG* cfg) {
     }
 
     if (node->type == CFG_BASIC_BLOCK) {
-      if (node->body == NULL) {
+      if (node->body.head == NULL) {
         printf("    <empty block>\n");
       } else {
-        for (const struct TACInstr* instr = node->body;
+        for (const struct TACInstr* instr = node->body.head;
              instr != NULL;
              instr = instr->next) {
           print_tac_instr(instr, 1);
@@ -912,16 +933,15 @@ struct TACInstr* rebuild_body(struct CFG* cfg) {
     exit(1);
   }
 
-  struct TACInstr* head = NULL;
-  struct TACInstr* tail = NULL;
+  struct TACInstrList rebuilt = tac_instr_list(NULL);
 
   // add instructions from each basic block in layout order
   for (unsigned i = 0; i < cfg->num_nodes; i++) {
     struct CFGNode* node = cfg->nodes[i];
-    if (node == NULL || node->type != CFG_BASIC_BLOCK || node->body == NULL) {
+    if (node == NULL || node->type != CFG_BASIC_BLOCK || node->body.head == NULL) {
       continue;
     }
-    if (node->last_instr == NULL) {
+    if (node->body.last == NULL) {
       fprintf(stderr,
               "CFG error: cannot rebuild basic block %u because its non-empty "
               "body has no last instruction\n",
@@ -929,18 +949,13 @@ struct TACInstr* rebuild_body(struct CFG* cfg) {
       exit(1);
     }
 
-    struct TACInstr* instr = node->body;
+    struct TACInstr* instr = node->body.head;
     // add each instruction from a basic block
     while (true) {
       struct TACInstr* instr_copy = copy_instr(instr);
-      if (head == NULL) {
-        head = instr_copy;
-      } else {
-        tail->next = instr_copy;
-      }
-      tail = instr_copy;
+      concat_TAC_instrs(&rebuilt, tac_instr_list(instr_copy));
 
-      if (instr == node->last_instr) {
+      if (instr == node->body.last) {
         break;
       }
       instr = instr->next;
@@ -954,10 +969,7 @@ struct TACInstr* rebuild_body(struct CFG* cfg) {
     }
   }
 
-  if (head != NULL) {
-    head->last = tail;
-  }
-  return head;
+  return rebuilt.head;
 }
 
 // Reset all marked flags in the CFG for traversal.
