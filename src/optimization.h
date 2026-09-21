@@ -26,12 +26,4 @@ void optimize(struct TACProg* prog, struct OptimizationOptions options);
 
 struct TACInstr* optimize_body(struct TACInstr* body, struct OptimizationOptions options);
 
-struct TACInstr* constant_fold(struct TACInstr* body);
-
-struct CFG* dead_code_elim(struct CFG* cfg);
-
-struct CFG* copy_prop(struct CFG* cfg);
-
-struct CFG* dead_store_elim(struct CFG* cfg);
-
 #endif // OPTIMIZATION_H

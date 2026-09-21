@@ -3,6 +3,7 @@
 #include "cfg.h"
 #include "optimization.h"
 #include "slice.h"
+#include "constant_fold.h"
 
 #include <stdbool.h>
 #include <stdio.h>
