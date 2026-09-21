@@ -15,6 +15,8 @@ static struct CFGNode* make_start_node(void) {
   node->successors.head = NULL;
   node->successors.tail = NULL;
   node->body = tac_instr_list(NULL);
+  node->reaching_copies.head = NULL;
+  node->reaching_copies.last = NULL;
   node->marked = false;
   return node;
 }
@@ -28,6 +30,8 @@ static struct CFGNode* make_exit_node(void) {
   node->successors.head = NULL;
   node->successors.tail = NULL;
   node->body = tac_instr_list(NULL);
+  node->reaching_copies.head = NULL;
+  node->reaching_copies.last = NULL;
   node->marked = false;
   return node;
 }
@@ -41,6 +45,8 @@ static struct CFGNode* make_basic_block_node(void) {
   node->successors.head = NULL;
   node->successors.tail = NULL;
   node->body = tac_instr_list(NULL);
+  node->reaching_copies.head = NULL;
+  node->reaching_copies.last = NULL;
   node->marked = false;
   return node;
 }
@@ -51,6 +57,8 @@ static struct TACInstr* copy_instr(const struct TACInstr* instr) {
   // links belong exclusively to the new instruction list.
   struct TACInstr* instr_copy = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
   *instr_copy = *instr;
+  instr_copy->reaching_copies.head = NULL;
+  instr_copy->reaching_copies.last = NULL;
   instr_copy->next = NULL;
   return instr_copy;
 }

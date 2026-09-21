@@ -12,9 +12,16 @@
 // Construct TAC programs directly to verify interpreter and optimization behavior.
 
 static struct Type kTestIntType = { .type = INT_TYPE };
+static struct Type kTestUintType = { .type = UINT_TYPE };
+static struct Type kTestCharType = { .type = CHAR_TYPE };
+static struct Type kTestScharType = { .type = SCHAR_TYPE };
 static struct Type kTestPtrType = {
   .type = POINTER_TYPE,
   .type_data.pointer_type = { .referenced_type = &kTestIntType },
+};
+static struct Type kTestUintPtrType = {
+  .type = POINTER_TYPE,
+  .type_data.pointer_type = { .referenced_type = &kTestUintType },
 };
 
 // Build a Slice from a string literal for test data.
@@ -58,10 +65,12 @@ static struct Val tac_val_var(struct Slice* name, struct Type* type) {
 }
 
 // Initialize a TAC instruction node for tests.
-// Clears the node and sets its type/links.
+// Clears the node and sets its type, empty reaching-copy list, and links.
 static void tac_init_instr(struct TACInstr* instr, enum TACInstrType type) {
   memset(instr, 0, sizeof(*instr));
   instr->type = type;
+  instr->reaching_copies.head = NULL;
+  instr->reaching_copies.last = NULL;
   instr->next = NULL;
 }
 
@@ -1075,10 +1084,237 @@ static bool tac_test_cfg_rebuild(void) {
   return ok;
 }
 
+/*
+Classify names by symbol-table storage: static vars are true,
+locals, static consts, functions, and missing names are false.
+*/
+static bool tac_test_is_static_var(void) {
+  const size_t kSymbolBuckets = 8;
+  struct Slice static_name = tac_slice_literal("static_x");
+  struct Slice local_name = tac_slice_literal("local_x");
+  struct Slice const_name = tac_slice_literal("const_x");
+  struct Slice fun_name = tac_slice_literal("fun_x");
+  struct Slice missing_name = tac_slice_literal("missing_x");
+  struct IdentAttr static_attrs = {STATIC_ATTR, true, STATIC, {NO_INIT, NULL}, NULL};
+  struct IdentAttr local_attrs = {LOCAL_ATTR, true, NONE, {NO_INIT, NULL}, NULL};
+  struct IdentAttr const_attrs = {CONST_ATTR, true, STATIC, {NO_INIT, NULL}, NULL};
+  struct IdentAttr fun_attrs = {FUN_ATTR, true, NONE, {NO_INIT, NULL}, NULL};
+  struct SymbolTable* saved_table = global_symbol_table;
+  bool ok = true;
+
+  arena_init(1024);
+  global_symbol_table = create_symbol_table(kSymbolBuckets);
+  symbol_table_insert(global_symbol_table, &static_name, &kTestIntType, &static_attrs);
+  symbol_table_insert(global_symbol_table, &local_name, &kTestIntType, &local_attrs);
+  symbol_table_insert(global_symbol_table, &const_name, &kTestIntType, &const_attrs);
+  symbol_table_insert(global_symbol_table, &fun_name, &kTestIntType, &fun_attrs);
+
+  if (!is_static_var(&static_name)) {
+    printf("is_static_var test failed: STATIC_ATTR variable should be static\n");
+    ok = false;
+  }
+  if (is_static_var(&local_name)) {
+    printf("is_static_var test failed: LOCAL_ATTR variable should not be static\n");
+    ok = false;
+  }
+  if (is_static_var(&const_name)) {
+    printf("is_static_var test failed: CONST_ATTR symbol should not be a static variable\n");
+    ok = false;
+  }
+  if (is_static_var(&fun_name)) {
+    printf("is_static_var test failed: function symbol should not be a static variable\n");
+    ok = false;
+  }
+  if (is_static_var(&missing_name)) {
+    printf("is_static_var test failed: missing symbol should not be static\n");
+    ok = false;
+  }
+  if (is_static_var(NULL)) {
+    printf("is_static_var test failed: NULL should not be static\n");
+    ok = false;
+  }
+
+  global_symbol_table = saved_table;
+  arena_destroy();
+  return ok;
+}
+
+/*
+Verify SliceList append, equality-based membership, and node copy sharing.
+*/
+static bool tac_test_slice_list(void) {
+  struct Slice first = tac_slice_literal("first");
+  struct Slice second = tac_slice_literal("second");
+  struct Slice first_again = tac_slice_literal("first");
+  struct Slice missing = tac_slice_literal("missing");
+  struct SliceList list = {0};
+  bool ok = true;
+
+  arena_init(1024);
+  slice_list_add(&list, &first);
+  slice_list_add(&list, &second);
+  slice_list_add(&list, NULL);
+
+  if (list.head == NULL || list.last == NULL || list.head->next != list.last ||
+      list.last->next != NULL) {
+    printf("slice_list test failed: expected two linked nodes after two adds\n");
+    ok = false;
+  }
+  if (!slice_list_contains(list, &first) || !slice_list_contains(list, &first_again) ||
+      !slice_list_contains(list, &second)) {
+    printf("slice_list test failed: added slices should be found by equality\n");
+    ok = false;
+  }
+  if (slice_list_contains(list, &missing) || slice_list_contains(list, NULL)) {
+    printf("slice_list test failed: missing and NULL slices should not be found\n");
+    ok = false;
+  }
+
+  struct SliceList copied = copy_slice_list(list);
+  if (copied.head == NULL || copied.head == list.head || copied.head->slice != list.head->slice ||
+      !slice_list_contains(copied, &second)) {
+    printf("slice_list test failed: copy should duplicate nodes and share slice pointers\n");
+    ok = false;
+  }
+
+  arena_destroy();
+  return ok;
+}
+
+/*
+Copy recording is type-safe for identical types, char/signed char, and
+constant 0 (including null pointers). Signedness-only matches such as
+int vs unsigned or unsigned vs pointer are not safe.
+*/
+static bool tac_test_copy_is_type_safe(void) {
+  struct Slice x_name = tac_slice_literal("x");
+  struct Slice y_name = tac_slice_literal("y");
+  struct Val int_x = tac_val_var(&x_name, &kTestIntType);
+  struct Val int_y = tac_val_var(&y_name, &kTestIntType);
+  struct Val uint_x = tac_val_var(&x_name, &kTestUintType);
+  struct Val char_x = tac_val_var(&x_name, &kTestCharType);
+  struct Val schar_y = tac_val_var(&y_name, &kTestScharType);
+  struct Val int_ptr = tac_val_var(&x_name, &kTestPtrType);
+  struct Val uint_ptr = tac_val_var(&y_name, &kTestUintPtrType);
+  struct Val zero_int = tac_val_const(0, &kTestIntType);
+  struct Val five_int = tac_val_const(5, &kTestIntType);
+  bool ok = true;
+
+  if (!copy_is_type_safe(&int_y, &int_x)) {
+    printf("copy_is_type_safe test failed: identical int types should be safe\n");
+    ok = false;
+  }
+  if (copy_is_type_safe(&int_y, &uint_x)) {
+    printf("copy_is_type_safe test failed: int to unsigned must not be recorded\n");
+    ok = false;
+  }
+  if (!copy_is_type_safe(&char_x, &schar_y)) {
+    printf("copy_is_type_safe test failed: char and signed char should be safe\n");
+    ok = false;
+  }
+  if (copy_is_type_safe(&int_ptr, &uint_x)) {
+    printf("copy_is_type_safe test failed: pointer to unsigned must not be recorded\n");
+    ok = false;
+  }
+  if (copy_is_type_safe(&int_ptr, &uint_ptr)) {
+    printf("copy_is_type_safe test failed: pointers to different types must not be recorded\n");
+    ok = false;
+  }
+  if (!copy_is_type_safe(&zero_int, &int_ptr)) {
+    printf("copy_is_type_safe test failed: constant 0 to a pointer should be safe\n");
+    ok = false;
+  }
+  if (copy_is_type_safe(&five_int, &int_ptr)) {
+    printf("copy_is_type_safe test failed: nonzero int to a pointer must not be recorded\n");
+    ok = false;
+  }
+  if (copy_is_type_safe(NULL, &int_x) || copy_is_type_safe(&int_y, NULL)) {
+    printf("copy_is_type_safe test failed: NULL operands should not be safe\n");
+    ok = false;
+  }
+  return ok;
+}
+
+/*
+Aliased vars include statics and address-taken locals, with each name once.
+A second GetAddress of the same local, and GetAddress of a static already
+taken from the symbol table, must not create duplicates. Locals that are
+not address-taken stay out of the list.
+*/
+static bool tac_test_get_aliased_vars(void) {
+  const size_t kSymbolBuckets = 8;
+  struct Slice static_name = tac_slice_literal("static_x");
+  struct Slice local_name = tac_slice_literal("local_x");
+  struct Slice other_local = tac_slice_literal("other_local");
+  struct IdentAttr static_attrs = {STATIC_ATTR, true, STATIC, {NO_INIT, NULL}, NULL};
+  struct IdentAttr local_attrs = {LOCAL_ATTR, true, NONE, {NO_INIT, NULL}, NULL};
+  struct Val local_val = tac_val_var(&local_name, &kTestIntType);
+  struct Val static_val = tac_val_var(&static_name, &kTestIntType);
+  struct Val ptr_val = tac_val_var(&other_local, &kTestPtrType);
+  struct TACInstr get_local;
+  struct TACInstr get_local_again;
+  struct TACInstr get_static;
+  struct SymbolTable* saved_table = global_symbol_table;
+  bool ok = true;
+
+  arena_init(1024);
+  global_symbol_table = create_symbol_table(kSymbolBuckets);
+  symbol_table_insert(global_symbol_table, &static_name, &kTestIntType, &static_attrs);
+  symbol_table_insert(global_symbol_table, &local_name, &kTestIntType, &local_attrs);
+  symbol_table_insert(global_symbol_table, &other_local, &kTestPtrType, &local_attrs);
+
+  tac_init_instr(&get_local, TACGET_ADDRESS);
+  get_local.instr.tac_get_address.dst = &ptr_val;
+  get_local.instr.tac_get_address.src = &local_val;
+  tac_init_instr(&get_local_again, TACGET_ADDRESS);
+  get_local_again.instr.tac_get_address.dst = &ptr_val;
+  get_local_again.instr.tac_get_address.src = &local_val;
+  tac_init_instr(&get_static, TACGET_ADDRESS);
+  get_static.instr.tac_get_address.dst = &ptr_val;
+  get_static.instr.tac_get_address.src = &static_val;
+  tac_link_instr(&get_local, &get_local_again);
+  tac_link_instr(&get_local_again, &get_static);
+
+  struct SliceList aliased = get_aliased_vars(&get_local);
+  unsigned count = 0;
+  for (struct SliceListNode* node = aliased.head; node != NULL; node = node->next) {
+    count++;
+  }
+
+  if (count != 2) {
+    printf("get_aliased_vars test failed: expected 2 unique names, got %u\n", count);
+    ok = false;
+  }
+  if (!slice_list_contains(aliased, &static_name)) {
+    printf("get_aliased_vars test failed: static variables must be treated as aliased\n");
+    ok = false;
+  }
+  if (!slice_list_contains(aliased, &local_name)) {
+    printf("get_aliased_vars test failed: address-taken locals must be treated as aliased\n");
+    ok = false;
+  }
+  if (slice_list_contains(aliased, &other_local)) {
+    printf("get_aliased_vars test failed: locals that are not address-taken should not be aliased\n");
+    ok = false;
+  }
+
+  global_symbol_table = saved_table;
+  arena_destroy();
+  return ok;
+}
+
 // Run all TAC interpreter tests.
 // Returns 0 on success and non-zero on failure.
 int main(void) {
   bool ok = true;
+  printf("- tac_test_copy_is_type_safe\n");
+  ok = tac_test_copy_is_type_safe() && ok;
+  printf("- tac_test_get_aliased_vars\n");
+  ok = tac_test_get_aliased_vars() && ok;
+  printf("- tac_test_slice_list\n");
+  ok = tac_test_slice_list() && ok;
+  printf("- tac_test_is_static_var\n");
+  ok = tac_test_is_static_var() && ok;
   printf("- tac_test_return_const\n");
   ok = tac_test_return_const() && ok;
   printf("- tac_test_arithmetic\n");

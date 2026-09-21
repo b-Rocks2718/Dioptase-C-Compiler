@@ -26,4 +26,7 @@ void optimize(struct TACProg* prog, struct OptimizationOptions options);
 
 struct TACInstr* optimize_body(struct TACInstr* body, struct OptimizationOptions options);
 
+// Collect address-taken variables in body together with every static variable.
+struct SliceList get_aliased_vars(struct TACInstr* body);
+
 #endif // OPTIMIZATION_H

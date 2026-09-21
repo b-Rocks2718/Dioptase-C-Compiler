@@ -3,6 +3,7 @@
 
 #include "AST.h"
 #include "typechecking.h"
+#include "copy_prop.h"
 
 #include <stdint.h>
 
@@ -267,9 +268,11 @@ union TACInstrVariant {
 };
 
 // Link one TAC instruction with the next instruction in its list.
+// reaching_copies is empty until copy-propagation analysis fills it.
 struct TACInstr {
   enum TACInstrType type;
   union TACInstrVariant instr;
+  struct ReachingCopyList reaching_copies;
   struct TACInstr* next;
 };
 
@@ -367,6 +370,15 @@ struct TACInstrList tac_instr_list(struct TACInstr* instr);
 void concat_TAC_instrs(struct TACInstrList* dst, struct TACInstrList src);
 
 struct Val* make_temp(struct Slice* func_name, struct Type* type);
+
+// Return true if name refers to a variable with static storage duration.
+// Temps, function symbols, static constants, and missing symbol-table
+// entries are not static variables.
+bool is_static_var(struct Slice* name);
+
+// returns true for signed long, int, char
+// returns false for unsigned long, int, char, and pointer types
+bool tac_signedness(struct Type* type);
 
 void print_static_init(const struct InitList* init);
 

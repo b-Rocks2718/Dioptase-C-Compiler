@@ -65,11 +65,13 @@ static void tac_error_at(const char* loc, const char* fmt, ...) {
 }
 
 // Allocate and initialize a single TAC instruction node.
-// Returns a node with next == NULL.
+// Returns a node with next == NULL and an empty reaching-copy list.
 // Callers must fill the variant fields.
 static struct TACInstr* tac_instr_create(enum TACInstrType type) {
   struct TACInstr* instr = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
   instr->type = type;
+  instr->reaching_copies.head = NULL;
+  instr->reaching_copies.last = NULL;
   instr->next = NULL;
   return instr;
 }
@@ -397,6 +399,19 @@ static struct TACInstrList emit_unsigned_lhs_signed_divmod(struct Slice* func_na
   }
 
   return instrs;
+}
+
+// Return true if name refers to a variable with static storage duration.
+// Looks the name up in global_symbol_table and checks for STATIC_ATTR.
+bool is_static_var(struct Slice* name) {
+  if (name == NULL || global_symbol_table == NULL) {
+    return false;
+  }
+  struct SymbolEntry* entry = symbol_table_get(global_symbol_table, name);
+  if (entry == NULL || entry->attrs == NULL) {
+    return false;
+  }
+  return entry->attrs->attr_type == STATIC_ATTR;
 }
 
 // Allocate a new temporary variable for TAC lowering.
@@ -2982,4 +2997,25 @@ bool compare_bodies(struct TACInstr* body1, struct TACInstr* body2) {
   }
 
   return (cur1 == NULL && cur2 == NULL);
+}
+
+// returns true for signed long, int, char
+// returns false for unsigned long, int, char, and pointer types
+bool tac_signedness(struct Type* type){
+  switch (type->type) {
+    case CHAR_TYPE:
+    case SCHAR_TYPE:
+    case SHORT_TYPE:
+    case INT_TYPE:
+    case LONG_TYPE:
+      return true;
+    case UCHAR_TYPE:
+    case USHORT_TYPE:
+    case UINT_TYPE:
+    case ULONG_TYPE:
+    case POINTER_TYPE:
+      return false;
+    default:
+      return false;
+  }
 }
