@@ -2107,7 +2107,7 @@ void replace_pseudo(struct AsmInstr* asm_instr) {
   }
 }
 
-// Return whether static symbol operand.
+// Return whether a pseudo operand names static storage or a function symbol.
 bool is_static_symbol_operand(const struct Operand* opr) {
   if (opr == NULL || opr->pseudo == NULL || global_symbol_table == NULL) {
     return false;
@@ -2124,7 +2124,7 @@ bool is_static_symbol_operand(const struct Operand* opr) {
          entry->attrs->attr_type == CONST_ATTR;
 }
 
-// Allocate stack slot.
+// Reserve an aligned stack slot for a pseudo operand and return its BP-relative offset.
 int allocate_stack_slot(struct Operand* opr, size_t* stack_bytes) {
   assert(opr != NULL);
   assert(opr->type == OPERAND_PSEUDO || opr->type == OPERAND_PSEUDO_MEM);
@@ -2761,7 +2761,7 @@ struct PseudoEntry* create_pseudo_entry(struct Operand* key, struct Operand* val
   return entry;
 }
 
-// Insert an item into pseudo entry.
+// Update or append a pseudo mapping within one collision chain.
 void pseudo_entry_insert(struct PseudoEntry* entry, struct Operand* key, struct Operand* value){
   if (compare_slice_to_slice(entry->pseudo->pseudo, key->pseudo)){
     entry->mapped = value;
@@ -2773,7 +2773,7 @@ void pseudo_entry_insert(struct PseudoEntry* entry, struct Operand* key, struct 
 }
 
 
-// Insert an item into pseudo map.
+// Insert or replace a pseudo-register mapping in the hash table.
 void pseudo_map_insert(struct PseudoMap* hmap, struct Operand* key, struct Operand* value){
   if (hmap == NULL || key == NULL || key->pseudo == NULL) {
     asm_gen_error("stack-map", NULL, "invalid pseudo map insert request");
@@ -2935,7 +2935,7 @@ bool asm_symbol_table_contains(struct AsmSymbolTable* hmap, struct Slice* key){
   return false;
 }
 
-// Print pseudo map.
+// Dump each pseudo-register's stack offset and assigned assembly type.
 void print_pseudo_map(struct Slice* func, struct PseudoMap* hmap){
   printf("%.*s pseudo map:\n", (int)func->len, func->start);
   for (size_t i = 0; i < hmap->size; i++){
@@ -2974,7 +2974,7 @@ void print_pseudo_map(struct Slice* func, struct PseudoMap* hmap){
   }
 }
 
-// Print asm symbol table.
+// Dump assembly symbol types, linkage, and definition state.
 void print_asm_symbol_table(struct AsmSymbolTable* hmap){
   for (size_t i = 0; i < hmap->size; i++){
     struct AsmSymbolEntry* cur = hmap->arr[i];

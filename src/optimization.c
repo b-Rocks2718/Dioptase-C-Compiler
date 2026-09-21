@@ -5,6 +5,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 // ---------- constant folding --------------------------------------
 
@@ -14,7 +15,7 @@ enum ConstantFoldAction {
   CONSTANT_FOLD_DELETE,
 };
 
-// The a constant fold result stores action, replacement.
+// Describe whether constant folding keeps, replaces, or rejects an expression.
 struct ConstantFoldResult {
   enum ConstantFoldAction action;
   struct TACInstr* replacement;
@@ -529,15 +530,16 @@ void dfs_cfg(struct CFGNode* entry){
   }
 }
 
-// Remove dead blocks.
+// Remove dead blocks, returning the new CFG
 struct CFG* remove_dead_blocks(struct CFG* cfg){
-  // reset node marks
-  for (unsigned i = 0; i < cfg->num_nodes; i++) {
-    cfg->nodes[i]->marked = false;
-  }
+  reset_marks(cfg);
 
   // dfs from entry node and mark every node we encounter
   dfs_cfg(cfg->nodes[0]); // first node is the entry node
+
+  // always mark the exit node, even if it is unreachable
+  // this way the exit node is not removed as dead code
+  cfg->nodes[cfg->num_nodes - 1]->marked = true;
 
   // count marked nodes
   unsigned num_marked = 0;
@@ -557,42 +559,80 @@ struct CFG* remove_dead_blocks(struct CFG* cfg){
     }
   }
 
-  return new_cfg;
+  return repair_cfg(new_cfg);
 }
 
-// Remove useless jumps.
+// Unlink the last instruction of a basic block, keeping last_instr and the TAC tail pointer consistent.
+static void cfg_block_remove_last_instr(struct CFGNode* block) {
+  struct TACInstr* last = block->last_instr;
+  if (block->body == NULL || last == NULL) {
+    return;
+  }
+
+  if (block->body == last) {
+    block->body = NULL;
+    block->last_instr = NULL;
+  } else {
+    struct TACInstr* prev = block->body;
+    while (prev->next != NULL && prev->next != last) {
+      prev = prev->next;
+    }
+    if (prev->next != last) {
+      fprintf(stderr,
+              "CFG error: cannot remove a block's last instruction because it "
+              "is not reachable from the block body\n");
+      exit(1);
+    }
+    prev->next = NULL;
+    block->last_instr = prev;
+    block->body->last = prev;
+  }
+
+  last->next = NULL;
+  last->last = last;
+}
+
+// Drop a leading label from a basic block and retarget the remaining list's tail pointer.
+static void cfg_block_remove_leading_label(struct CFGNode* block) {
+  struct TACInstr* label = block->body;
+  if (label == NULL || label->type != TACLABEL) {
+    return;
+  }
+
+  struct TACInstr* rest = label->next;
+  label->next = NULL;
+  label->last = label;
+
+  block->body = rest;
+  if (rest == NULL) {
+    block->last_instr = NULL;
+  } else {
+    rest->last = block->last_instr;
+  }
+}
+
+// Remove useless jumps, modifying the CFG in place
 void remove_useless_jumps(struct CFG* cfg){
   // loop over the basic block nodes
   for (unsigned i = 1; i < cfg->num_nodes - 1; i++) {
     struct CFGNode* block = cfg->nodes[i];
+    struct CFGNodeEntry* succ = block->successors.head;
+    struct TACInstr* last = block->last_instr;
+
+    if (succ == NULL || last == NULL) {
+      continue;
+    }
 
     // A jump is redundant when its only target is the next block.
-    if (block->successors.head->node == cfg->nodes[i + 1] &&
-        block->successors.head == block->successors.tail &&
-        (block->last_instr->type == TACJUMP ||
-        block->last_instr->type == TACCOND_JUMP)) {
-      
-      // find last and 2nd to last instr
-      struct TACInstr* last = block->body;
-      struct TACInstr* second_to_last = NULL;
-      while (last != NULL && last->next != NULL) {
-        second_to_last = last;
-        last = last->next;
-      }
-      
-      
-      // remove jump from the list of instructions in this block
-      if (second_to_last != NULL) {
-        second_to_last->next = NULL;
-      } else {
-        block->body = NULL;
-      }
-      block->last_instr = second_to_last;
+    if (succ->node == cfg->nodes[i + 1] &&
+        succ == block->successors.tail &&
+        (last->type == TACJUMP || last->type == TACCOND_JUMP)) {
+      cfg_block_remove_last_instr(block);
     }
   }
 }
 
-// Remove useless labels.
+// Remove useless labels, modifying the CFG in place
 void remove_useless_labels(struct CFG* cfg){
   // loop over the basic block nodes
   for (unsigned i = 1; i < cfg->num_nodes - 1; i++) {
@@ -601,41 +641,9 @@ void remove_useless_labels(struct CFG* cfg){
     if (block->predecessors.head == NULL ||
         (block->predecessors.head->node == cfg->nodes[i - 1] &&
         block->predecessors.head == block->predecessors.tail)) {
-      // remove label from the list of instructions in this block
-      if (block->body != NULL && block->body->type == TACLABEL) {
-        struct TACInstr* label = block->body;
-        block->body = label->next;
-        label->next = NULL;
-      }
+      cfg_block_remove_leading_label(block);
     }
   }
-}
-
-// Return whether remove empty blocks.
-struct CFG* remove_empty_blocks(struct CFG* cfg){
-  unsigned num_nonempty_blocks = 0;
-  for (unsigned i = 0; i < cfg->num_nodes; i++) {
-    struct CFGNode* block = cfg->nodes[i];
-
-    if (block->type != CFG_BASIC_BLOCK || block->body != NULL) {
-      // count ENTRY and EXIT nodes
-      num_nonempty_blocks++;
-    }
-  }
-
-  struct CFG* new_cfg = arena_alloc(sizeof(struct CFG));
-  new_cfg->num_nodes = num_nonempty_blocks;
-  new_cfg->nodes = arena_alloc(sizeof(struct CFGNode*) * num_nonempty_blocks);
-
-  for (unsigned i = 0, j = 0; i < cfg->num_nodes; i++) {
-    struct CFGNode* block = cfg->nodes[i];
-
-    if (block->type != CFG_BASIC_BLOCK || block->body != NULL) {
-      new_cfg->nodes[j++] = block;
-    }
-  }
-
-  return new_cfg;
 }
 
 // Remove unreachable TAC blocks after control-flow analysis.
@@ -643,7 +651,7 @@ struct CFG* dead_code_elim(struct CFG* cfg){
   cfg = remove_dead_blocks(cfg);
   remove_useless_jumps(cfg);
   remove_useless_labels(cfg);
-  cfg = remove_empty_blocks(cfg);
+  cfg = repair_cfg(cfg);
 
   return cfg;
 }

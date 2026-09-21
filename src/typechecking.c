@@ -1129,7 +1129,7 @@ bool typecheck_convert_expr(struct Expr** expr) {
   return true;
 }
 
-// Set up typecheck array.
+// Typecheck an array initializer and pad omitted elements with typed zeros.
 bool typecheck_array_init(struct Initializer* init, struct Type* type) {
   struct InitializerList* cur_init = init->init.compound_init;
   struct InitializerList* prev_init = NULL;
@@ -1173,7 +1173,7 @@ bool typecheck_array_init(struct Initializer* init, struct Type* type) {
   return true;
 }
 
-// Set up typecheck struct.
+// Match struct initializers to members and zero-fill omitted members.
 bool typecheck_struct_init(struct Initializer* init, struct Type* type) {
   struct InitializerList* cur_init = init->init.compound_init;
   struct InitializerList* prev_init = NULL;
@@ -1218,7 +1218,7 @@ bool typecheck_struct_init(struct Initializer* init, struct Type* type) {
   return true;
 }
 
-// Set up typecheck union.
+// Typecheck a union initializer against its first member and reject extras.
 bool typecheck_union_init(struct Initializer* init, struct Type* type) {
   struct InitializerList* cur_init = init->init.compound_init;
 

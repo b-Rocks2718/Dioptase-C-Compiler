@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-// The arena block stores next, used, cap, data.
+// Own one linked arena allocation block and its used capacity.
 struct ArenaBlock {
   struct ArenaBlock* next;
   size_t used;
@@ -11,7 +11,7 @@ struct ArenaBlock {
   unsigned char data[];
 };
 
-// The arena stores head, block_size.
+// Own the arena block chain and default block size.
 struct Arena {
   struct ArenaBlock* head;
   size_t block_size;

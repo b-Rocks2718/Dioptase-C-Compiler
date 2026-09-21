@@ -13,7 +13,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-// Test code written by Codex
+// Compare C fixtures executed natively and through the simple emulator.
 
 // Note: These tests intentionally rely on POSIX process and directory APIs plus
 // a host C compiler to compare emulator execution results against native execution.

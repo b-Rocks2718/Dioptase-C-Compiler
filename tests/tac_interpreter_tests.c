@@ -8,7 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 
-// TAC interpreter written by Codex
+// Construct TAC programs directly to verify interpreter and optimization behavior.
 
 static struct Type kTestIntType = { .type = INT_TYPE };
 static struct Type kTestPtrType = {

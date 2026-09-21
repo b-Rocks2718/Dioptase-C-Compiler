@@ -1,7 +1,6 @@
 #include "call_graph.h"
 
-// Build caller-to-callee edges by scanning each function's TAC calls.
+// Build caller-to-callee edges; currently unimplemented and returns NULL.
 struct CallGraph* build_callgraph(struct TACProg* program) {
-  // todo
   return NULL;
 }

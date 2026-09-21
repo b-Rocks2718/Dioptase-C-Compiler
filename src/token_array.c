@@ -16,7 +16,7 @@ struct TokenArray* create_token_array(size_t capacity){
   return arr;
 }
 
-// Append an item to token array.
+// Append a token by value, growing storage and consuming the temporary node.
 void token_array_append(struct TokenArray* arr, struct Token* value){
   if (arr->size == arr->capacity){
     arr->tokens = realloc(arr->tokens, arr->capacity * sizeof(struct Token) * 2);
@@ -29,7 +29,7 @@ void token_array_append(struct TokenArray* arr, struct Token* value){
   free(value);
 }
 
-// Return the token at index i.
+// Return the token at an already-validated array index.
 struct Token token_array_get(struct TokenArray* arr, size_t i){
   // no checks on i, might regret this later
   return arr->tokens[i];

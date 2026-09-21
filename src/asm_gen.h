@@ -12,7 +12,7 @@
 
 extern struct AsmSymbolTable* asm_symbol_table;
 
-// Identify the possible asm type type values.
+// Classify scalar and aggregate ASM operand types.
 enum AsmTypeType {
   BYTE = 1,
   DOUBLE,
@@ -21,19 +21,19 @@ enum AsmTypeType {
   BYTE_ARRAY,
 };
 
-// The byte array stores size, alignment.
+// Describe the size and alignment of an aggregate byte array.
 struct ByteArray {
   size_t size;
   size_t alignment;
 };
 
-// The asm type stores type, byte_array.
+// Store an ASM type kind and optional aggregate byte metadata.
 struct AsmType {
   enum AsmTypeType type;
   struct ByteArray byte_array;
 };
 
-// The one asm symbol entry stores key, type, is_static, is_defined, and other fields.
+// Store an ASM symbol's type, linkage, definition state, and value.
 struct AsmSymbolEntry{
   struct Slice* key;
   struct AsmType* type; // for data
@@ -44,13 +44,13 @@ struct AsmSymbolEntry{
   struct AsmSymbolEntry* next;
 };
 
-// The asm symbol table stores size, arr.
+// Own the bucket array used for ASM symbol lookup.
 struct AsmSymbolTable{
   size_t size;
   struct AsmSymbolEntry** arr;
 };
 
-// The asm prog stores head, tail.
+// Own the linked list of top-level ASM declarations.
 struct AsmProg {
   struct AsmTopLevel* head;
   struct AsmTopLevel* tail;
@@ -64,7 +64,7 @@ struct DebugLocal {
   struct DebugLocal* next;
 };
 
-// Identify the possible asm top level type values.
+// Classify ASM function and static-data top-level items.
 enum AsmTopLevelType {
   ASM_FUNC,
   ASM_STATIC_VAR,
@@ -73,7 +73,7 @@ enum AsmTopLevelType {
   ASM_ALIGN,
 };
 
-// The asm top level stores type, name, global, body, and other fields.
+// Describe an ASM function or static data top-level item.
 struct AsmTopLevel {
   enum AsmTopLevelType type;
   struct Slice* name;
@@ -89,7 +89,7 @@ struct AsmTopLevel {
   struct AsmTopLevel* next;
 };
 
-// Identify the possible asm instr type values.
+// Classify the ASM intermediate instruction variants.
 enum AsmInstrType {
   ASM_MOV,
   ASM_UNARY,
@@ -110,7 +110,7 @@ enum AsmInstrType {
   ASM_EXTEND,
 };
 
-// The asm instr stores type, unary_op, alu_op, cond, and other fields.
+// Store an ASM opcode and its variant-specific operands.
 struct AsmInstr {
   enum AsmInstrType type;
 
@@ -131,7 +131,7 @@ struct AsmInstr {
   struct AsmInstr* next;
 };
 
-// Identify the possible operand type values.
+// Classify register, immediate, memory, and pseudo operands.
 enum OperandType {
   OPERAND_LIT,
   OPERAND_REG,
@@ -141,7 +141,7 @@ enum OperandType {
   OPERAND_DATA
 };
 
-// Identify the possible reg values.
+// Enumerate target architectural registers used by the compiler.
 enum Reg {
   R0 = 0,
   R1,
@@ -181,7 +181,7 @@ static const enum Reg BP = R30; // base pointer register
 static const enum Reg SP = R31; // stack pointer register
 static const enum Reg RA = R29; // return address register
 
-// The operand stores type, asm_type, reg, lit_value, and other fields.
+// Store an ASM operand kind, type, register, literal, or symbol payload.
 struct Operand {
   enum OperandType type;
   struct AsmType* asm_type;
@@ -191,14 +191,14 @@ struct Operand {
   struct Slice* pseudo;  // for Pseudo
 };
 
-// The one pseudo entry stores pseudo, mapped, next.
+// Map one pseudo-register name to its allocated location.
 struct PseudoEntry {
   struct Operand* pseudo;
   struct Operand* mapped;
   struct PseudoEntry* next;
 };
 
-// The pseudo map stores size, arr.
+// Own the bucket array used for pseudo-register mappings.
 struct PseudoMap{
   size_t size;
   struct PseudoEntry** arr;
@@ -212,13 +212,13 @@ enum VarClass {
   INTEGER_CLASS,
 };
 
-// The var class list stores var_class, next.
+// Link variable storage-class annotations.
 struct VarClassList {
   enum VarClass var_class;
   struct VarClassList* next;
 };
 
-// The operand list stores opr, next.
+// Link instruction operands in source order.
 struct OperandList {
   struct Operand* opr;
   struct OperandList* next;

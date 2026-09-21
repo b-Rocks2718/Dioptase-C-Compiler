@@ -43,8 +43,7 @@ struct IdentMap{
 // Returns an arena-allocated IdentStack with no scopes.
 struct IdentStack* create_ident_stack(size_t initial_capacity);
 
-// Set up a stack with one empty scope.
-// Returns an IdentStack with a single scope map.
+// Create a resolver stack containing one empty scope map.
 // Uses the default bucket count; the compiler arena
 // owns the returned stack and map.
 struct IdentStack* init_scope(void);

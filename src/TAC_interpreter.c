@@ -10,13 +10,10 @@
 #include <string.h>
 #include <limits.h>
 
-// TAC interpreter written by Codex
-
 // Provide a small TAC interpreter for validating TAC lowering output.
 // Returns the integer result of main() or exits on interpreter errors.
 
-// Define interpreter memory sizing constants.
-// Controls initial capacities, growth behavior, and scalar slot counts.
+// Centralize interpreter allocation granularity and dynamic-array growth policy.
 static const int kTacInterpWordBytes = 4;
 static const size_t kTacInterpInitialMemoryCapacity = 8;
 static const size_t kTacInterpInitialBindingCapacity = 8;
@@ -25,11 +22,11 @@ static const size_t kTacInterpGrowthFactor = 2;
 static const size_t kTacInterpSingleSlot = 1;
 static const size_t kTacInterpMainNameLen = sizeof("main") - 1;
 static const int kTacInterpFunctionAddrBase = 0x10000000;
-// Define supported host builtin names and signatures.
+// Describe host builtins implemented directly by the interpreter.
 static const char* kTacBuiltinPutcharName = "putchar";
 static const size_t kTacBuiltinPutcharArgCount = 1;
 
-// Track one addressable memory cell in the interpreter.
+// Associate one interpreter byte address with a typed scalar value.
 // initialized indicates whether the cell has a defined value.
 struct TacMemoryCell {
   int address;
@@ -62,14 +59,14 @@ struct TacBindings {
   size_t capacity;
 };
 
-// Track required storage for CopyTo/FromOffset base variables.
+// Record the storage span required by one CopyTo/FromOffset base variable.
 // Used to pre-allocate local storage before executing a function.
 struct TacCopyOffsetRequirement {
   struct Slice* name;
   size_t bytes;
 };
 
-// Track the largest storage span required by each CopyTo/FromOffset base.
+// Collect one maximum required storage span per CopyTo/FromOffset base.
 // Names are unique within the map.
 struct TacCopyOffsetMap {
   struct TacCopyOffsetRequirement* entries;
@@ -85,7 +82,7 @@ struct TacFunctionEntry {
   int address;
 };
 
-// Track function pointer addresses for the interpreter.
+// Map synthetic function-pointer addresses to TAC function definitions.
 struct TacFunctionTable {
   struct TacFunctionEntry* entries;
   size_t count;
@@ -101,7 +98,7 @@ struct TacLabelEntry {
   struct TACInstr* instr;
 };
 
-// Store per-function execution state for the interpreter.
+// Hold local bindings, jump targets, and comparison state for one call.
 // Tracks local values and control-flow targets during one call.
 struct TacFrame {
   struct TacBindings locals;
@@ -110,7 +107,7 @@ struct TacFrame {
   size_t label_capacity;
 };
 
-// Track globals, function metadata, and execution state across calls.
+// Own program-wide globals, memory, and callable-function metadata.
 // Provides global storage and shared memory space.
 // Globals are initialized before executing main.
 struct TacInterpreter {
@@ -132,8 +129,7 @@ ANALYSIS_NORETURN static void tac_interp_error(const char* fmt, ...) {
   exit(EXIT_FAILURE);
 }
 
-// Set up a TacMemory structure.
-// Resets memory tracking to an empty state.
+// Initialize empty interpreter memory at the first allocatable address.
 static void tac_memory_init(struct TacMemory* mem) {
   mem->cells = NULL;
   mem->count = 0;
@@ -229,8 +225,7 @@ static uint64_t tac_memory_load(struct TacMemory* mem, int address) {
   return cell->value;
 }
 
-// Set up a TacBindings structure.
-// Resets the binding list to empty.
+// Initialize an empty variable-binding table.
 static void tac_bindings_init(struct TacBindings* bindings) {
   bindings->bindings = NULL;
   bindings->count = 0;
@@ -310,8 +305,7 @@ static size_t tac_slots_for_bytes(size_t bytes) {
   return (slots > 0) ? slots : kTacInterpSingleSlot;
 }
 
-// Set up a CopyTo/FromOffset requirement map.
-// Resets the map to an empty state.
+// Initialize an empty aggregate-storage requirement map.
 static void tac_copy_offset_map_init(struct TacCopyOffsetMap* map) {
   map->entries = NULL;
   map->count = 0;
@@ -462,8 +456,7 @@ static void tac_preallocate_copy_offsets(struct TacFrame* frame,
   tac_copy_offset_map_destroy(&map);
 }
 
-// Set up a TacFunctionTable structure.
-// Resets the table to empty and sets the first synthetic address.
+// Initialize an empty function table and its first synthetic address.
 static void tac_function_table_init(struct TacFunctionTable* table) {
   table->entries = NULL;
   table->count = 0;
@@ -830,8 +823,7 @@ static uint64_t tac_apply_binary(enum ALUOp op,
   return result;
 }
 
-// Set up label metadata for a function frame.
-// Populates frame->labels for quick label lookup.
+// Index every TAC label in a function body for constant-time jump lookup.
 static void tac_collect_labels(struct TacFrame* frame, struct TACInstr* body) {
   for (struct TACInstr* cur = body; cur != NULL; cur = cur->next) {
     if (cur->type != TACLABEL) {
@@ -874,7 +866,7 @@ static struct TACInstr* tac_find_label(struct TacFrame* frame, struct Slice* lab
   return NULL;
 }
 
-// Set up a function frame before execution.
+// Initialize one call frame with empty locals and indexed jump labels.
 static void tac_frame_init(struct TacFrame* frame, struct TacInterpreter* interp, struct TACInstr* body) {
   tac_bindings_init(&frame->locals);
   frame->labels = NULL;
@@ -1184,8 +1176,7 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
   return 0;
 }
 
-// Set up global/static variables from TAC top-level entries.
-// Allocates storage and sets initial values in global memory.
+// Allocate and initialize global/static objects from TAC top-level entries.
 static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg* prog) {
   const struct TopLevel* cur = (prog->statics != NULL) ? prog->statics : prog->head;
   for (; cur != NULL; cur = cur->next) {

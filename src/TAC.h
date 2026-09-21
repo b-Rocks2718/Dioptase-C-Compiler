@@ -6,21 +6,21 @@
 
 #include <stdint.h>
 
-// The tacprog stores head, tail, statics.
+// Own the TAC top-level list and file-scope static values.
 struct TACProg {
   struct TopLevel* head;    // Function top-levels in source order.
   struct TopLevel* tail;    // Tail of the function list for append operations.
   struct TopLevel* statics; // Static variable entries collected from symbols.
 };
 
-// Identify the possible top level type values.
+// Classify function, global, and static TAC top-level items.
 enum TopLevelType {
   FUNC,
   STATIC_VAR,
   STATIC_CONST,
 };
 
-// The top level stores type, name, global, body, and other fields.
+// Describe one TAC global, function, or static top-level item.
 struct TopLevel {
   enum TopLevelType type;
   struct Slice* name;
@@ -36,26 +36,26 @@ struct TopLevel {
   struct TopLevel* next;
 };
 
-// Identify the possible val type values.
+// Distinguish constant and variable TAC operands.
 enum ValType {
   CONSTANT,
   VARIABLE
 };
 
-// The val variant stores const_value, var_name.
+// Select constant or variable-name payload for a TAC value.
 union ValVariant {
   uint64_t const_value; // stores raw constant bits for 32/64-bit integers
   struct Slice* var_name;
 };
 
-// The val stores val_type, val, type.
+// Store TAC value kind, payload, and static type.
 struct Val {
   enum ValType val_type;
   union ValVariant val;
   struct Type* type;
 };
 
-// Identify the possible tacinstr type values.
+// Classify the TAC instruction variants.
 enum TACInstrType {
   TACRETURN,
   TACUNARY,
@@ -76,7 +76,7 @@ enum TACInstrType {
   TACEXTEND,
 };
 
-// Identify the possible taccondition values.
+// Enumerate conditions used by TAC conditional jumps.
 enum TACCondition {
   CondE,
   CondNE,
@@ -90,19 +90,19 @@ enum TACCondition {
   CondBE
 };
 
-// The tacreturn stores dst.
+// Store the optional return operand.
 struct TACReturn {
   struct Val* dst;
 };
 
-// The tacunary stores op, dst, src.
+// Store unary operation, destination, and source operands.
 struct TACUnary {
   enum UnOp op;
   struct Val* dst;
   struct Val* src;
 };
 
-// Identify the possible aluop values.
+// Enumerate arithmetic and bitwise TAC ALU operations.
 enum ALUOp {
   ALU_ADD,
   ALU_SUB,
@@ -122,7 +122,7 @@ enum ALUOp {
   ALU_MOV, // ignore first arg, copy second arg to dst
 };
 
-// The tacbinary stores alu_op, dst, src1, src2.
+// Store ALU operation and its destination/source operands.
 struct TACBinary {
   enum ALUOp alu_op;
   struct Val* dst;
@@ -130,7 +130,7 @@ struct TACBinary {
   struct Val* src2;
 };
 
-// The taccond jump stores src1, src2, condition, label.
+// Store a branch condition and target label.
 struct TACCondJump {
   struct Val* src1;
   struct Val* src2;
@@ -138,23 +138,23 @@ struct TACCondJump {
   struct Slice* label;
 };
 
-// The tacjump stores label.
+// Store the unconditional jump target label.
 struct TACJump {
   struct Slice* label;
 };
 
-// The taclabel stores label.
+// Store the label defined by this TAC instruction.
 struct TACLabel {
   struct Slice* label;
 };
 
-// The taccopy stores dst, src.
+// Store source and destination operands for a copy.
 struct TACCopy {
   struct Val* dst;
   struct Val* src;
 };
 
-// The taccall stores func_name, dst, args, num_args.
+// Store direct call target, result destination, and arguments.
 struct TACCall {
   struct Slice* func_name;
   struct Val* dst;
@@ -162,7 +162,7 @@ struct TACCall {
   size_t num_args;
 };
 
-// The taccall indirect stores func, dst, args, num_args.
+// Store indirect call target, result destination, and arguments.
 struct TACCallIndirect {
   struct Val* func;
   struct Val* dst;
@@ -170,25 +170,25 @@ struct TACCallIndirect {
   size_t num_args;
 };
 
-// The tacget address stores dst, src.
+// Store source object and destination pointer for address calculation.
 struct TACGetAddress {
   struct Val* dst;
   struct Val* src;
 };
 
-// The tacload stores dst, src_ptr.
+// Store destination value and source address for a load.
 struct TACLoad {
   struct Val* dst;
   struct Val* src_ptr;
 };
 
-// The tacstore stores dst_ptr, src.
+// Store destination address and source value for a store.
 struct TACStore {
   struct Val* dst_ptr;
   struct Val* src;
 };
 
-// The taccopy to offset stores dst, src, offset, dst_type.
+// Describe an aggregate copy into a destination byte offset.
 struct TACCopyToOffset {
   struct Slice* dst;
   struct Val* src;
@@ -196,33 +196,33 @@ struct TACCopyToOffset {
   struct Type* dst_type;
 };
 
-// The taccopy from offset stores dst, src, offset.
+// Describe an aggregate copy from a source byte offset.
 struct TACCopyFromOffset {
   struct Val* dst;
   struct Slice* src;
   int offset;
 };
 
-// The tacboundary stores loc.
+// Store the source location associated with a debug boundary.
 struct TACBoundary {
   const char* loc; // start of the statement for debug line markers
 };
 
-// The tactrunc stores dst, src, target_size.
+// Describe narrowing conversion from src to target_size.
 struct TACTrunc {
   struct Val* dst;
   struct Val* src;
   size_t target_size; // in bytes
 };
 
-// The tacextend stores dst, src, src_size.
+// Describe widening conversion from src_size to destination type.
 struct TACExtend {
   struct Val* dst;
   struct Val* src;
   size_t src_size; // in bytes
 };
 
-// The tacinstr variant stores tac_return, tac_unary, tac_binary, tac_cond_jump, and other fields.
+// Select the concrete TAC instruction payload identified by TacInstrType.
 union TACInstrVariant {
   struct TACReturn tac_return;
   struct TACUnary tac_unary;
@@ -243,7 +243,7 @@ union TACInstrVariant {
   struct TACExtend tac_extend;
 };
 
-// The tacinstr stores type, instr, next, last.
+// Link one TAC instruction with its kind and list-tail pointer.
 struct TACInstr {
   enum TACInstrType type;
   union TACInstrVariant instr;
@@ -251,14 +251,14 @@ struct TACInstr {
   struct TACInstr* last; // for convenience in building lists
 };
 
-// Identify the possible expr result type values.
+// Classify whether an expression result is a value or aggregate location.
 enum ExprResultType {
   PLAIN_OPERAND,
   DEREFERENCED_POINTER,
   SUB_OBJECT,
 };
 
-// The a expr result stores type, val, sub_object_base, sub_object_offset.
+// Store lowered expression value and optional aggregate subobject metadata.
 struct ExprResult {
   enum ExprResultType type;
   struct Val* val;

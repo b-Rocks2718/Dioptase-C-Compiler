@@ -6,12 +6,12 @@ static const char* source_text_ptr = NULL;
 static const char* source_file_ptr = NULL;
 static const struct SourceMapping* source_map_ptr = NULL;
 
-// Set source context.
+// Install an unmapped source buffer as the active diagnostic context.
 void set_source_context(const char* filename, const char* text) {
   set_source_context_with_map(filename, text, NULL);
 }
 
-// Set source context with map.
+// Install source text and its optional preprocessed-to-original coordinate map.
 void set_source_context_with_map(const char* filename, const char* text, const struct SourceMapping* map) {
   source_file_ptr = filename;
   source_text_ptr = text;

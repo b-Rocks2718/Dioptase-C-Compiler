@@ -3,7 +3,7 @@
 
 #include "asm_gen.h"
 
-// Identify the possible machine instr type values.
+// Classify target machine instruction variants.
 enum MachineInstrType {
   // real instructions
   MACHINE_AND,
@@ -118,18 +118,18 @@ enum MachineInstrType {
   MACHINE_DEBUG_LOCAL,
 };
 
-// Identify the possible exception values.
+// Enumerate machine exception codes emitted by diagnostics.
 enum Exception {
   EXC_EXIT,
 };
 
-// The machine prog stores head, tail.
+// Own the linked list of generated machine instructions.
 struct MachineProg {
   struct MachineInstr* head;
   struct MachineInstr* tail;
 };
 
-// The machine instr stores type, ra, rb, rc, and other fields.
+// Store a machine opcode and its register/immediate operand payload.
 struct MachineInstr {
   enum MachineInstrType type;
 

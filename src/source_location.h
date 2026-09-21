@@ -3,7 +3,8 @@
 
 #include <stddef.h>
 
-// The a single source coordinate in the original input stores based, filename, line, column.
+// Map one preprocessed byte position to its original file coordinate.
+// Line/column are 1-based; filename points to stable storage.
 // Stored alongside preprocessed output for error reporting.
 // line/column are 1-based; filename points to stable storage.
 struct SourceMappingEntry {
@@ -19,7 +20,7 @@ struct SourceMapping {
   size_t length;
 };
 
-// The source location stores line, column, offset.
+// Store a source line, column, and byte offset for diagnostics.
 struct SourceLocation {
   size_t line;
   size_t column;

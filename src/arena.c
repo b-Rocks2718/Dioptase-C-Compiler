@@ -10,7 +10,7 @@ static size_t align_up(size_t value, size_t alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
 }
 
-// Set up arena.
+// Initialize the global arena with a minimum allocation-block size.
 void arena_init(size_t block_size) {
   arena = (struct Arena*)malloc(sizeof(struct Arena));
   arena->head = NULL;

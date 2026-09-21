@@ -23,7 +23,7 @@ struct Buffer {
   size_t cap;
 };
 
-// The object-like macros as a linked list stores name, name_len, value, value_len, and other fields.
+// Own one object-like macro definition and link it into the preprocessor table.
 // Owned by the preprocessor and freed at teardown.
 struct Macro {
   char* name;
@@ -78,8 +78,8 @@ static void preprocessor_error_at(const char* filename, size_t line_no, const ch
   fprintf(stderr, "\n");
 }
 
-// Set up a buffer with the requested capacity.
-// Returns true on success and zeroes buf length.
+// Allocate an empty output buffer and a parallel source-location map.
+// Returns false if either allocation fails.
 static bool buffer_init(struct Buffer* buf, size_t cap) {
   buf->data = malloc(cap);
   if (buf->data == NULL) return false;
@@ -459,8 +459,8 @@ static char* copy_string(const char* src) {
   return out;
 }
 
-// Set up a file table for storing unique filename strings.
-// Caller manages lifetime via file_table_destroy.
+// Initialize ownership for filenames interned during preprocessing.
+// Caller releases all stored strings with file_table_destroy.
 static void file_table_init(struct FileTable* table) {
   table->names = NULL;
   table->count = 0;

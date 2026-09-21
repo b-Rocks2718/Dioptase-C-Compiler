@@ -16,8 +16,7 @@
 // Controls how many scopes fit before resizing.
 #define INITIAL_STACK_CAPACITY 8
 
-// Set up a new identifier stack with one scope.
-// Returns an IdentStack ready for lookups.
+// Create the resolver's scope stack with its initial file or function scope.
 struct IdentStack* init_scope(void) {
   struct IdentStack* stack = create_ident_stack(INITIAL_STACK_CAPACITY);
   enter_scope(stack);

@@ -5,7 +5,7 @@
 #include "slice.h"
 #include "arena.h"
 
-// Compare slice to pointer.
+// Compare a bounded slice with a NUL-terminated string.
 bool compare_slice_to_pointer(const struct Slice* s, char const *p) {
   for (size_t i = 0; i < s->len; i++) {
     if (p[i] != s->start[i])
@@ -14,7 +14,7 @@ bool compare_slice_to_pointer(const struct Slice* s, char const *p) {
   return p[s->len] == 0;
 }
 
-// Compare slice to slice.
+// Compare two bounded slices for byte-for-byte equality.
 bool compare_slice_to_slice(const struct Slice* self, const struct Slice* other) {
   if (self->len != other->len)
     return false;
@@ -65,7 +65,7 @@ void print_slice(struct Slice* slice) {
   }
 }
 
-// Print slice with escapes.
+// Render control characters using C-style escape sequences.
 void print_slice_with_escapes(struct Slice* slice) {
   for (size_t i = 0; i < slice->len; i++) {
     char c = slice->start[i];

@@ -724,7 +724,7 @@ struct TACInstr* local_dclr_to_TAC(struct Slice* func_name, struct Declaration* 
   }
 }
 
-// Set up compound to tac.
+// Dispatch aggregate initialization to the array or struct/union TAC lowering path.
 struct TACInstr* compound_init_to_TAC(struct Slice* func_name,
                                       struct Slice* base_var,
                                       struct InitializerList* inits,
@@ -797,7 +797,7 @@ struct TACInstr* single_init_to_TAC(struct Slice* func_name,
   return expr_to_TAC_convert(func_name, &assign_expr, NULL);
 }
 
-// Set up to tac.
+// Lower either a scalar or compound initializer at the requested object offset.
 struct TACInstr* init_to_TAC(struct Slice* func_name,
                                  struct Slice* base_var,
                                  struct Initializer* init,
@@ -912,7 +912,7 @@ static struct TACInstr* string_init_to_TAC(struct Slice* func_name, struct Slice
   return instrs;
 }
 
-// Set up struct to tac.
+// Lower member initializers to offset stores using the checked aggregate layout.
 static struct TACInstr* struct_init_to_TAC(struct Slice* func_name, struct Slice* base,
                                            struct InitializerList* inits,
                                            struct Type* type,

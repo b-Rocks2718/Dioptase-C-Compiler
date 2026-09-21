@@ -72,7 +72,7 @@ bool resolve_args(struct ArgList* args){
   return true;
 }
 
-// Set up the resolver state for a local variable declaration.
+// Resolve every expression nested in a variable initializer.
 bool resolve_var_init(struct Initializer* init){
   switch (init->init_type) {
     case SINGLE_INIT:

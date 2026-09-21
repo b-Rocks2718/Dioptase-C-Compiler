@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-// Identify the possible token type values.
+// Classify lexical tokens produced by the C lexer.
 enum TokenType {
   // tokens with data
   INT_LIT, // contains int
@@ -88,7 +88,7 @@ enum TokenType {
   ARROW_TOK,
 };
 
-// The token variant stores int_val, uint_val, long_val, ulong_val, and other fields.
+// Store the literal or identifier payload selected by TokenType.
 union TokenVariant {
   int int_val;
   unsigned uint_val;
@@ -99,7 +99,7 @@ union TokenVariant {
   struct Slice* ident_name;
 };
 
-// The token stores type, data, start, len.
+// Store token kind, payload, and its source span.
 struct Token {
   enum TokenType type;
   union TokenVariant data;

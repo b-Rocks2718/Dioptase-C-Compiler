@@ -364,14 +364,14 @@ enum {
   CFG_ASCII_SELF_LOOP_PADDING = 3,
 };
 
-// The cfgascii canvas stores cells, rows, columns.
+// Own the character grid used while routing an ASCII CFG rendering.
 struct CFGAsciiCanvas {
   char* cells;
   unsigned rows;
   unsigned columns;
 };
 
-// Identify the possible cfgascii edge kind values.
+// Classify edges by the routing shape needed in the ASCII visualization.
 enum CFGAsciiEdgeKind {
   CFG_ASCII_ADJACENT_EDGE,
   CFG_ASCII_FORWARD_EDGE,
@@ -379,7 +379,7 @@ enum CFGAsciiEdgeKind {
   CFG_ASCII_SELF_EDGE,
 };
 
-// The cfgascii edge stores source, target, kind, departure_row, and other fields.
+// Record endpoints and assigned routing coordinates for one rendered CFG edge.
 struct CFGAsciiEdge {
   unsigned source;
   unsigned target;
@@ -958,4 +958,28 @@ struct TACInstr* rebuild_body(struct CFG* cfg) {
     head->last = tail;
   }
   return head;
+}
+
+// Reset all marked flags in the CFG for traversal.
+void reset_marks(struct CFG* cfg) {
+  if (cfg == NULL) {
+    return;
+  }
+  for (unsigned i = 0; i < cfg->num_nodes; i++) {
+    struct CFGNode* block = cfg->nodes[i];
+    block->marked = false;
+  }
+}
+
+// After removing blocks from the CFG, nodes may contain dangling edges. 
+// Repair the CFG to maintain consistency. Removes empty blocks as a side effect.
+struct CFG* repair_cfg(struct CFG* cfg){
+  if (cfg == NULL) return NULL;
+
+  // rebuild_body does not use CFG edges, 
+  // so this is safe even if the CFG has dangling edges.
+  struct TACInstr* instrs = rebuild_body(cfg);
+
+  // instrs is now valid, so we can safely rebuild the CFG from it
+  return build_cfg(instrs);
 }

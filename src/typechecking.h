@@ -7,8 +7,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Define typechecking data structures and APIs.
-// Provides typechecking results and symbol table accessors.
+// Declare typechecking metadata, symbol tables, and pass entry points.
 
 // Entry in the symbol table for a single identifier.
 // Used by typechecker to validate uses and linkage.
@@ -20,14 +19,14 @@ struct SymbolEntry{
   struct SymbolEntry* next;
 };
 
-// Identify the possible type entry type values.
+// Distinguish struct, union, and named-type table entries.
 enum TypeEntryType {
   STRUCT_ENTRY,
   UNION_ENTRY,
   ENUM_ENTRY,
 };
 
-// The one member entry stores key, type, offset, next.
+// Describe one aggregate member and its byte offset in the enclosing layout.
 struct MemberEntry{
   struct Slice* key;
   struct Type* type;
@@ -35,7 +34,7 @@ struct MemberEntry{
   struct MemberEntry* next;
 };
 
-// The one struct entry stores key, alignment, size, members.
+// Describe an aggregate's completed layout and member chain.
 struct StructEntry{
   struct Slice* key;
   unsigned alignment;
@@ -43,13 +42,13 @@ struct StructEntry{
   struct MemberEntry* members;
 };
 
-// The type entry variant stores struct_entry, union_entry.
+// Select struct or union layout payload for a type entry.
 union TypeEntryVariant {
   struct StructEntry* struct_entry;
   struct StructEntry* union_entry;
 };
 
-// The one type entry stores key, type, data, next.
+// Link one named aggregate layout into a type-table bucket.
 struct TypeEntry{
   struct Slice* key;
   enum TypeEntryType type;
@@ -80,8 +79,7 @@ enum IdentAttrType {
   CONST_ATTR,
 };
 
-// Track initialization state for static storage.
-// Guides tentative definition and redefinition rules.
+// Distinguish declarations, tentative definitions, and explicit static initializers.
 enum IdentInitType {
   NO_INIT = 0,
   TENTATIVE = 1,
@@ -111,15 +109,14 @@ enum StaticInitType {
   ZERO_INIT,
 };
 
-// The static init value stores num, string, pointer.
+// Store the scalar, string, or pointer payload of a static initializer.
 union StaticInitValue {
   uint64_t num;
   struct Slice* string; // for STRING_INIT
   struct Slice* pointer;     // for POINTER_INIT
 };
 
-// The a static initializer entry stores the value.
-// Used by InitList to describe static data.
+// Pair one typed static-initializer value with its eventual data layout.
 struct StaticInit {
   enum StaticInitType int_type;
   union StaticInitValue value;

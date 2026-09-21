@@ -10,7 +10,7 @@ void print_tabs(int tabs) {
   for (int i = 0; i < tabs; ++i) printf("    ");
 }
 
-// Print param type list.
+// Render a function parameter-type list in the indented AST dump.
 void print_param_type_list(struct ParamTypeList* type_list){
   if (type_list == NULL) return;
   print_type(type_list->type);
@@ -94,7 +94,7 @@ void print_type(struct Type* type){
   }
 }
 
-// Print storage class.
+// Render a declaration's storage-class keyword in the AST dump.
 static void print_storage_class(enum StorageClass storage){
   switch (storage){
     case NONE:
@@ -199,7 +199,7 @@ void print_expr(struct Expr* expr, int tabs){
   }
 }
 
-// Print bin expr.
+// Render a binary expression and both operand subtrees.
 void print_bin_expr(struct BinaryExpr* bin_expr, int tabs){
   switch (bin_expr->op){
     case ADD_OP:
@@ -302,7 +302,7 @@ void print_bin_expr(struct BinaryExpr* bin_expr, int tabs){
   printf(")");
 }
 
-// Print un expr.
+// Render a unary expression and its operand subtree.
 void print_un_expr(struct UnaryExpr* un_expr, int tabs){
   switch (un_expr->op){
     case COMPLEMENT:
@@ -322,7 +322,7 @@ void print_un_expr(struct UnaryExpr* un_expr, int tabs){
   printf(")");
 }
 
-// Print assign expr.
+// Render a simple or compound assignment expression.
 void print_assign_expr(struct AssignExpr* assign_expr, int tabs){
   printf("Assign(");
   print_expr(assign_expr->left, tabs);
@@ -331,7 +331,7 @@ void print_assign_expr(struct AssignExpr* assign_expr, int tabs){
   printf(")");
 }
 
-// Print post assign expr.
+// Render a postfix increment or decrement expression.
 void print_post_assign_expr(struct PostAssignExpr* post_expr, int tabs){
   printf("PostAssign(");
   switch (post_expr->op){
@@ -347,7 +347,7 @@ void print_post_assign_expr(struct PostAssignExpr* post_expr, int tabs){
   printf(")");
 }
 
-// Print conditional expr.
+// Render the condition and both arms of a conditional expression.
 void print_conditional_expr(struct ConditionalExpr* c_expr, int tabs){
   printf("ConditionalExpr(");
   print_expr(c_expr->condition, tabs);
@@ -358,7 +358,7 @@ void print_conditional_expr(struct ConditionalExpr* c_expr, int tabs){
   printf(")");
 }
 
-// Print lit expr.
+// Render an integer literal with its checked type.
 void print_lit_expr(struct LitExpr* lit_expr){
   printf("LitExpr(");
   switch (lit_expr->type){
@@ -381,14 +381,14 @@ void print_lit_expr(struct LitExpr* lit_expr){
   printf(")");
 }
 
-// Print var expr.
+// Render a variable reference using its resolved name.
 void print_var_expr(struct VarExpr* var_expr){
   printf("Var(");
   print_slice(var_expr->name);
   printf(")");
 }
 
-// Print args list.
+// Render every argument expression in call order.
 void print_args_list(struct ArgList* args_list, int tabs){
   if (args_list == NULL) return;
   print_expr(args_list->arg, tabs);
@@ -396,7 +396,7 @@ void print_args_list(struct ArgList* args_list, int tabs){
   print_args_list(args_list->next, tabs);
 }
 
-// Print fun call expr.
+// Render a function call target and its argument list.
 void print_fun_call_expr(struct FunctionCallExpr* fun_expr, int tabs){
   printf("FunCallExpr(");
   print_expr(fun_expr->func, tabs);
@@ -405,7 +405,7 @@ void print_fun_call_expr(struct FunctionCallExpr* fun_expr, int tabs){
   printf("])");
 }
 
-// Print cast expr.
+// Render an explicit or inserted cast and its operand.
 void print_cast_expr(struct CastExpr* cast_expr, int tabs){
   printf("Cast(");
   print_type(cast_expr->target);
@@ -414,21 +414,21 @@ void print_cast_expr(struct CastExpr* cast_expr, int tabs){
   printf(")");
 }
 
-// Print addr of expr.
+// Render an address-of expression and its operand.
 void print_addr_of_expr(struct AddrOfExpr* expr, int tabs){
   printf("AddrOf(");
   print_expr(expr->expr, tabs);
   printf(")");
 }
 
-// Print dereference expr.
+// Render a pointer dereference and its operand.
 void print_dereference_expr(struct DereferenceExpr* expr, int tabs){
   printf("Dereference(");
   print_expr(expr->expr, tabs);
   printf(")");
 }
 
-// Print subscript expr.
+// Render an array subscript with base and index expressions.
 void print_subscript_expr(struct SubscriptExpr* expr, int tabs){
   printf("Subscript(");
   print_expr(expr->array, tabs);
@@ -437,7 +437,7 @@ void print_subscript_expr(struct SubscriptExpr* expr, int tabs){
   printf(")");
 }
 
-// Print block item.
+// Dispatch one block item to its declaration or statement renderer.
 void print_block_item(struct BlockItem* item, int tabs){
   switch (item->type){
     case DCLR_ITEM:
@@ -455,7 +455,7 @@ void print_block(struct Block* block, int tabs){
   print_block(block->next, tabs);
 }
 
-// Print for init.
+// Render the declaration or expression initializer of a for loop.
 void print_for_init(struct ForInit* for_init, int tabs){
   switch (for_init->type){
     case DCLR_INIT:
@@ -467,7 +467,7 @@ void print_for_init(struct ForInit* for_init, int tabs){
   }
 }
 
-// Print case list.
+// Render the collected case labels attached to a switch.
 void print_case_list(struct CaseList* case_list, int tabs){
   if (case_list == NULL) return;
   switch (case_list->case_label.type){
@@ -482,7 +482,7 @@ void print_case_list(struct CaseList* case_list, int tabs){
   print_case_list(case_list->next, tabs);
 }
 
-// Print return stmt.
+// Render a return statement and its optional value.
 void print_return_stmt(struct ReturnStmt* ret_stmt, int tabs){
   printf("Return(");
   if (ret_stmt->expr == NULL){
@@ -497,12 +497,12 @@ void print_return_stmt(struct ReturnStmt* ret_stmt, int tabs){
   printf(");\n");
 }
 
-// Print expr stmt.
+// Render the expression contained in an expression statement.
 void print_expr_stmt(struct ExprStmt* expr_stmt, int tabs){
   printf("ExprStmt("); print_expr(expr_stmt->expr, tabs); printf(");\n");
 }
 
-// Print if stmt.
+// Render an if statement, including its optional else branch.
 void print_if_stmt(struct IfStmt* if_stmt, int tabs){
   printf("IfStmt(\n");
   print_tabs(tabs + 1); printf("c="); print_expr(if_stmt->condition, tabs); printf(", \n");
@@ -515,12 +515,12 @@ void print_if_stmt(struct IfStmt* if_stmt, int tabs){
   print_tabs(tabs); printf(");\n");
 }
 
-// Print goto stmt.
+// Render a goto using its resolved target label.
 void print_goto_stmt(struct GotoStmt* goto_stmt, int tabs){
   printf("GotoStmt("); print_slice(goto_stmt->label); printf(");\n");
 }
 
-// Print labeled stmt.
+// Render a named label and its nested statement.
 void print_labeled_stmt(struct LabeledStmt* labeled_stmt, int tabs){
   printf("LabeledStmt(\n");
   print_tabs(tabs + 1); print_slice(labeled_stmt->label); printf(",\n");
@@ -528,14 +528,14 @@ void print_labeled_stmt(struct LabeledStmt* labeled_stmt, int tabs){
   print_tabs(tabs); printf(");\n"); 
 }
 
-// Print compound stmt.
+// Render the declarations and statements in a compound block.
 void print_compound_stmt(struct CompoundStmt* compound_stmt, int tabs){
   printf("CompoundStmt(\n");
   print_block(compound_stmt->block, tabs + 1);
   print_tabs(tabs); printf(");\n");
 }
 
-// Print break stmt.
+// Render a break statement with its resolved control-flow label.
 void print_break_stmt(struct BreakStmt* break_stmt, int tabs){
   printf("BreakStmt(label=");
   if (break_stmt->label == NULL) printf("null");
@@ -543,7 +543,7 @@ void print_break_stmt(struct BreakStmt* break_stmt, int tabs){
   printf(");\n");
 }
 
-// Print continue stmt.
+// Render a continue statement with its resolved loop label.
 void print_continue_stmt(struct ContinueStmt* continue_stmt, int tabs){
   printf("ContinueStmt(label=");
   if (continue_stmt->label == NULL) printf("null");
@@ -551,7 +551,7 @@ void print_continue_stmt(struct ContinueStmt* continue_stmt, int tabs){
   printf(");\n");
 }
 
-// Print while stmt.
+// Render a while condition, body, and resolved loop label.
 void print_while_stmt(struct WhileStmt* while_stmt, int tabs){
   printf("WhileStmt(\n");
   if (while_stmt->label != NULL){
@@ -562,7 +562,7 @@ void print_while_stmt(struct WhileStmt* while_stmt, int tabs){
   print_tabs(tabs); printf(");\n");
 }
 
-// Print do while stmt.
+// Render a do-while body, condition, and resolved loop label.
 void print_do_while_stmt(struct DoWhileStmt* do_while_stmt, int tabs){
   printf("DoWhileStmt(\n");
   if (do_while_stmt->label != NULL){
@@ -573,7 +573,7 @@ void print_do_while_stmt(struct DoWhileStmt* do_while_stmt, int tabs){
   print_tabs(tabs); printf(");\n");
 }
 
-// Print for stmt.
+// Render every clause, the body, and the resolved label of a for loop.
 void print_for_stmt(struct ForStmt* for_stmt, int tabs){
   printf("ForStmt(\n");
   if (for_stmt->label != NULL){
@@ -590,7 +590,7 @@ void print_for_stmt(struct ForStmt* for_stmt, int tabs){
   print_tabs(tabs); printf(");\n");
 }
 
-// Print switch stmt.
+// Render a switch expression, body, and collected case labels.
 void print_switch_stmt(struct SwitchStmt* switch_stmt, int tabs){
   printf("SwitchStmt(\n");
   print_tabs(tabs + 1); printf("label="); 
@@ -605,7 +605,7 @@ void print_switch_stmt(struct SwitchStmt* switch_stmt, int tabs){
   print_tabs(tabs); printf(");\n");
 }
 
-// Print case stmt.
+// Render a case value, resolved label, and nested statement.
 void print_case_stmt(struct CaseStmt* case_stmt, int tabs){
   printf("CaseStmt(\n"); 
   print_tabs(tabs + 1); print_expr(case_stmt->expr, tabs); printf(",\n");
@@ -613,14 +613,14 @@ void print_case_stmt(struct CaseStmt* case_stmt, int tabs){
   print_tabs(tabs); printf(");\n");
 }
 
-// Print default stmt.
+// Render a default label and its nested statement.
 void print_default_stmt(struct DefaultStmt* default_stmt, int tabs){
   printf("DefaultStmt(\n");
   print_stmt(default_stmt->statement, tabs + 1);
   print_tabs(tabs); printf(");\n");
 }
 
-// Print null stmt.
+// Render an explicit empty statement in the AST dump.
 void print_null_stmt(struct NullStmt* null_stmt, int tabs){
   printf("NullStmt;\n");
 }
@@ -698,7 +698,7 @@ void print_initializer(struct Initializer* init, int tabs){
   }
 }
 
-// Print var attributes.
+// Render linkage, storage duration, and initialization metadata for a variable.
 void print_var_attributes(struct VarAttributes attrs){
   if (attrs.cleanup_func != NULL){
     printf("cleanup = ");
@@ -707,7 +707,7 @@ void print_var_attributes(struct VarAttributes attrs){
   }
 }
 
-// Print var dclr.
+// Render a variable declaration, including type, attributes, and initializer.
 void print_var_dclr(struct VariableDclr* var_dclr, int tabs){
   printf("VarDclr(");
   print_storage_class(var_dclr->storage); printf(", ");
@@ -720,7 +720,7 @@ void print_var_dclr(struct VariableDclr* var_dclr, int tabs){
   printf(")");
 }
 
-// Print param list.
+// Render function parameter declarations in source order.
 void print_param_list(struct ParamList* params, int tabs){
   if (params == NULL) return;
   print_var_dclr(&params->param, tabs);
@@ -728,7 +728,7 @@ void print_param_list(struct ParamList* params, int tabs){
   print_param_list(params->next, tabs);
 }
 
-// Print fun dclr.
+// Render a function declaration or definition and its attributes.
 void print_fun_dclr(struct FunctionDclr* fun_dclr, int tabs){
   printf("FunDclr(\n");
   print_tabs(tabs + 1); 
@@ -759,7 +759,7 @@ void print_fun_dclr(struct FunctionDclr* fun_dclr, int tabs){
   print_tabs(tabs); printf(")");
 }
 
-// Print member dclr.
+// Render one aggregate member declaration and computed offset.
 void print_member_dclr(struct MemberDclr* member){
   printf("MemberDclr(name=");
   print_slice_with_escapes(member->name);
@@ -768,7 +768,7 @@ void print_member_dclr(struct MemberDclr* member){
   printf(")");
 }
 
-// Print struct dclr.
+// Render a struct declaration and all of its members.
 void print_struct_dclr(struct StructDclr* struct_dclr, int tabs){
   printf("\n");
   print_tabs(tabs);
@@ -789,7 +789,7 @@ void print_struct_dclr(struct StructDclr* struct_dclr, int tabs){
   printf(")");
 }
 
-// Print union dclr.
+// Render a union declaration and all of its members.
 void print_union_dclr(struct UnionDclr* union_dclr, int tabs){
   printf("\n");
   print_tabs(tabs);
@@ -810,7 +810,7 @@ void print_union_dclr(struct UnionDclr* union_dclr, int tabs){
   printf(")");
 }
 
-// Print enum dclr.
+// Render an enum declaration and its enumerator values.
 void print_enum_dclr(struct EnumDclr* enum_dclr, int tabs){
   printf("\n");
   print_tabs(tabs);
