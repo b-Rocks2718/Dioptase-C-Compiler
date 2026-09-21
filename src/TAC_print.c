@@ -212,10 +212,10 @@ void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
   switch (instr->type) {
     case TACRETURN:
       printf("Return ");
-      if (instr->instr.tac_return.dst == NULL) {
+      if (instr->instr.tac_return.src == NULL) {
         printf("void");
       } else {
-        print_tac_val(instr->instr.tac_return.dst);
+        print_tac_val(instr->instr.tac_return.src);
       }
       printf("\n");
       break;

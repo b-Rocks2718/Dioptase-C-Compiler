@@ -120,7 +120,7 @@ static bool tac_test_return_const(void) {
 
   struct TACInstr ret_instr;
   tac_init_instr(&ret_instr, TACRETURN);
-  ret_instr.instr.tac_return.dst = &ret_val;
+  ret_instr.instr.tac_return.src = &ret_val;
 
   struct TopLevel main_func;
   tac_init_func(&main_func, &main_name, &ret_instr, NULL, 0);
@@ -189,7 +189,7 @@ static bool tac_test_arithmetic(void) {
   mul_instr.instr.tac_binary.src1 = &t0_val;
   mul_instr.instr.tac_binary.src2 = &const_2;
 
-  ret_instr.instr.tac_return.dst = &t1_val;
+  ret_instr.instr.tac_return.src = &t1_val;
 
   tac_link_instr(&copy_a, &copy_b);
   tac_link_instr(&copy_b, &add_instr);
@@ -243,9 +243,9 @@ static bool tac_test_cond_jump(void) {
   cond_jump.instr.tac_cond_jump.src2 = &const_10;
   cond_jump.instr.tac_cond_jump.condition = CondL;
   cond_jump.instr.tac_cond_jump.label = &then_label;
-  ret_false.instr.tac_return.dst = &const_2;
+  ret_false.instr.tac_return.src = &const_2;
   label.instr.tac_label.label = &then_label;
-  ret_true.instr.tac_return.dst = &const_1;
+  ret_true.instr.tac_return.src = &const_1;
 
   tac_link_instr(&cond_jump, &ret_false);
   tac_link_instr(&ret_false, &label);
@@ -298,7 +298,7 @@ static bool tac_test_call(void) {
   add_bin.instr.tac_binary.dst = &t0_val;
   add_bin.instr.tac_binary.src1 = &p_val;
   add_bin.instr.tac_binary.src2 = &q_val;
-  add_ret.instr.tac_return.dst = &t0_val;
+  add_ret.instr.tac_return.src = &t0_val;
   tac_link_instr(&add_bin, &add_ret);
 
   struct Slice* add_params[kArgCount] = { &p_name, &q_name };
@@ -317,7 +317,7 @@ static bool tac_test_call(void) {
   call_instr.instr.tac_call.dst = &t1_val;
   call_instr.instr.tac_call.args = call_args;
   call_instr.instr.tac_call.num_args = kArgCount;
-  main_ret.instr.tac_return.dst = &t1_val;
+  main_ret.instr.tac_return.src = &t1_val;
   tac_link_instr(&call_instr, &main_ret);
 
   struct TopLevel main_func;
@@ -378,7 +378,7 @@ static bool tac_test_memory_ops(void) {
   store.instr.tac_store.src = &const_42;
   load.instr.tac_load.dst = &t0_val;
   load.instr.tac_load.src_ptr = &p_val;
-  ret_instr.instr.tac_return.dst = &t0_val;
+  ret_instr.instr.tac_return.src = &t0_val;
 
   tac_link_instr(&copy_x, &addr_of);
   tac_link_instr(&addr_of, &store);
@@ -468,7 +468,7 @@ static bool tac_test_unary_ops(void) {
   add_1.instr.tac_binary.src1 = &t0_val;
   add_1.instr.tac_binary.src2 = &bnot_val;
 
-  ret_instr.instr.tac_return.dst = &t1_val;
+  ret_instr.instr.tac_return.src = &t1_val;
 
   tac_link_instr(&copy_a, &unary_neg);
   tac_link_instr(&unary_neg, &unary_comp);
@@ -518,9 +518,9 @@ static bool tac_test_jump(void) {
   tac_init_instr(&ret_true, TACRETURN);
 
   jump_instr.instr.tac_jump.label = &label_name;
-  ret_false.instr.tac_return.dst = &const_0;
+  ret_false.instr.tac_return.src = &const_0;
   label_instr.instr.tac_label.label = &label_name;
-  ret_true.instr.tac_return.dst = &const_9;
+  ret_true.instr.tac_return.src = &const_9;
 
   tac_link_instr(&jump_instr, &ret_false);
   tac_link_instr(&ret_false, &label_instr);
@@ -594,7 +594,7 @@ static bool tac_test_copy_to_offset(void) {
   add_addr.instr.tac_binary.src2 = &const_offset;
   load.instr.tac_load.dst = &t0_val;
   load.instr.tac_load.src_ptr = &addr2_val;
-  ret_instr.instr.tac_return.dst = &t0_val;
+  ret_instr.instr.tac_return.src = &t0_val;
 
   tac_link_instr(&copy_arr0, &addr_of);
   tac_link_instr(&addr_of, &copy_offset);
@@ -771,7 +771,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_cond_jump.src2 = &uint_zero;
   instr.instr.tac_cond_jump.condition = CondB;
   instr.instr.tac_cond_jump.label = &target_name;
-  return_after_jump.instr.tac_return.dst = &one;
+  return_after_jump.instr.tac_return.src = &one;
   tac_link_instr(&instr, &return_after_jump);
   struct TACInstr* folded_fallthrough = constant_fold(&instr);
   if (folded_fallthrough != &return_after_jump) {
@@ -835,9 +835,9 @@ static bool tac_test_compare_bodies(void) {
   ok = tac_expect_body_comparison("empty bodies", NULL, NULL, true) && ok;
 
   tac_init_instr(&left, TACRETURN);
-  left.instr.tac_return.dst = &first_val;
+  left.instr.tac_return.src = &first_val;
   EXPECT_MATCH();
-  EXPECT_FIELD_DIFFERENT(instr.tac_return.dst, &second_val);
+  EXPECT_FIELD_DIFFERENT(instr.tac_return.src, &second_val);
 
   tac_init_instr(&left, TACUNARY);
   left.instr.tac_unary.op = NEGATE;
@@ -1017,11 +1017,11 @@ static bool tac_test_cfg_rebuild(void) {
   cond_jump.instr.tac_cond_jump.condition = CondNE;
   cond_jump.instr.tac_cond_jump.label = &target_name;
   tac_init_instr(&return_false, TACRETURN);
-  return_false.instr.tac_return.dst = &zero;
+  return_false.instr.tac_return.src = &zero;
   tac_init_instr(&label, TACLABEL);
   label.instr.tac_label.label = &target_name;
   tac_init_instr(&return_true, TACRETURN);
-  return_true.instr.tac_return.dst = &one;
+  return_true.instr.tac_return.src = &one;
 
   copy.next = &cond_jump;
   cond_jump.next = &return_false;

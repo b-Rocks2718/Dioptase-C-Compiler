@@ -975,8 +975,8 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
   while (pc != NULL) {
     switch (pc->type) {
       case TACRETURN: {
-        uint64_t value = pc->instr.tac_return.dst
-                             ? tac_eval_val(interp, &frame, pc->instr.tac_return.dst)
+        uint64_t value = pc->instr.tac_return.src
+                             ? tac_eval_val(interp, &frame, pc->instr.tac_return.src)
                              : 0;
         tac_frame_destroy(&frame);
         return value;

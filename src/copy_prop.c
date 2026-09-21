@@ -306,6 +306,21 @@ static void transfer(struct CFGNode* block,
   block->reaching_copies = copy_reaching_copy_list(current_reaching_copies);
 }
 
+// Return true when both lists contain the same copies. Order and duplicate entries are ignored.
+bool compare_reaching_copy_lists(struct ReachingCopyList list1, struct ReachingCopyList list2) {
+  for (struct ReachingCopy* copy = list1.head; copy != NULL; copy = copy->next) {
+    if (!reaching_copy_list_contains(list2, copy->dst, copy->src)) {
+      return false;
+    }
+  }
+  for (struct ReachingCopy* copy = list2.head; copy != NULL; copy = copy->next) {
+    if (!reaching_copy_list_contains(list1, copy->dst, copy->src)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Intersect two reaching copy lists, 
 // returning a new list containing only copies present in both lists.
 struct ReachingCopyList intersect_reaching_copy_lists(struct ReachingCopyList list1, struct ReachingCopyList list2){
@@ -344,11 +359,180 @@ struct ReachingCopyList meet(struct CFGNode* block, struct ReachingCopyList all_
   return incoming_copies;
 }
 
-struct CFG* copy_prop(struct CFG* cfg, struct SliceList aliased_vars){
-  // TODO
-  (void)aliased_vars;
+// Find reaching copies for all blocks in the CFG.
+void find_reaching_copies(struct CFG* cfg, struct SliceList aliased_vars){
   struct ReachingCopyList all_copies = collect_all_copies(cfg);
-  (void)all_copies;
+
+  struct CFGNodeList worklist = {NULL, NULL};
+
+  // iterate over all basic blocks
+  for (unsigned i = 1; i < cfg->num_nodes - 1; i++) {
+    cfg_node_list_append(&worklist, cfg->nodes[i]);
+    cfg->nodes[i]->reaching_copies = copy_reaching_copy_list(all_copies);
+  }
+
+  while (!cfg_node_list_is_empty(&worklist)) {
+    struct CFGNode* block = cfg_node_list_remove_front(&worklist);
+    struct ReachingCopyList old_annotation = block->reaching_copies;
+    struct ReachingCopyList incoming_copies = meet(block, all_copies);
+    transfer(block, incoming_copies, aliased_vars);
+
+    if (!compare_reaching_copy_lists(old_annotation, block->reaching_copies)) {
+      // if the reaching copies have changed, add all successors to the worklist
+      for (struct CFGNodeEntry* succ = block->successors.head; succ != NULL; succ = succ->next) {
+        if (succ->node->type == CFG_EXIT) {
+          // do not add exit node to the worklist
+          continue;
+        }
+
+        if (succ->node->type == CFG_ENTRY) {
+          // ENTRY should not be the successor of any node
+          fprintf(stderr, "Error: CFG_ENTRY should not be the successor of any node.\n");
+          exit(1);
+        }
+
+        if (!cfg_node_list_contains(&worklist, succ->node)) {
+          cfg_node_list_append(&worklist, succ->node);
+        }
+      }
+    }
+  }
+
+  // when the loop terminates, all instructions are annotated 
+}
+
+// Replace the operand with its reaching copy if one exists
+static struct Val* replace_operand(struct Val* operand, struct ReachingCopyList reaching_copies) {
+  if (operand == NULL) {
+    return NULL;
+  }
+
+  if (operand->val_type == CONSTANT) {
+    return operand;
+  }
+
+  for (struct ReachingCopy* copy = reaching_copies.head; copy != NULL; copy = copy->next) {
+    if (compare_vals(copy->dst, operand)) {
+      return copy->src;
+    }
+  }
+  return operand;
+}
+
+// Rewrite the instruction by replacing its operands with their reaching copies if they exist.
+// Returns true if the instruction can be deleted (is redundant), false otherwise.
+static bool rewrite_instr(struct TACInstr* instr){
+  struct ReachingCopyList reaching_copies = instr->reaching_copies;
+  switch (instr->type) {
+    case TACCOPY: {
+      for (struct ReachingCopy* copy = reaching_copies.head; copy != NULL; copy = copy->next) {
+        if ((compare_vals(copy->dst, instr->instr.tac_copy.dst) &&
+             compare_vals(copy->src, instr->instr.tac_copy.src)) ||
+            (compare_vals(copy->dst, instr->instr.tac_copy.src) &&
+             compare_vals(copy->src, instr->instr.tac_copy.dst))) {
+          // this is a redundant copy instruction, it can be deleted
+          return true;
+        }
+      }
+      instr->instr.tac_copy.src = replace_operand(instr->instr.tac_copy.src, reaching_copies);
+      break;
+    }
+    case TACRETURN: {
+      instr->instr.tac_return.src = replace_operand(instr->instr.tac_return.src, reaching_copies);
+      break;
+    }
+    case TACUNARY: {
+      instr->instr.tac_unary.src = replace_operand(instr->instr.tac_unary.src, reaching_copies);
+      break;
+    }
+    case TACBINARY: {
+      instr->instr.tac_binary.src1 = replace_operand(instr->instr.tac_binary.src1, reaching_copies);
+      instr->instr.tac_binary.src2 = replace_operand(instr->instr.tac_binary.src2, reaching_copies);
+      break;
+    }
+    case TACCOND_JUMP: {
+      instr->instr.tac_cond_jump.src1 = replace_operand(instr->instr.tac_cond_jump.src1, reaching_copies);
+      instr->instr.tac_cond_jump.src2 = replace_operand(instr->instr.tac_cond_jump.src2, reaching_copies);
+      break;
+    }
+    case TACJUMP: {
+      // no operands to replace for an unconditional jump
+      break;
+    }
+    case TACLABEL: {
+      // no operands to replace for a label
+      break;
+    }
+    case TACLOAD: {
+      instr->instr.tac_load.src_ptr = replace_operand(instr->instr.tac_load.src_ptr, reaching_copies);
+      break;
+    }
+    case TACSTORE: {
+      instr->instr.tac_store.src = replace_operand(instr->instr.tac_store.src, reaching_copies);
+      break;
+    }
+    case TACTRUNC: {
+      instr->instr.tac_trunc.src = replace_operand(instr->instr.tac_trunc.src, reaching_copies);
+      break;
+    }
+    case TACEXTEND: {
+      instr->instr.tac_extend.src = replace_operand(instr->instr.tac_extend.src, reaching_copies);
+      break;
+    }
+    case TACGET_ADDRESS: {
+      // can't use copy propagation for get_address
+      break;
+    }
+    case TACBOUNDARY: {
+      // no operands to replace for a boundary instruction
+      break;
+    }
+    case TACCOPY_TO_OFFSET: {
+      instr->instr.tac_copy_to_offset.src = replace_operand(instr->instr.tac_copy_to_offset.src, reaching_copies);
+      break;
+    }
+    case TACCOPY_FROM_OFFSET: {
+      // can't use copy propagation for copy_from_offset
+      break;
+    }
+    case TACCALL: {
+      for (unsigned i = 0; i < instr->instr.tac_call.num_args; i++) {
+        instr->instr.tac_call.args[i] = *replace_operand(&instr->instr.tac_call.args[i], reaching_copies);
+      }
+      break;
+    }
+    case TACCALL_INDIRECT: {
+      for (unsigned i = 0; i < instr->instr.tac_call_indirect.num_args; i++) {
+        instr->instr.tac_call_indirect.args[i] = *replace_operand(&instr->instr.tac_call_indirect.args[i], reaching_copies);
+      }
+      break;
+    }
+  }
+  return false;
+}
+
+// Perform copy propagation on the given CFG using the reaching copy information.
+struct CFG* copy_prop(struct CFG* cfg, struct SliceList aliased_vars){
+  find_reaching_copies(cfg, aliased_vars);
+
+  for (unsigned i = 1; i < cfg->num_nodes - 1; i++) {
+    struct CFGNode* block = cfg->nodes[i];
+    struct TACInstr* prev_instr = NULL;
+    for (struct TACInstr* instr = block->body.head; instr != NULL; instr = instr->next) {
+      if (rewrite_instr(instr)) {
+        if (prev_instr) {
+          prev_instr->next = instr->next;
+        } else {
+          block->body.head = instr->next;
+        }
+        if (instr == block->body.last) {
+          block->body.last = prev_instr;
+        }
+      } else {
+        prev_instr = instr;
+      }
+    }
+  }
 
   return cfg;
 }

@@ -623,7 +623,7 @@ struct TopLevel* func_to_TAC(struct FunctionDclr* declaration) {
   // TAC:
   // Return Const(0)
   struct TACInstr* ret_instr = tac_instr_create(TACRETURN);
-  ret_instr->instr.tac_return.dst = tac_make_const(0, tac_builtin_type(INT_TYPE)); // default return 0
+  ret_instr->instr.tac_return.src = tac_make_const(0, tac_builtin_type(INT_TYPE)); // default return 0
 
   concat_TAC_instrs(&body, tac_instr_list(ret_instr));
   top_level->top.tac_func.body = body.head;
@@ -993,7 +993,7 @@ struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt)
       }
 
       struct TACInstr* ret_instr = tac_instr_create(TACRETURN);
-      ret_instr->instr.tac_return.dst = dst;
+      ret_instr->instr.tac_return.src = dst;
       
       concat_TAC_instrs(&expr_instrs, tac_instr_list(ret_instr));
       return expr_instrs;
@@ -1090,7 +1090,8 @@ struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt)
       struct Val* dst = (struct Val*)arena_alloc(sizeof(struct Val));
       struct TACInstrList expr_instrs = expr_to_TAC_convert(func_name, stmt->statement.switch_stmt.condition, dst);
 
-      struct TACInstrList cases_instrs = cases_to_TAC(stmt->statement.switch_stmt.label,
+      struct TACInstrList cases_instrs = cases_to_TAC(func_name,
+                                                   stmt->statement.switch_stmt.label,
                                                    stmt->statement.switch_stmt.cases,
                                                    dst);
       struct TACInstrList stmt_instrs = stmt_to_TAC(func_name, stmt->statement.switch_stmt.statement);
@@ -1143,11 +1144,51 @@ struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt)
   }
 }
 
+// Widen a char or short switch value to int. Case labels are compared at that width.
+// Signed values are sign-extended. Unsigned values are masked so the high bit stays zero.
+static struct Val* promote_switch_val(struct Slice* func_name, struct Val* value, struct TACInstrList* instrs) {
+  if (value == NULL || value->type == NULL) {
+    return value;
+  }
+
+  bool sign_extend = value->type->type == CHAR_TYPE ||
+                     value->type->type == SCHAR_TYPE ||
+                     value->type->type == SHORT_TYPE;
+  bool zero_extend = value->type->type == UCHAR_TYPE ||
+                     value->type->type == USHORT_TYPE;
+  if (!sign_extend && !zero_extend) {
+    return value;
+  }
+
+  struct Type* int_type = tac_builtin_type(INT_TYPE);
+  struct Val* promoted = make_temp(func_name, int_type);
+  if (sign_extend) {
+    struct TACInstr* extend_instr = tac_instr_create(TACEXTEND);
+    extend_instr->instr.tac_extend.dst = promoted;
+    extend_instr->instr.tac_extend.src = value;
+    extend_instr->instr.tac_extend.src_size = get_type_size(value->type);
+    concat_TAC_instrs(instrs, tac_instr_list(extend_instr));
+    return promoted;
+  }
+
+  size_t src_bits = get_type_size(value->type) * CHAR_BIT;
+  uint64_t mask = (UINT64_C(1) << src_bits) - UINT64_C(1);
+  struct TACInstr* mask_instr = tac_instr_create(TACBINARY);
+  mask_instr->instr.tac_binary.alu_op = ALU_AND;
+  mask_instr->instr.tac_binary.dst = promoted;
+  mask_instr->instr.tac_binary.src1 = value;
+  mask_instr->instr.tac_binary.src2 = tac_make_const(mask, int_type);
+  concat_TAC_instrs(instrs, tac_instr_list(mask_instr));
+  return promoted;
+}
+
 // Emit TAC comparisons and jumps for a switch case list.
 // Returns a TAC list that dispatches to case/default or break.
-struct TACInstrList cases_to_TAC(struct Slice* label, struct CaseList* cases, struct Val* rslt) {
+// Narrow switch values are integer-promoted before the comparisons.
+struct TACInstrList cases_to_TAC(struct Slice* func_name, struct Slice* label, struct CaseList* cases, struct Val* rslt) {
   struct TACInstrList case_instrs = tac_instr_list(NULL);
   struct Slice* default_label = NULL;
+  struct Val* switch_val = promote_switch_val(func_name, rslt, &case_instrs);
 
   for (struct CaseList* case_item = cases; case_item != NULL; case_item = case_item->next) {
     switch (case_item->case_label.type) {
@@ -1158,9 +1199,9 @@ struct TACInstrList cases_to_TAC(struct Slice* label, struct CaseList* cases, st
         // CondJump CondE switch_val, const, case_label
 
         struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
-        cond_jump_instr->instr.tac_cond_jump.src1 = rslt;
+        cond_jump_instr->instr.tac_cond_jump.src1 = switch_val;
         cond_jump_instr->instr.tac_cond_jump.src2 =
-            tac_make_const((uint64_t)case_item->case_label.data, rslt->type);
+            tac_make_const((uint64_t)case_item->case_label.data, switch_val->type);
         cond_jump_instr->instr.tac_cond_jump.condition = CondE;
         cond_jump_instr->instr.tac_cond_jump.label = make_case_label(label, case_item->case_label.data);
 
@@ -2918,7 +2959,7 @@ bool compare_instrs(struct TACInstr* instr1, struct TACInstr* instr2) {
 
   switch (instr1->type) {
     case TACRETURN:
-      return instr1->instr.tac_return.dst == instr2->instr.tac_return.dst;
+      return instr1->instr.tac_return.src == instr2->instr.tac_return.src;
     case TACUNARY:
       return (instr1->instr.tac_unary.op == instr2->instr.tac_unary.op &&
               instr1->instr.tac_unary.dst == instr2->instr.tac_unary.dst &&

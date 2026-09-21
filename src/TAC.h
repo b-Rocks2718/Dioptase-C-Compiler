@@ -116,7 +116,7 @@ enum TACCondition {
 
 // Store the optional return operand.
 struct TACReturn {
-  struct Val* dst;
+  struct Val* src;
 };
 
 // Store unary operation, destination, and source operands.
@@ -327,7 +327,7 @@ struct TACInstrList if_to_TAC(struct Slice* func_name, struct Expr* condition, s
 
 struct TACInstrList if_else_to_TAC(struct Slice* func_name, struct Expr* condition, struct Statement* if_stmt, struct Statement* else_stmt);
 
-struct TACInstrList cases_to_TAC(struct Slice* label, struct CaseList* cases, struct Val* rslt);
+struct TACInstrList cases_to_TAC(struct Slice* func_name, struct Slice* label, struct CaseList* cases, struct Val* rslt);
 
 struct TACInstrList relational_to_TAC(struct Slice* func_name,
                                           struct Expr* expr,

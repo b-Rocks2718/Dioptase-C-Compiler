@@ -1013,7 +1013,7 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
   switch (tac_instr->type) {
     case TACRETURN:{
       struct TACReturn* ret_instr = &tac_instr->instr.tac_return;
-      if (ret_instr->dst == NULL) {
+      if (ret_instr->src == NULL) {
         // TAC:
         // Return void
         //
@@ -1025,7 +1025,7 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
       } else {
         bool return_in_memory = false;
         struct OperandList* ret_vars = NULL;
-        classify_return_val(ret_instr->dst, &ret_vars, &return_in_memory);
+        classify_return_val(ret_instr->src, &ret_vars, &return_in_memory);
 
         struct AsmInstr* head = NULL;
         struct AsmInstr* tail = NULL;
@@ -1041,11 +1041,11 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
           load_ret_ptr->next = NULL;
           append_asm_instr(&head, &tail, load_ret_ptr);
 
-          struct Operand* dst_mem = make_asm_mem(kScratchRegA, 0, type_to_asm_type(ret_instr->dst->type));
+          struct Operand* dst_mem = make_asm_mem(kScratchRegA, 0, type_to_asm_type(ret_instr->src->type));
           struct AsmInstr* copy_instrs = copy_bytes(func_name,
-            tac_val_to_asm(ret_instr->dst),
+            tac_val_to_asm(ret_instr->src),
             dst_mem,
-            asm_type_size(type_to_asm_type(ret_instr->dst->type)));
+            asm_type_size(type_to_asm_type(ret_instr->src->type)));
           append_asm_instrs(&head, &tail, copy_instrs);
         } else {
           size_t reg_index = 0;

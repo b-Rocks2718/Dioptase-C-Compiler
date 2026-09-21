@@ -93,10 +93,25 @@ static struct CFGNodeEntry* make_cfg_node_entry(struct CFGNode* node) {
   return entry;
 }
 
-// append a CFGNode to a CFGNodeList
-static void append_cfg_node(struct CFGNodeList* list, struct CFGNode* node) {
+// Return whether list contains no nodes.
+bool cfg_node_list_is_empty(const struct CFGNodeList* list) {
+  return list->head == NULL;
+}
+
+// Return whether list holds node. Membership is pointer identity.
+bool cfg_node_list_contains(const struct CFGNodeList* list, const struct CFGNode* node) {
+  for (const struct CFGNodeEntry* entry = list->head; entry != NULL; entry = entry->next) {
+    if (entry->node == node) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Append node at the end of list, keeping earlier entries in order.
+void cfg_node_list_append(struct CFGNodeList* list, struct CFGNode* node) {
   struct CFGNodeEntry* entry = make_cfg_node_entry(node);
-  if (list->tail == NULL) {
+  if (cfg_node_list_is_empty(list)) {
     list->head = entry;
     list->tail = entry;
   } else {
@@ -105,23 +120,32 @@ static void append_cfg_node(struct CFGNodeList* list, struct CFGNode* node) {
   }
 }
 
+// Remove the oldest node. Append adds at the tail, so repeated removal drains in insertion order.
+// An empty list returns NULL and is left with both head and tail NULL.
+struct CFGNode* cfg_node_list_remove_front(struct CFGNodeList* list) {
+  if (cfg_node_list_is_empty(list)) {
+    return NULL;
+  }
+  struct CFGNodeEntry* entry = list->head;
+  list->head = entry->next;
+  if (list->head == NULL) {
+    list->tail = NULL;
+  }
+  return entry->node;
+}
+
 // Skip CFG nodes that already have predecessor/successor links.
 static bool nodes_already_linked(const struct CFGNode* parent,
                                  const struct CFGNode* child) {
-  for (struct CFGNodeEntry* entry = parent->successors.head; entry != NULL; entry = entry->next) {
-    if (entry->node == child) {
-      return true;
-    }
-  }
-  return false;
+  return cfg_node_list_contains(&parent->successors, child);
 }
 
 // Link two CFGNodes bidirectionally:
 // `parent` a predecessor of `child` and `child` a successor of `parent`
 static void link_nodes(struct CFGNode* parent, struct CFGNode* child) {
   if (!nodes_already_linked(parent, child)) {
-    append_cfg_node(&parent->successors, child);
-    append_cfg_node(&child->predecessors, parent);
+    cfg_node_list_append(&parent->successors, child);
+    cfg_node_list_append(&child->predecessors, parent);
   }
 }
 
@@ -154,7 +178,7 @@ static struct CFG* partition_into_basic_blocks(const struct TACInstr* body) {
       case TACLABEL:
         // start a new basic block and add the label to it
         if (cur_block->body.head != NULL) {
-          append_cfg_node(list, cur_block);
+          cfg_node_list_append(list, cur_block);
           num_blocks++;
           cur_block = make_basic_block_node();
         }
@@ -165,7 +189,7 @@ static struct CFG* partition_into_basic_blocks(const struct TACInstr* body) {
       case TACRETURN:
         // append jump/return to current block, then begin a new one
         append_instr(cur_block, instr);
-        append_cfg_node(list, cur_block);
+        cfg_node_list_append(list, cur_block);
         num_blocks++;
         cur_block = make_basic_block_node();
         break;
@@ -177,7 +201,7 @@ static struct CFG* partition_into_basic_blocks(const struct TACInstr* body) {
   }
 
   if (cur_block->body.head != NULL) {
-    append_cfg_node(list, cur_block);
+    cfg_node_list_append(list, cur_block);
     num_blocks++;
   }
 

@@ -55,6 +55,18 @@ void print_cfg(const struct CFG* cfg);
 // Rebuild a linear TAC body from the CFG's current basic blocks.
 struct TACInstr* rebuild_body(struct CFG* cfg);
 
+// Append node at the end of list. An empty list has both head and tail NULL.
+void cfg_node_list_append(struct CFGNodeList* list, struct CFGNode* node);
+
+// Remove and return the oldest node, or NULL when list is empty.
+struct CFGNode* cfg_node_list_remove_front(struct CFGNodeList* list);
+
+// Return whether list contains no nodes.
+bool cfg_node_list_is_empty(const struct CFGNodeList* list);
+
+// Return whether list holds node. Membership is pointer identity.
+bool cfg_node_list_contains(const struct CFGNodeList* list, const struct CFGNode* node);
+
 // Clear traversal marks on every CFG node.
 void reset_marks(struct CFG* cfg);
 
