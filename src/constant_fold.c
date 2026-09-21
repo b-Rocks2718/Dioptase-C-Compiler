@@ -111,7 +111,6 @@ static struct TACInstr* constant_instr_create(enum TACInstrType type) {
   }
   instr->type = type;
   instr->next = NULL;
-  instr->last = instr;
   return instr;
 }
 
@@ -255,7 +254,6 @@ struct TACInstr* constant_fold(struct TACInstr* body){
       case CONSTANT_FOLD_REPLACE: {
         struct TACInstr* replacement = fold.replacement;
         if (prev == NULL) {
-          replacement->last = curr->last == curr ? replacement : curr->last;
           body = replacement;
         } else {
           prev->next = replacement;
@@ -267,14 +265,8 @@ struct TACInstr* constant_fold(struct TACInstr* body){
       case CONSTANT_FOLD_DELETE:
         if (prev == NULL) {
           body = next;
-          if (body != NULL) {
-            body->last = curr->last;
-          }
         } else {
           prev->next = next;
-          if (next == NULL && body != NULL) {
-            body->last = prev;
-          }
         }
         break;
     }

@@ -32,8 +32,7 @@ struct CFGNode {
   struct CFGNodeList predecessors;
   struct CFGNodeList successors;
 
-  struct TACInstr* body;       // first instruction
-  struct TACInstr* last_instr; // final instruction and O(1) append position
+  struct TACInstrList body; // basic-block instructions; empty for entry/exit
 
   bool marked; // used for marking nodes during traversals
 };

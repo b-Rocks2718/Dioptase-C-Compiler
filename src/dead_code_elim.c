@@ -49,18 +49,17 @@ struct CFG* remove_dead_blocks(struct CFG* cfg){
   return repair_cfg(new_cfg);
 }
 
-// Unlink the last instruction of a basic block, keeping last_instr and the TAC tail pointer consistent.
+// Unlink the last instruction of a basic block, keeping the TACInstrList tail consistent.
 static void cfg_block_remove_last_instr(struct CFGNode* block) {
-  struct TACInstr* last = block->last_instr;
-  if (block->body == NULL || last == NULL) {
+  struct TACInstr* last = block->body.last;
+  if (block->body.head == NULL || last == NULL) {
     return;
   }
 
-  if (block->body == last) {
-    block->body = NULL;
-    block->last_instr = NULL;
+  if (block->body.head == last) {
+    block->body = tac_instr_list(NULL);
   } else {
-    struct TACInstr* prev = block->body;
+    struct TACInstr* prev = block->body.head;
     while (prev->next != NULL && prev->next != last) {
       prev = prev->next;
     }
@@ -71,30 +70,25 @@ static void cfg_block_remove_last_instr(struct CFGNode* block) {
       exit(1);
     }
     prev->next = NULL;
-    block->last_instr = prev;
-    block->body->last = prev;
+    block->body.last = prev;
   }
 
   last->next = NULL;
-  last->last = last;
 }
 
-// Drop a leading label from a basic block and retarget the remaining list's tail pointer.
+// Drop a leading label from a basic block and clear last if the block is now empty.
 static void cfg_block_remove_leading_label(struct CFGNode* block) {
-  struct TACInstr* label = block->body;
+  struct TACInstr* label = block->body.head;
   if (label == NULL || label->type != TACLABEL) {
     return;
   }
 
   struct TACInstr* rest = label->next;
   label->next = NULL;
-  label->last = label;
 
-  block->body = rest;
+  block->body.head = rest;
   if (rest == NULL) {
-    block->last_instr = NULL;
-  } else {
-    rest->last = block->last_instr;
+    block->body.last = NULL;
   }
 }
 
@@ -104,7 +98,7 @@ void remove_useless_jumps(struct CFG* cfg){
   for (unsigned i = 1; i < cfg->num_nodes - 1; i++) {
     struct CFGNode* block = cfg->nodes[i];
     struct CFGNodeEntry* succ = block->successors.head;
-    struct TACInstr* last = block->last_instr;
+    struct TACInstr* last = block->body.last;
 
     if (succ == NULL || last == NULL) {
       continue;

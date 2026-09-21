@@ -63,13 +63,28 @@ static void tac_init_instr(struct TACInstr* instr, enum TACInstrType type) {
   memset(instr, 0, sizeof(*instr));
   instr->type = type;
   instr->next = NULL;
-  instr->last = instr;
+}
+
+// Initialize a TAC function top-level node for tests.
+// Clears the node and fills the function variant.
+static void tac_init_func(struct TopLevel* top,
+                          struct Slice* name,
+                          struct TACInstr* body,
+                          struct Slice** params,
+                          size_t num_params) {
+  memset(top, 0, sizeof(*top));
+  top->type = FUNC;
+  top->top.tac_func.name = name;
+  top->top.tac_func.global = true;
+  top->top.tac_func.body = body;
+  top->top.tac_func.params = params;
+  top->top.tac_func.num_params = num_params;
+  top->next = NULL;
 }
 
 // Link two TAC instruction nodes in a test list.
 static void tac_link_instr(struct TACInstr* first, struct TACInstr* second) {
   first->next = second;
-  first->last = second->last ? second->last : second;
 }
 
 // Compare interpreter output against an expected value.
@@ -98,14 +113,8 @@ static bool tac_test_return_const(void) {
   tac_init_instr(&ret_instr, TACRETURN);
   ret_instr.instr.tac_return.dst = &ret_val;
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &ret_instr;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -178,14 +187,8 @@ static bool tac_test_arithmetic(void) {
   tac_link_instr(&add_instr, &mul_instr);
   tac_link_instr(&mul_instr, &ret_instr);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &copy_a;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &copy_a, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -239,14 +242,8 @@ static bool tac_test_cond_jump(void) {
   tac_link_instr(&ret_false, &label);
   tac_link_instr(&label, &ret_true);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &cond_jump;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &cond_jump, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -296,14 +293,8 @@ static bool tac_test_call(void) {
   tac_link_instr(&add_bin, &add_ret);
 
   struct Slice* add_params[kArgCount] = { &p_name, &q_name };
-  struct TopLevel add_func = {0};
-  add_func.type = FUNC;
-  add_func.name = &add_name;
-  add_func.global = true;
-  add_func.body = &add_bin;
-  add_func.params = add_params;
-  add_func.num_params = kArgCount;
-  add_func.next = NULL;
+  struct TopLevel add_func;
+  tac_init_func(&add_func, &add_name, &add_bin, add_params, kArgCount);
 
   struct Val call_args[kArgCount];
   call_args[0] = tac_val_const(kArg0, &kTestIntType);
@@ -320,14 +311,8 @@ static bool tac_test_call(void) {
   main_ret.instr.tac_return.dst = &t1_val;
   tac_link_instr(&call_instr, &main_ret);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &call_instr;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &call_instr, NULL, 0);
 
   add_func.next = &main_func;
 
@@ -391,14 +376,8 @@ static bool tac_test_memory_ops(void) {
   tac_link_instr(&store, &load);
   tac_link_instr(&load, &ret_instr);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &copy_x;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &copy_x, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -489,14 +468,8 @@ static bool tac_test_unary_ops(void) {
   tac_link_instr(&add_0, &add_1);
   tac_link_instr(&add_1, &ret_instr);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &copy_a;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &copy_a, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -544,14 +517,8 @@ static bool tac_test_jump(void) {
   tac_link_instr(&ret_false, &label_instr);
   tac_link_instr(&label_instr, &ret_true);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &jump_instr;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &jump_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -626,14 +593,8 @@ static bool tac_test_copy_to_offset(void) {
   tac_link_instr(&add_addr, &load);
   tac_link_instr(&load, &ret_instr);
 
-  struct TopLevel main_func = {0};
-  main_func.type = FUNC;
-  main_func.name = &main_name;
-  main_func.global = true;
-  main_func.body = &copy_arr0;
-  main_func.params = NULL;
-  main_func.num_params = 0;
-  main_func.next = NULL;
+  struct TopLevel main_func;
+  tac_init_func(&main_func, &main_name, &copy_arr0, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -711,7 +672,6 @@ static bool tac_test_constant_folding(void) {
   struct TACInstr* folded_move = constant_fold(&instr);
   if (folded_move == NULL || folded_move == &instr ||
       folded_move->type != TACCOPY ||
-      folded_move->last != folded_move ||
       folded_move->instr.tac_copy.dst != &int_dst ||
       folded_move->instr.tac_copy.src != &variable_right) {
     printf("constant-folding test ALU_MOV failed: expected the second operand "
@@ -805,8 +765,7 @@ static bool tac_test_constant_folding(void) {
   return_after_jump.instr.tac_return.dst = &one;
   tac_link_instr(&instr, &return_after_jump);
   struct TACInstr* folded_fallthrough = constant_fold(&instr);
-  if (folded_fallthrough != &return_after_jump ||
-      folded_fallthrough->last != &return_after_jump) {
+  if (folded_fallthrough != &return_after_jump) {
     printf("constant-folding test unsigned conditional jump failed: expected "
            "the never-taken jump to be removed\n");
     ok = false;
@@ -1059,7 +1018,6 @@ static bool tac_test_cfg_rebuild(void) {
   cond_jump.next = &return_false;
   return_false.next = &label;
   label.next = &return_true;
-  copy.last = &return_true;
 
   struct CFG* cfg = build_cfg(&copy);
   if (cfg == NULL || cfg->num_nodes != kExpectedNodeCount) {
@@ -1075,7 +1033,7 @@ static bool tac_test_cfg_rebuild(void) {
     printf("CFG rebuild test failed: repeated rebuilds changed TAC instruction order\n");
     ok = false;
   }
-  if (first == second || first == cfg->nodes[1]->body) {
+  if (first == second || first == cfg->nodes[1]->body.head) {
     printf("CFG rebuild test failed: rebuilt TAC must use detached instruction copies\n");
     ok = false;
   }
@@ -1099,16 +1057,15 @@ static bool tac_test_cfg_rebuild(void) {
     instr_count++;
   }
   if (instr_count != kExpectedInstrCount || first == NULL ||
-      first->last != rebuilt_tail) {
-    printf("CFG rebuild test failed: expected %u instructions and a valid tail link\n",
+      rebuilt_tail == NULL || rebuilt_tail->next != NULL) {
+    printf("CFG rebuild test failed: expected %u instructions in a well-formed list\n",
            kExpectedInstrCount);
     ok = false;
   }
 
   for (unsigned i = 1; i + 1 < cfg->num_nodes; i++) {
     struct CFGNode* block = cfg->nodes[i];
-    if (block->last_instr == NULL || block->last_instr->next != NULL ||
-        block->body->last != block->last_instr) {
+    if (block->body.last == NULL || block->body.last->next != NULL) {
       printf("CFG rebuild test failed: rebuilding mutated basic block %u\n", i);
       ok = false;
     }

@@ -3,7 +3,7 @@ int main(void){
   if (1 + 1) {
     return 1;
   } else {
-    return 0;
+    0 * 2;
   }
   1 + 2;
 }

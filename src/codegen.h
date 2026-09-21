@@ -118,35 +118,92 @@ enum MachineInstrType {
   MACHINE_DEBUG_LOCAL,
 };
 
-// Enumerate machine exception codes emitted by diagnostics.
-enum Exception {
-  EXC_EXIT,
-};
-
 // Own the linked list of generated machine instructions.
 struct MachineProg {
   struct MachineInstr* head;
   struct MachineInstr* tail;
 };
 
-// Store a machine opcode and its register/immediate operand payload.
-struct MachineInstr {
-  enum MachineInstrType type;
-
+// Three-register ALU operation; imm == 0 selects the register form using rc.
+struct MachineAlu {
   enum Reg ra;
   enum Reg rb;
   enum Reg rc;
+  int imm;
+};
 
-  int  imm;
+// Two-register operation used by moves, shifts, compares, and branches.
+struct MachineReg2 {
+  enum Reg ra;
+  enum Reg rb;
+};
 
+// Single-register operation used by push and pop.
+struct MachineReg {
+  enum Reg ra;
+};
+
+// Load or store with a base register, optional label, and displacement.
+struct MachineMem {
+  enum Reg ra;
+  enum Reg rb;
   struct Slice* label;
+  int imm;
+};
 
-  const char* debug_loc; // source pointer for debug line markers
-  struct Slice* debug_name; // debug local name for stack layout comments
-  int debug_offset; // stack offset relative to BP for debug locals
+// Register/immediate or register/label move (movi, lui).
+struct MachineMovi {
+  enum Reg ra;
+  struct Slice* label;
+  int imm;
+};
 
-  enum Exception exc;
+// Label or immediate target used by calls, jumps, and directives.
+struct MachineTarget {
+  struct Slice* label;
+  int imm;
+};
 
+// Assembler comment text.
+struct MachineComment {
+  struct Slice* text;
+};
+
+// Label definition.
+struct MachineLabel {
+  struct Slice* name;
+};
+
+// Source location for a debug line marker.
+struct MachineDebugLoc {
+  const char* loc;
+};
+
+// Stack-local debug entry: name, BP-relative offset, and size in bytes.
+struct MachineDebugLocal {
+  struct Slice* name;
+  int offset;
+  int size;
+};
+
+// Select the concrete machine-instruction payload identified by MachineInstrType.
+union MachineInstrVariant {
+  struct MachineAlu alu;
+  struct MachineReg2 reg2;
+  struct MachineReg reg;
+  struct MachineMem mem;
+  struct MachineMovi movi;
+  struct MachineTarget target;
+  struct MachineComment comment;
+  struct MachineLabel label;
+  struct MachineDebugLoc debug_loc;
+  struct MachineDebugLocal debug_local;
+};
+
+// Link one machine instruction with its kind and list pointer.
+struct MachineInstr {
+  enum MachineInstrType type;
+  union MachineInstrVariant instr;
   struct MachineInstr* next;
 };
 

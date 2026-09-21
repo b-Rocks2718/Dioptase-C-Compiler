@@ -18,8 +18,8 @@ void optimize(struct TACProg* prog, struct OptimizationOptions options) {
   }
   for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
     if (top->type == FUNC) {
-      struct TACInstr* body = top->body;
-      top->body = optimize_body(body, options);
+      struct TACInstr* body = top->top.tac_func.body;
+      top->top.tac_func.body = optimize_body(body, options);
     }
   }
 }

@@ -69,9 +69,9 @@ static void write_tab(FILE* out) {
 }
 
 // Decide whether to emit a register or immediate operand for binary ops.
-// Returns true to print instr->rc, false to print instr->imm.
+// Returns true to print instr->instr.alu.rc, false to print instr->instr.alu.imm.
 static bool use_reg_operand(const struct MachineInstr* instr) {
-  return instr->imm == 0;
+  return instr->instr.alu.imm == 0;
 }
 
 // Write a binary operation with either reg or immediate operand.
@@ -79,14 +79,14 @@ static void write_binary_op(FILE* out,
                             const char* mnem,
                             const struct MachineInstr* instr) {
   fprintf(out, "%s ", mnem);
-  write_reg(out, instr->ra);
+  write_reg(out, instr->instr.alu.ra);
   fputc(' ', out);
-  write_reg(out, instr->rb);
+  write_reg(out, instr->instr.alu.rb);
   fputc(' ', out);
   if (use_reg_operand(instr)) {
-    write_reg(out, instr->rc);
+    write_reg(out, instr->instr.alu.rc);
   } else {
-    fprintf(out, "%d", instr->imm);
+    fprintf(out, "%d", instr->instr.alu.imm);
   }
   fputc('\n', out);
 }
@@ -96,39 +96,39 @@ static void write_binary_op(FILE* out,
 static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
   switch (instr->type) {
     case MACHINE_LABEL:
-      write_slice(out, instr->label);
+      write_slice(out, instr->instr.label.name);
       fputs(":\n", out);
       return true;
     case MACHINE_DEBUG_LOC: {
-      if (instr->debug_loc == NULL) {
+      if (instr->instr.debug_loc.loc == NULL) {
         return true;
       }
-      struct SourceLocation loc = source_location_from_ptr(instr->debug_loc);
-      const char* filename = source_filename_for_ptr(instr->debug_loc);
+      struct SourceLocation loc = source_location_from_ptr(instr->instr.debug_loc.loc);
+      const char* filename = source_filename_for_ptr(instr->instr.debug_loc.loc);
       write_tab(out);
       fprintf(out, ".line %s %zu\n", filename, loc.line);
       return true;
     }
     case MACHINE_DEBUG_LOCAL:
-      if (instr->debug_name == NULL) {
+      if (instr->instr.debug_local.name == NULL) {
         return true;
       }
       write_tab(out);
       fputs(".local ", out);
-      write_slice(out, instr->debug_name);
-      fprintf(out, " %d %d\n", instr->debug_offset, instr->imm); // offset, size
+      write_slice(out, instr->instr.debug_local.name);
+      fprintf(out, " %d %d\n", instr->instr.debug_local.offset, instr->instr.debug_local.size); // offset, size
       return true;
     case MACHINE_COMMENT:
       write_tab(out);
       fputs("# ", out);
-      write_slice(out, instr->label);
+      write_slice(out, instr->instr.comment.text);
       fputc('\n', out);
       return true;
     case MACHINE_NLCOMMENT:
       fputc('\n', out);
       write_tab(out);
       fputs("# ", out);
-      write_slice(out, instr->label);
+      write_slice(out, instr->instr.comment.text);
       fputc('\n', out);
       return true;
     case MACHINE_NEWLINE:
@@ -137,59 +137,59 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
     case MACHINE_GLOBAL:
       write_tab(out);
       fputs(".global ", out);
-      write_slice(out, instr->label);
+      write_slice(out, instr->instr.target.label);
       fputc('\n', out);
       return true;
     case MACHINE_SECTION:
       write_tab(out);
       fputs("\n\t.", out);
-      write_slice(out, instr->label);
+      write_slice(out, instr->instr.target.label);
       fputc('\n', out);
       return true;
     case MACHINE_FILL:
       write_tab(out);
       fputs(".fill ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_FILD:
       write_tab(out);
-      fprintf(out, ".fild %d\n", instr->imm);
+      fprintf(out, ".fild %d\n", instr->instr.target.imm);
       return true;
     case MACHINE_FILB:
       write_tab(out);
-      fprintf(out, ".filb %d\n", instr->imm);
+      fprintf(out, ".filb %d\n", instr->instr.target.imm);
       return true;
     case MACHINE_SPACE:
       write_tab(out);
-      fprintf(out, ".space %d\n", instr->imm);
+      fprintf(out, ".space %d\n", instr->instr.target.imm);
       return true;
     case MACHINE_ALIGN:
       write_tab(out);
-      fprintf(out, ".align %d\n", instr->imm);
+      fprintf(out, ".align %d\n", instr->instr.target.imm);
       return true;
     case MACHINE_MOV:
       write_tab(out);
       fputs("mov ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_MOVI:
       write_tab(out);
       fputs("movi ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.movi.ra);
       fputc(' ', out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.movi.label, instr->instr.movi.imm);
       fputc('\n', out);
       return true;
     case MACHINE_LUI:
       write_tab(out);
       fputs("lui ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.movi.ra);
       fputc(' ', out);
-      fprintf(out, "%d\n", instr->imm);
+      fprintf(out, "%d\n", instr->instr.movi.imm);
       return true;
     case MACHINE_AND:
       write_tab(out);
@@ -234,49 +234,49 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
     case MACHINE_NOT:
       write_tab(out);
       fputs("not ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_LSL:
       write_tab(out);
       fputs("lsl ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_LSR:
       write_tab(out);
       fputs("lsr ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_ASR:
       write_tab(out);
       fputs("asr ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_ROTL:
       write_tab(out);
       fputs("rotl ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_ROTR:
       write_tab(out);
       fputs("rotr ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_LSLC:
@@ -290,461 +290,457 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
     case MACHINE_EXTEND_B:
       write_tab(out);
       fputs("extend_b ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_EXTEND_D:
       write_tab(out);
       fputs("extend_d ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_TRUNCATE_B:
       write_tab(out);
       fputs("truncate_b ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_TRUNCATE_D:
       write_tab(out);
       fputs("truncate_d ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_SWA:
       write_tab(out);
       fputs("swa ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.mem.ra);
       fputs(", ", out);
-      write_mem_operand(out, instr->rb, instr->imm);
+      write_mem_operand(out, instr->instr.mem.rb, instr->instr.mem.imm);
       fputc('\n', out);
       return true;
     case MACHINE_LWA:
       write_tab(out);
       fputs("lwa ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.mem.ra);
       fputs(", ", out);
-      write_mem_operand(out, instr->rb, instr->imm);
+      write_mem_operand(out, instr->instr.mem.rb, instr->instr.mem.imm);
       fputc('\n', out);
       return true;
     case MACHINE_SW:
       write_tab(out);
       fputs("sw ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.mem.ra);
       fputs(", ", out);
-      if (instr->label != NULL) {
-        if (instr->rb == R0 && instr->imm == 0) {
+      if (instr->instr.mem.label != NULL) {
+        if (instr->instr.mem.rb == R0 && instr->instr.mem.imm == 0) {
           fputc('[', out);
-          write_label_or_imm(out, instr->label, instr->imm);
+          write_label_or_imm(out, instr->instr.mem.label, instr->instr.mem.imm);
           fputc(']', out);
         } else {
-          write_mem_operand_label(out, instr->rb, instr->label, instr->imm);
+          write_mem_operand_label(out, instr->instr.mem.rb, instr->instr.mem.label, instr->instr.mem.imm);
         }
       } else {
-        write_mem_operand(out, instr->rb, instr->imm);
+        write_mem_operand(out, instr->instr.mem.rb, instr->instr.mem.imm);
       }
       fputc('\n', out);
       return true;
     case MACHINE_LW:
       write_tab(out);
       fputs("lw ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.mem.ra);
       fputs(", ", out);
-      if (instr->label != NULL) {
-        if (instr->rb == R0 && instr->imm == 0) {
+      if (instr->instr.mem.label != NULL) {
+        if (instr->instr.mem.rb == R0 && instr->instr.mem.imm == 0) {
           fputc('[', out);
-          write_label_or_imm(out, instr->label, instr->imm);
+          write_label_or_imm(out, instr->instr.mem.label, instr->instr.mem.imm);
           fputc(']', out);
         } else {
-          write_mem_operand_label(out, instr->rb, instr->label, instr->imm);
+          write_mem_operand_label(out, instr->instr.mem.rb, instr->instr.mem.label, instr->instr.mem.imm);
         }
       } else {
-        write_mem_operand(out, instr->rb, instr->imm);
+        write_mem_operand(out, instr->instr.mem.rb, instr->instr.mem.imm);
       }
       fputc('\n', out);
       return true;
     case MACHINE_SDA:
       write_tab(out);
       fputs("sda ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.mem.ra);
       fputs(", ", out);
-      write_mem_operand(out, instr->rb, instr->imm);
+      write_mem_operand(out, instr->instr.mem.rb, instr->instr.mem.imm);
       fputc('\n', out);
       return true;
     case MACHINE_LDA:
       write_tab(out);
       fputs("lda ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.mem.ra);
       fputs(", ", out);
-      write_mem_operand(out, instr->rb, instr->imm);
+      write_mem_operand(out, instr->instr.mem.rb, instr->instr.mem.imm);
       fputc('\n', out);
       return true;
     case MACHINE_SD:
       write_tab(out);
       fputs("sd ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.mem.ra);
       fputs(", ", out);
-      if (instr->label != NULL) {
-        if (instr->rb == R0 && instr->imm == 0) {
+      if (instr->instr.mem.label != NULL) {
+        if (instr->instr.mem.rb == R0 && instr->instr.mem.imm == 0) {
           fputc('[', out);
-          write_label_or_imm(out, instr->label, instr->imm);
+          write_label_or_imm(out, instr->instr.mem.label, instr->instr.mem.imm);
           fputc(']', out);
         } else {
-          write_mem_operand_label(out, instr->rb, instr->label, instr->imm);
+          write_mem_operand_label(out, instr->instr.mem.rb, instr->instr.mem.label, instr->instr.mem.imm);
         }
       } else {
-        write_mem_operand(out, instr->rb, instr->imm);
+        write_mem_operand(out, instr->instr.mem.rb, instr->instr.mem.imm);
       }
       fputc('\n', out);
       return true;
     case MACHINE_LD:
       write_tab(out);
       fputs("ld ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.mem.ra);
       fputs(", ", out);
-      if (instr->label != NULL) {
-        if (instr->rb == R0 && instr->imm == 0) {
+      if (instr->instr.mem.label != NULL) {
+        if (instr->instr.mem.rb == R0 && instr->instr.mem.imm == 0) {
           fputc('[', out);
-          write_label_or_imm(out, instr->label, instr->imm);
+          write_label_or_imm(out, instr->instr.mem.label, instr->instr.mem.imm);
           fputc(']', out);
         } else {
-          write_mem_operand_label(out, instr->rb, instr->label, instr->imm);
+          write_mem_operand_label(out, instr->instr.mem.rb, instr->instr.mem.label, instr->instr.mem.imm);
         }
       } else {
-        write_mem_operand(out, instr->rb, instr->imm);
+        write_mem_operand(out, instr->instr.mem.rb, instr->instr.mem.imm);
       }
       fputc('\n', out);
       return true;
     case MACHINE_SBA:
       write_tab(out);
       fputs("sba ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.mem.ra);
       fputs(", ", out);
-      write_mem_operand(out, instr->rb, instr->imm);
+      write_mem_operand(out, instr->instr.mem.rb, instr->instr.mem.imm);
       fputc('\n', out);
       return true;
     case MACHINE_LBA:
       write_tab(out);
       fputs("lba ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.mem.ra);
       fputs(", ", out);
-      write_mem_operand(out, instr->rb, instr->imm);
+      write_mem_operand(out, instr->instr.mem.rb, instr->instr.mem.imm);
       fputc('\n', out);
       return true;
     case MACHINE_SB:
       write_tab(out);
       fputs("sb ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.mem.ra);
       fputs(", ", out);
-      if (instr->label != NULL) {
-        if (instr->rb == R0 && instr->imm == 0) {
+      if (instr->instr.mem.label != NULL) {
+        if (instr->instr.mem.rb == R0 && instr->instr.mem.imm == 0) {
           fputc('[', out);
-          write_label_or_imm(out, instr->label, instr->imm);
+          write_label_or_imm(out, instr->instr.mem.label, instr->instr.mem.imm);
           fputc(']', out);
         } else {
-          write_mem_operand_label(out, instr->rb, instr->label, instr->imm);
+          write_mem_operand_label(out, instr->instr.mem.rb, instr->instr.mem.label, instr->instr.mem.imm);
         }
       } else {
-        write_mem_operand(out, instr->rb, instr->imm);
+        write_mem_operand(out, instr->instr.mem.rb, instr->instr.mem.imm);
       }
       fputc('\n', out);
       return true;
     case MACHINE_LB:
       write_tab(out);
       fputs("lb ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.mem.ra);
       fputs(", ", out);
-      if (instr->label != NULL) {
-        if (instr->rb == R0 && instr->imm == 0) {
+      if (instr->instr.mem.label != NULL) {
+        if (instr->instr.mem.rb == R0 && instr->instr.mem.imm == 0) {
           fputc('[', out);
-          write_label_or_imm(out, instr->label, instr->imm);
+          write_label_or_imm(out, instr->instr.mem.label, instr->instr.mem.imm);
           fputc(']', out);
         } else {
-          write_mem_operand_label(out, instr->rb, instr->label, instr->imm);
+          write_mem_operand_label(out, instr->instr.mem.rb, instr->instr.mem.label, instr->instr.mem.imm);
         }
       } else {
-        write_mem_operand(out, instr->rb, instr->imm);
+        write_mem_operand(out, instr->instr.mem.rb, instr->instr.mem.imm);
       }
       fputc('\n', out);
       return true;
     case MACHINE_BR:
       write_tab(out);
-      if (instr->ra != 0 || instr->rb != 0) {
-        fputs("br ", out);
-        write_reg(out, instr->ra);
-        fputs(", ", out);
-        write_reg(out, instr->rb);
-        fputc('\n', out);
-      } else {
-        fprintf(out, "br %d\n", instr->imm);
-      }
+      fputs("br ", out);
+      write_reg(out, instr->instr.reg2.ra);
+      fputs(", ", out);
+      write_reg(out, instr->instr.reg2.rb);
+      fputc('\n', out);
       return true;
     case MACHINE_BZ:
       write_tab(out);
       fputs("bz ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BNZ:
       write_tab(out);
       fputs("bnz ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BS:
       write_tab(out);
       fputs("bs ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BNS:
       write_tab(out);
       fputs("bns ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BC:
       write_tab(out);
       fputs("bc ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BNC:
       write_tab(out);
       fputs("bnc ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BO:
       write_tab(out);
       fputs("bo ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BNO:
       write_tab(out);
       fputs("bno ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BPS:
       write_tab(out);
       fputs("bps ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BNPS:
       write_tab(out);
       fputs("bnps ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BG:
       write_tab(out);
       fputs("bg ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BGE:
       write_tab(out);
       fputs("bge ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BL:
       write_tab(out);
       fputs("bl ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BLE:
       write_tab(out);
       fputs("ble ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BA:
       write_tab(out);
       fputs("ba ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BAE:
       write_tab(out);
       fputs("bae ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BB:
       write_tab(out);
       fputs("bb ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BBE:
       write_tab(out);
       fputs("bbe ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_BRA:
       write_tab(out);
       fputs("bra ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BZA:
       write_tab(out);
       fputs("bza ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BNZA:
       write_tab(out);
       fputs("bnza ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BSA:
       write_tab(out);
       fputs("bsa ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BNSA:
       write_tab(out);
       fputs("bnsa ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BCA:
       write_tab(out);
       fputs("bca ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BNCA:
       write_tab(out);
       fputs("bnca ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BOA:
       write_tab(out);
       fputs("boa ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BNOA:
       write_tab(out);
       fputs("bnoa ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BPSA:
       write_tab(out);
       fputs("bpa ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BNPSA:
       write_tab(out);
       fputs("bnpa ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BGA:
       write_tab(out);
       fputs("bga ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BGEA:
       write_tab(out);
       fputs("bgea ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BLA:
       write_tab(out);
       fputs("bla ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BLEA:
       write_tab(out);
       fputs("blea ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BAA:
       write_tab(out);
       fputs("baa ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BAEA:
       write_tab(out);
       fputs("baea ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BBA:
       write_tab(out);
       fputs("bba ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_BBEA:
       write_tab(out);
       fputs("bbea ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputs(", ", out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_SYS:
@@ -759,43 +755,43 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
     case MACHINE_PUSH:
       write_tab(out);
       fputs("push ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg.ra);
       fputc('\n', out);
       return true;
     case MACHINE_POP:
       write_tab(out);
       fputs("pop ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg.ra);
       fputc('\n', out);
       return true;
     case MACHINE_PUSHD:
       write_tab(out);
       fputs("pshd ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg.ra);
       fputc('\n', out);
       return true;
     case MACHINE_POPD:
       write_tab(out);
       fputs("popd ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg.ra);
       fputc('\n', out);
       return true;
     case MACHINE_PUSHB:
       write_tab(out);
       fputs("pshb ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg.ra);
       fputc('\n', out);
       return true;
     case MACHINE_POPB:
       write_tab(out);
       fputs("popb ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg.ra);
       fputc('\n', out);
       return true;
     case MACHINE_CALL:
       write_tab(out);
       fputs("call ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_RET:
@@ -805,47 +801,47 @@ static bool write_machine_instr(FILE* out, const struct MachineInstr* instr) {
     case MACHINE_JMP:
       write_tab(out);
       fputs("jmp ", out);
-      write_label_or_imm(out, instr->label, instr->imm);
+      write_label_or_imm(out, instr->instr.target.label, instr->instr.target.imm);
       fputc('\n', out);
       return true;
     case MACHINE_CMP:
       write_tab(out);
       fputs("cmp ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_TNCB:
       write_tab(out);
       fputs("tncb ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_TNCD:
       write_tab(out);
       fputs("tncd ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_SXTB:
       write_tab(out);
       fputs("sxtb ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     case MACHINE_SXTD:
       write_tab(out);
       fputs("sxtd ", out);
-      write_reg(out, instr->ra);
+      write_reg(out, instr->instr.reg2.ra);
       fputc(' ', out);
-      write_reg(out, instr->rb);
+      write_reg(out, instr->instr.reg2.rb);
       fputc('\n', out);
       return true;
     default:

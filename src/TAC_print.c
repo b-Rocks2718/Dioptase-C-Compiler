@@ -382,54 +382,54 @@ static void print_tac_top_level(const struct TopLevel* top, unsigned tabs) {
   switch (top->type) {
     case FUNC: {
       printf("Func ");
-      print_slice(top->name);
-      printf(top->global ? " global\n" : " local\n");
+      print_slice(top->top.tac_func.name);
+      printf(top->top.tac_func.global ? " global\n" : " local\n");
 
       print_tabs(tabs + 1);
       printf("Params: ");
-      if (top->num_params == 0) {
+      if (top->top.tac_func.num_params == 0) {
         printf("<none>");
       } else {
-        for (size_t i = 0; i < top->num_params; i++) {
+        for (size_t i = 0; i < top->top.tac_func.num_params; i++) {
           if (i != 0) {
             printf(", ");
           }
-          print_slice(top->params[i]);
+          print_slice(top->top.tac_func.params[i]);
         }
       }
       printf("\n");
 
       print_tabs(tabs + 1);
       printf("Body:\n");
-      print_tac_instrs(top->body, tabs + 2);
+      print_tac_instrs(top->top.tac_func.body, tabs + 2);
       break;
     }
     case STATIC_VAR:
       printf("StaticVar ");
-      print_slice(top->name);
-      printf(top->global ? " global " : " local ");
+      print_slice(top->top.tac_static_var.name);
+      printf(top->top.tac_static_var.global ? " global " : " local ");
       printf("type=");
-      if (top->var_type != NULL) {
-        print_type(top->var_type);
+      if (top->top.tac_static_var.var_type != NULL) {
+        print_type(top->top.tac_static_var.var_type);
       } else {
         printf("<null>");
       }
       printf(" ");
-      print_static_init(top->init_values);
+      print_static_init(top->top.tac_static_var.init_values);
       printf("\n");
       break;
     case STATIC_CONST:
       printf("StaticConst ");
-      print_slice(top->name);
+      print_slice(top->top.tac_static_const.name);
       printf(" ");
       printf("type=");
-      if (top->var_type != NULL) {
-        print_type(top->var_type);
+      if (top->top.tac_static_const.var_type != NULL) {
+        print_type(top->top.tac_static_const.var_type);
       } else {
         printf("<null>");
       }
       printf(" ");
-      print_static_init(top->init_values);
+      print_static_init(top->top.tac_static_const.init_values);
       printf("\n");
       break;
     default:

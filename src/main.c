@@ -617,9 +617,9 @@ int main(int argc, const char *const *const argv) {
                     printf("\n");
                 }
                 printf("Function ");
-                print_slice(top->name);
+                print_slice(top->top.tac_func.name);
                 printf("\n");
-                print_cfg(build_cfg(top->body));
+                print_cfg(build_cfg(top->top.tac_func.body));
                 printed_function = true;
             }
             if (!printed_function) {
