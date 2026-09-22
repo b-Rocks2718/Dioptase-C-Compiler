@@ -579,9 +579,11 @@ struct IdentDec {
   struct Slice* name;
 };
 
-// Store the nested declarator reached through a pointer layer.
+// Store the nested declarator reached through one pointer layer.
+// is_const records a qualifier on that pointer, as in `T * const`.
 struct PointerDec {
   struct Declarator* decl;
+  bool is_const;
 };
 
 // Store function parameters and the nested return declarator.
@@ -631,8 +633,10 @@ enum AbstractDeclaratorType {
 };
 
 // Link the next inner abstract pointer layer.
+// is_const records a qualifier on this pointer layer.
 struct AbstractPointer {
   struct AbstractDeclarator* next;
+  bool is_const;
 };
 
 // Store an inner abstract declarator and optional array bound.
@@ -673,6 +677,7 @@ enum TypeSpecifierType {
   STRUCT_SPEC,
   UNION_SPEC,
   ENUM_SPEC,
+  CONST_SPEC,
 };
 
 // Store a type-specifier kind and optional named tag.
@@ -741,6 +746,12 @@ void print_dereference_expr(struct DereferenceExpr* expr, int tabs);
 
 void print_type(struct Type* type);
 
+// Allocate a zeroed type node. The const qualifier starts clear.
+struct Type* alloc_type(enum TypeType kind);
+
+// Drop only the outermost const qualifier.
+struct Type* unqualify_type(struct Type* type);
+
 void print_stmt(struct Statement* stmt, int tabs);
 
 void print_declaration(struct Declaration* declaration, int tabs);
@@ -756,5 +767,8 @@ void print_initializer(struct Initializer* init, int tabs);
 void print_subscript_expr(struct SubscriptExpr* expr, int tabs);
 
 bool compare_types(struct Type* a, struct Type* b);
+
+// Compare two types without requiring their outermost const qualifiers to match.
+bool compare_types_ignore_top_qualifiers(struct Type* a, struct Type* b);
 
 #endif // AST_H

@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/const_member.c:8:7: cannot modify const-qualified object

@@ -1,0 +1,203 @@
+Key: take_value
+  Type: func(ret_type=void, param_types=[int, ])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: pp.14
+  Type: const int* const
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: s.11
+  Type: struct Pair.3
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: p.2
+  Type: const int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: p.6
+  Type: const int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: i.15
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: read_ptr
+  Type: func(ret_type=int, param_types=[const int*, ])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: a.4
+  Type: const int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: q.7
+  Type: int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: b.5
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: r.8
+  Type: const int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: g
+  Type: const int
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Initial [INT: 3] 
+    Is Defined: true
+    Storage Class: None
+
+Key: xs.10
+  Type: const int[2]
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: n.13
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: x.0
+  Type: const int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: x.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: cp.9
+  Type: int* const
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: limit.16
+  Type: const int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: cs.12
+  Type: const struct Pair.3
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Program(
+    VarDclr(none, const int, g, SingleInit(Cast(const int, LitExpr(int, 3):int):const int));
+    FunDclr(
+        take_value,
+        storage=none
+        params=[VarDclr(none, const int, x.0), ]
+        type=func(ret_type=void, param_types=[int, ]),
+        body=null
+    );
+    FunDclr(
+        take_value,
+        storage=none
+        params=[VarDclr(none, int, x.1), ]
+        type=func(ret_type=void, param_types=[int, ]),
+        body=
+            Return(void, take_value);
+    );
+    FunDclr(
+        read_ptr,
+        storage=none
+        params=[VarDclr(none, const int*, p.2), ]
+        type=func(ret_type=int, param_types=[const int*, ]),
+        body=
+            Return(Cast(int, Dereference(Var(p.2):const int*):const int):int, read_ptr);
+    );
+    
+    StructDclr(name=Pair.3, members=[
+        MemberDclr(name=x, type=const int), 
+        MemberDclr(name=y, type=int), 
+    ]);
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, const int, a.4, SingleInit(Cast(const int, LitExpr(int, 4):int):const int));
+            VarDclr(none, int, b.5, SingleInit(LitExpr(int, 5):int));
+            VarDclr(none, const int*, p.6, SingleInit(AddrOf(Var(a.4):const int):const int*));
+            VarDclr(none, int*, q.7, SingleInit(AddrOf(Var(b.5):int):int*));
+            VarDclr(none, const int*, r.8, SingleInit(Cast(const int*, Var(q.7):int*):const int*));
+            VarDclr(none, int* const, cp.9, SingleInit(Cast(int* const, AddrOf(Var(b.5):int):int*):int* const));
+            VarDclr(none, const int[2], xs.10, CompoundInit(SingleInit(Cast(const int, LitExpr(int, 1):int):const int), SingleInit(Cast(const int, LitExpr(int, 2):int):const int)));
+            VarDclr(none, struct Pair.3, s.11);
+            ExprStmt(Assign(DotExpr(Var(s.11):struct Pair.3, y):int, LitExpr(int, 9):int):int);
+            VarDclr(none, const struct Pair.3, cs.12, CompoundInit(SingleInit(Cast(const int, LitExpr(int, 7):int):const int), SingleInit(LitExpr(int, 8):int)));
+            VarDclr(none, int, n.13, SingleInit(AddOp(Cast(int, DotExpr(Var(cs.12):const struct Pair.3, x):const int):int, DotExpr(Var(s.11):struct Pair.3, y):int):int));
+            VarDclr(none, const int* const, pp.14, SingleInit(Cast(const int* const, AddrOf(Var(a.4):const int):const int*):const int* const));
+            VarDclr(none, int, i.15, SingleInit(LitExpr(int, 0):int));
+            ForStmt(
+                main.for.17,
+                VarDclr(none, const int, limit.16, SingleInit(Cast(const int, LitExpr(int, 1):int):const int)),
+                BoolLe(Var(i.15):int, Cast(int, Var(limit.16):const int):int):int,
+                Assign(Var(i.15):int, AddOp(Var(i.15):int, LitExpr(int, 1):int):int):int,
+                CompoundStmt(
+                    ExprStmt(Assign(Var(n.13):int, AddOp(Var(n.13):int, Cast(int, Subscript(AddrOf(Var(xs.10):const int[2]):const int*, Var(i.15):int):const int):int):int):int);
+                );
+            );
+            ExprStmt(FunCallExpr(Var(take_value):untyped, [Cast(int, Var(a.4):const int):int, ]):void);
+            Return(AddOp(AddOp(AddOp(AddOp(AddOp(Cast(int, Var(g):const int):int, FunCallExpr(Var(read_ptr):untyped, [Var(p.6):const int*, ]):int):int, Cast(int, Dereference(Var(r.8):const int*):const int):int):int, Dereference(Var(cp.9):int* const):int):int, Cast(int, Dereference(Var(pp.14):const int* const):const int):int):int, Var(n.13):int):int, main);
+    );
+)

@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/const_assign.c:3:5: cannot modify const-qualified object

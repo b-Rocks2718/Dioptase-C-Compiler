@@ -1,7 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "AST.h"
+#include "arena.h"
 #include "slice.h"
 
 /* show instances */
@@ -18,8 +20,31 @@ void print_param_type_list(struct ParamTypeList* type_list){
   print_param_type_list(type_list->next);
 }
 
+// Allocate a zeroed type node. The const qualifier starts clear.
+struct Type* alloc_type(enum TypeType kind) {
+  struct Type* type = arena_alloc(sizeof(struct Type));
+  memset(type, 0, sizeof(*type));
+  type->type = kind;
+  return type;
+}
+
+// Drop only the outermost const qualifier.
+struct Type* unqualify_type(struct Type* type) {
+  if (type == NULL || !type->is_const) {
+    return type;
+  }
+  struct Type* copy = alloc_type(type->type);
+  *copy = *type;
+  copy->is_const = false;
+  return copy;
+}
+
 // Print a type tree with its qualifiers, derived types, and aggregate details.
 void print_type(struct Type* type){
+  // Pointer const sits after the star (`int* const`); other consts are prefixes.
+  if (type->type != POINTER_TYPE && type->is_const) {
+    printf("const ");
+  }
   switch (type->type){
     case INT_TYPE:
       printf("int");
@@ -51,6 +76,9 @@ void print_type(struct Type* type){
     case POINTER_TYPE:
       print_type(type->type_data.pointer_type.referenced_type);
       printf("*");
+      if (type->is_const) {
+        printf(" const");
+      }
       break;
     case VOID_TYPE:
       printf("void");
@@ -873,9 +901,12 @@ void print_prog(struct Program* prog){
   printf(")\n");
 }
 
-// Compare two type trees, including derived and aggregate structure.
-bool compare_types(struct Type* a, struct Type* b) {
+// Compare two type trees. check_top_const requires the outermost const bits to match.
+static bool compare_types_rec(struct Type* a, struct Type* b, bool check_top_const) {
   if (a->type != b->type) {
+    return false;
+  }
+  if (check_top_const && a->is_const != b->is_const) {
     return false;
   }
 
@@ -893,8 +924,8 @@ bool compare_types(struct Type* a, struct Type* b) {
       return true; // primitive types match
 
     case POINTER_TYPE:
-      return compare_types(a->type_data.pointer_type.referenced_type,
-                           b->type_data.pointer_type.referenced_type);
+      return compare_types_rec(a->type_data.pointer_type.referenced_type,
+                               b->type_data.pointer_type.referenced_type, true);
 
     case ARRAY_TYPE: {
       struct ArrayType* arr_a = &a->type_data.array_type;
@@ -902,7 +933,7 @@ bool compare_types(struct Type* a, struct Type* b) {
       if (arr_a->size != arr_b->size) {
         return false;
       }
-      return compare_types(arr_a->element_type, arr_b->element_type);
+      return compare_types_rec(arr_a->element_type, arr_b->element_type, true);
     }
 
     case FUN_TYPE: {
@@ -910,7 +941,7 @@ bool compare_types(struct Type* a, struct Type* b) {
       struct FunType* fun_b = &b->type_data.fun_type;
 
       // compare return types
-      if (!compare_types(fun_a->return_type, fun_b->return_type)) {
+      if (!compare_types_rec(fun_a->return_type, fun_b->return_type, true)) {
         return false;
       }
 
@@ -919,7 +950,7 @@ bool compare_types(struct Type* a, struct Type* b) {
       struct ParamTypeList* param_b = fun_b->param_types;
 
       while (param_a != NULL && param_b != NULL) {
-        if (!compare_types(param_a->type, param_b->type)) {
+        if (!compare_types_rec(param_a->type, param_b->type, true)) {
           return false;
         }
         param_a = param_a->next;
@@ -942,4 +973,14 @@ bool compare_types(struct Type* a, struct Type* b) {
       printf("Type error: Unknown type in compare_types\n");
       return false; // unknown type
   }
+}
+
+// Compare two type trees, including qualifiers and aggregate structure.
+bool compare_types(struct Type* a, struct Type* b) {
+  return compare_types_rec(a, b, true);
+}
+
+// Compare two types without requiring their outermost const qualifiers to match.
+bool compare_types_ignore_top_qualifiers(struct Type* a, struct Type* b) {
+  return compare_types_rec(a, b, false);
 }

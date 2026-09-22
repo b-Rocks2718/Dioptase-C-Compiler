@@ -337,6 +337,10 @@ struct TypeSpecifier parse_type_spec(){
       return spec;
     }
   }
+  if (consume(CONST_TOK)) {
+    struct TypeSpecifier spec = { CONST_SPEC, NULL };
+    return spec;
+  }
   else {
     struct TypeSpecifier spec = { -1, NULL };
     return spec;
@@ -408,6 +412,9 @@ bool spec_list_valid(struct TypeSpecList* types){
       case ENUM_SPEC:
         num_enums++;
         break;
+      case CONST_SPEC:
+        // Repeated const is the same qualifier, not a conflicting specifier.
+        break;
       default:
         break;
     }
@@ -443,6 +450,30 @@ bool spec_list_valid(struct TypeSpecList* types){
   return true;
 }
 
+// Return whether the specifier list includes a const qualifier.
+static bool spec_list_has_const(struct TypeSpecList* types) {
+  for (struct TypeSpecList* cur = types; cur != NULL; cur = cur->next) {
+    if (cur->spec.type == CONST_SPEC) return true;
+  }
+  return false;
+}
+
+// Return whether the specifier list names a type, not only qualifiers.
+static bool spec_list_has_base_type(struct TypeSpecList* types) {
+  for (struct TypeSpecList* cur = types; cur != NULL; cur = cur->next) {
+    if (cur->spec.type != CONST_SPEC) return true;
+  }
+  return false;
+}
+
+// Apply declaration-specifier const to a type built from those specifiers.
+static struct Type* qualify_type_from_specs(struct Type* type, struct TypeSpecList* types) {
+  if (type != NULL) {
+    type->is_const = spec_list_has_const(types);
+  }
+  return type;
+}
+
 // Convert a parsed type-specifier list into a Type node.
 struct Type* type_spec_to_type(struct TypeSpecList* types){
   struct TypeSpecifier* found = NULL;
@@ -450,77 +481,65 @@ struct Type* type_spec_to_type(struct TypeSpecList* types){
   else if (!spec_list_valid(types)) {
     parse_error_at(parser_error_ptr(), "invalid type specifiers");
     return NULL;
+  } else if (!spec_list_has_base_type(types)) {
+    parse_error_at(parser_error_ptr(), "expected a type specifier");
+    return NULL;
   } if (spec_list_contains(types, UNSIGNED_SPEC) && spec_list_contains(types, SHORT_SPEC)){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = USHORT_TYPE;
-    return type;
+    struct Type* type = alloc_type(USHORT_TYPE);
+    return qualify_type_from_specs(type, types);
   } else if (spec_list_contains(types, SIGNED_SPEC) && spec_list_contains(types, SHORT_SPEC)){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = SHORT_TYPE;
-    return type;
+    struct Type* type = alloc_type(SHORT_TYPE);
+    return qualify_type_from_specs(type, types);
   } else if (spec_list_contains(types, UNSIGNED_SPEC) && spec_list_contains(types, LONG_SPEC)){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = ULONG_TYPE;
-    return type;
+    struct Type* type = alloc_type(ULONG_TYPE);
+    return qualify_type_from_specs(type, types);
   } else if (spec_list_contains(types, SIGNED_SPEC) && spec_list_contains(types, LONG_SPEC)){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = LONG_TYPE;
-    return type;
+    struct Type* type = alloc_type(LONG_TYPE);
+    return qualify_type_from_specs(type, types);
   } else if (spec_list_contains(types, SIGNED_SPEC) && spec_list_contains(types, CHAR_SPEC)){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = SCHAR_TYPE;
-    return type;
+    struct Type* type = alloc_type(SCHAR_TYPE);
+    return qualify_type_from_specs(type, types);
   } else if (spec_list_contains(types, UNSIGNED_SPEC) && spec_list_contains(types, CHAR_SPEC)){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = UCHAR_TYPE;
-    return type;
+    struct Type* type = alloc_type(UCHAR_TYPE);
+    return qualify_type_from_specs(type, types);
   } else if (spec_list_contains(types, CHAR_SPEC)){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = CHAR_TYPE;
-    return type;
+    struct Type* type = alloc_type(CHAR_TYPE);
+    return qualify_type_from_specs(type, types);
   } else if (spec_list_contains(types, SHORT_SPEC)){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = SHORT_TYPE;
-    return type;
+    struct Type* type = alloc_type(SHORT_TYPE);
+    return qualify_type_from_specs(type, types);
   } else if (spec_list_contains(types, LONG_SPEC)){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = LONG_TYPE;
-    return type;
+    struct Type* type = alloc_type(LONG_TYPE);
+    return qualify_type_from_specs(type, types);
   } else if (spec_list_contains(types, VOID_SPEC)){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = VOID_TYPE;
-    return type;
+    struct Type* type = alloc_type(VOID_TYPE);
+    return qualify_type_from_specs(type, types);
   } else if ((found = spec_list_contains(types, STRUCT_SPEC)) != NULL){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = STRUCT_TYPE;
+    struct Type* type = alloc_type(STRUCT_TYPE);
     struct StructType struct_data;
     struct_data.name = found->name;
     type->type_data.struct_type = struct_data;
-    return type;
+    return qualify_type_from_specs(type, types);
   } else if ((found = spec_list_contains(types, UNION_SPEC)) != NULL){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = UNION_TYPE;
+    struct Type* type = alloc_type(UNION_TYPE);
     struct UnionType union_data;
     union_data.name = found->name;
     type->type_data.union_type = union_data;
-    return type;
+    return qualify_type_from_specs(type, types);
   } else if ((found = spec_list_contains(types, ENUM_SPEC)) != NULL){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = ENUM_TYPE;
+    struct Type* type = alloc_type(ENUM_TYPE);
     struct EnumType enum_data;
     enum_data.name = found->name;
     type->type_data.enum_type = enum_data;
-    return type;
+    return qualify_type_from_specs(type, types);
   }
   // at this point it must be an int type 
   else if (spec_list_contains(types, UNSIGNED_SPEC)){
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = UINT_TYPE;
-    return type;
+    struct Type* type = alloc_type(UINT_TYPE);
+    return qualify_type_from_specs(type, types);
   } else {
-    struct Type* type = arena_alloc(sizeof(struct Type));
-    type->type = INT_TYPE;
-    return type;
+    struct Type* type = alloc_type(INT_TYPE);
+    return qualify_type_from_specs(type, types);
   }
 }
 
@@ -595,7 +614,8 @@ static bool parse_abstract_params_after_open(struct ParamTypeList** params_out,
     }
     struct Type* param_type = process_abstract_declarator(declarator, base_type);
     struct ParamTypeList* node = arena_alloc(sizeof(struct ParamTypeList));
-    node->type = param_type;
+    // Top-level const is not part of the function type, only of the parameter object.
+    node->type = unqualify_type(param_type);
     node->next = NULL;
     *tail = node;
     tail = &node->next;
@@ -666,6 +686,10 @@ struct AbstractDeclarator* parse_direct_abstract_declarator(){
 struct AbstractDeclarator* parse_abstract_declarator(){
   struct Token* old_current = current;
   if (consume(ASTERISK)){
+    bool is_const = false;
+    while (consume(CONST_TOK)) {
+      is_const = true;
+    }
     struct AbstractDeclarator* declarator = parse_abstract_declarator();
     if (declarator == NULL){
       current = old_current;
@@ -675,6 +699,7 @@ struct AbstractDeclarator* parse_abstract_declarator(){
     result->type = ABSTRACT_POINTER;
     struct AbstractPointer* pointer_data = arena_alloc(sizeof(struct AbstractPointer));
     pointer_data->next = declarator;
+    pointer_data->is_const = is_const;
     result->data.pointer_type = pointer_data;
     return result;
   }
@@ -698,14 +723,13 @@ struct Type* process_abstract_declarator(
       result = base_type;
       break;
     case ABSTRACT_POINTER:
-      struct Type* ptr_type = arena_alloc(sizeof(struct Type));
-      ptr_type->type = POINTER_TYPE;
+      struct Type* ptr_type = alloc_type(POINTER_TYPE);
       ptr_type->type_data.pointer_type.referenced_type = base_type;
+      ptr_type->is_const = declarator->data.pointer_type->is_const;
       result = process_abstract_declarator(declarator->data.pointer_type->next, ptr_type);
       break;
     case ABSTRACT_ARRAY:
-      struct Type* arr_type = arena_alloc(sizeof(struct Type));
-      arr_type->type = ARRAY_TYPE;
+      struct Type* arr_type = alloc_type(ARRAY_TYPE);
       arr_type->type_data.array_type.size = declarator->data.array_type->size;
       arr_type->type_data.array_type.element_type = base_type;
       result = process_abstract_declarator(declarator->data.array_type->next, arr_type);
@@ -715,8 +739,7 @@ struct Type* process_abstract_declarator(
         parse_error_at(parser_error_ptr(), "function cannot return function type");
         return NULL;
       }
-      struct Type* fun_type = arena_alloc(sizeof(struct Type));
-      fun_type->type = FUN_TYPE;
+      struct Type* fun_type = alloc_type(FUN_TYPE);
       fun_type->type_data.fun_type.return_type = base_type;
       fun_type->type_data.fun_type.param_types = declarator->data.function_type->params;
       result = process_abstract_declarator(declarator->data.function_type->next, fun_type);
@@ -1615,6 +1638,7 @@ bool is_type_specifier(enum TokenType type){
     case STRUCT_TOK:
     case UNION_TOK:
     case ENUM_TOK:
+    case CONST_TOK:
       return true;
     default:
       return false;
@@ -2045,11 +2069,16 @@ void parse_type_and_storage_class(struct Type** type, enum StorageClass* class){
 struct Declarator* parse_declarator(){
   struct Token* old_current = current;
   if (consume(ASTERISK)){
+    bool is_const = false;
+    while (consume(CONST_TOK)) {
+      is_const = true;
+    }
     struct Declarator* decl = parse_declarator();
     if (decl != NULL){
       struct Declarator* result = arena_alloc(sizeof(struct Declarator));
       result->type = POINTER_DEC;
       result->declarator.pointer_dec.decl = decl;
+      result->declarator.pointer_dec.is_const = is_const;
       return result;
     } else {
       current = old_current;
@@ -2221,12 +2250,14 @@ struct Declarator* parse_direct_declarator(){
 }
 
 // Build parameter types from a function declarator.
+// Top-level const stays on the parameter object and is omitted from the function type,
+// so `void f(const int)` and `void f(int)` are the same function type.
 struct ParamTypeList* params_to_types(struct ParamList* params){
   struct ParamTypeList* head = NULL;
   struct ParamTypeList* tail = head;
   for (struct ParamList* cur = params; cur != NULL; cur = cur->next){
     struct ParamTypeList* node = arena_alloc(sizeof(struct ParamTypeList));
-    node->type = cur->param.type;
+    node->type = unqualify_type(cur->param.type);
     node->next = NULL;
     if (head == NULL) {
       head = node;
@@ -2301,8 +2332,8 @@ bool process_declarator(struct Declarator* decl, struct Type* base_type,
       return true;
     case POINTER_DEC: {
       // Build a pointer type and recurse inward for further derivations.
-      struct Type* ptr_type = arena_alloc(sizeof(struct Type));
-      ptr_type->type = POINTER_TYPE;
+      struct Type* ptr_type = alloc_type(POINTER_TYPE);
+      ptr_type->is_const = decl->declarator.pointer_dec.is_const;
       ptr_type->type_data.pointer_type.referenced_type = base_type;
       return process_declarator(decl->declarator.pointer_dec.decl, ptr_type,
                                 name_out, derived_type_out, params_out);
@@ -2318,8 +2349,7 @@ bool process_declarator(struct Declarator* decl, struct Type* base_type,
       if (!process_params_info(decl->declarator.fun_dec.params, &params)){
         return false;
       }
-      struct Type* fun_type = arena_alloc(sizeof(struct Type));
-      fun_type->type = FUN_TYPE;
+      struct Type* fun_type = alloc_type(FUN_TYPE);
       fun_type->type_data.fun_type.return_type = base_type;
       fun_type->type_data.fun_type.param_types = params_to_types(params);
       if (inner_decl->type == IDENT_DEC){
@@ -2335,8 +2365,7 @@ bool process_declarator(struct Declarator* decl, struct Type* base_type,
     case ARRAY_DEC: {
       // Build an array type and recurse inward for further derivations
 
-      struct Type* array_type = arena_alloc(sizeof(struct Type));
-      array_type->type = ARRAY_TYPE;
+      struct Type* array_type = alloc_type(ARRAY_TYPE);
       array_type->type_data.array_type.element_type = base_type;
       array_type->type_data.array_type.size = decl->declarator.array_dec.size;
       return process_declarator(decl->declarator.array_dec.decl, array_type,
@@ -2387,8 +2416,7 @@ struct Block* parse_end_of_func(bool* success){
 // Returns a FunctionDclr node or NULL on failure.
 struct FunctionDclr* parse_function(struct Type* ret_type, enum StorageClass storage, 
                                     struct Slice* name, struct ParamList* params){
-  struct Type* fun_type = arena_alloc(sizeof(struct Type));
-  fun_type->type = FUN_TYPE;
+  struct Type* fun_type = alloc_type(FUN_TYPE);
   fun_type->type_data.fun_type.return_type = ret_type;
   fun_type->type_data.fun_type.param_types = params_to_types(params);
   struct FunctionDclr* result = arena_alloc(sizeof(struct FunctionDclr));

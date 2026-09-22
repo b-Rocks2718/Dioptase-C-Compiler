@@ -474,8 +474,7 @@ static void decay_param_array_types(struct FunctionDclr* func_dclr) {
     if (param_cur->param.type != NULL &&
         param_cur->param.type->type == ARRAY_TYPE) {
       struct Type* array_type = param_cur->param.type;
-      struct Type* pointer_type = arena_alloc(sizeof(struct Type));
-      pointer_type->type = POINTER_TYPE;
+      struct Type* pointer_type = alloc_type(POINTER_TYPE);
       pointer_type->type_data.pointer_type.referenced_type =
           array_type->type_data.array_type.element_type;
       param_cur->param.type = pointer_type;
@@ -1084,8 +1083,7 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
 
 // Allocate a type node referring to the pointed-to type.
 struct Type* make_pointer_type(struct Type* type) {
-  struct Type* ptr_type = arena_alloc(sizeof(struct Type));
-  ptr_type->type = POINTER_TYPE;
+  struct Type* ptr_type = alloc_type(POINTER_TYPE);
   ptr_type->type_data.pointer_type.referenced_type = type;
   return ptr_type;
 }
@@ -1435,6 +1433,95 @@ struct Initializer* make_zero_initializer(struct Type* type) {
   return init;
 }
 
+// Return whether an object of this type contains a const-qualified part.
+// Pointer targets are not walked: `const int *` is a modifiable pointer.
+static bool type_contains_const(struct Type* type) {
+  if (type->is_const) {
+    return true;
+  }
+  if (type->type == ARRAY_TYPE) {
+    return type_contains_const(type->type_data.array_type.element_type);
+  }
+  if (type->type != STRUCT_TYPE && type->type != UNION_TYPE) {
+    return false;
+  }
+
+  struct TypeEntry* entry = type_table_get(global_type_table, type->type_data.struct_type.name);
+  if (entry == NULL) {
+    return false;
+  }
+  struct MemberEntry* member = type->type == STRUCT_TYPE
+      ? entry->data.struct_entry->members
+      : entry->data.union_entry->members;
+  for (; member != NULL; member = member->next) {
+    if (type_contains_const(member->type)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Add const to a type. Qualifiers on an array apply to its element type.
+static struct Type* qualify_const(struct Type* type) {
+  if (type->type == ARRAY_TYPE) {
+    struct Type* element = qualify_const(type->type_data.array_type.element_type);
+    if (element == type->type_data.array_type.element_type) {
+      return type;
+    }
+    struct Type* copy = alloc_type(ARRAY_TYPE);
+    copy->type_data.array_type.size = type->type_data.array_type.size;
+    copy->type_data.array_type.element_type = element;
+    return copy;
+  }
+  if (type->is_const) {
+    return type;
+  }
+  struct Type* copy = alloc_type(type->type);
+  *copy = *type;
+  copy->is_const = true;
+  return copy;
+}
+
+// Member access through a const aggregate produces a const member type.
+static struct Type* member_type_from_aggregate(struct Type* member, struct Type* aggregate) {
+  if (!aggregate->is_const) {
+    return member;
+  }
+  return qualify_const(member);
+}
+
+// Require a modifiable lvalue, including the const restriction.
+static bool ensure_modifiable_lvalue(struct Expr* expr, const char* loc,
+                                     const char* non_lvalue_message) {
+  if (!is_assignable(expr)) {
+    type_error_at(loc, "%s", non_lvalue_message);
+    return false;
+  }
+  if (type_contains_const(expr->value_type)) {
+    type_error_at(loc, "cannot modify const-qualified object");
+    return false;
+  }
+  return true;
+}
+
+// Return whether source may be assigned to a pointer target, including added const.
+// Pointed-to types must match aside from top-level const, and const cannot be dropped.
+// void* follows the same qualifier rule as other pointers.
+static bool pointer_types_assignable(struct Type* target, struct Type* source) {
+  struct Type* target_ref = target->type_data.pointer_type.referenced_type;
+  struct Type* source_ref = source->type_data.pointer_type.referenced_type;
+  bool target_void = target_ref->type == VOID_TYPE;
+  bool source_void = source_ref->type == VOID_TYPE;
+  if (!target_void && !source_void &&
+      !compare_types_ignore_top_qualifiers(target_ref, source_ref)) {
+    return false;
+  }
+  if (source_ref->is_const && !target_ref->is_const) {
+    return false;
+  }
+  return true;
+}
+
 // Typecheck an expression subtree and set value_type.
 // Returns true on success; false on any type error.
 bool typecheck_expr(struct Expr* expr) {
@@ -1452,8 +1539,8 @@ bool typecheck_expr(struct Expr* expr) {
       struct Type* right_type = bin_expr->right->value_type;
 
       if (is_compound_assign_op(bin_expr->op)) {
-        if (!is_assignable(bin_expr->left)) {
-          type_error_at(expr->loc, "cannot assign to non-lvalue");
+        if (!ensure_modifiable_lvalue(bin_expr->left, expr->loc,
+                                      "cannot assign to non-lvalue")) {
           return false;
         }
 
@@ -1507,8 +1594,7 @@ bool typecheck_expr(struct Expr* expr) {
 
         convert_expr_type(&bin_expr->left, common_type);
         convert_expr_type(&bin_expr->right, common_type);
-        expr->value_type = arena_alloc(sizeof(struct Type));
-        expr->value_type->type = INT_TYPE; // result type of equality comparison is int
+        expr->value_type = alloc_type(INT_TYPE); // result type of equality comparison is int
         return true;
       } else if (bin_expr->op == BOOL_LE || bin_expr->op == BOOL_LEQ ||
                  bin_expr->op == BOOL_GE || bin_expr->op == BOOL_GEQ) {
@@ -1550,7 +1636,7 @@ bool typecheck_expr(struct Expr* expr) {
           return true;
         } else if ((is_arithmetic_type(left_type) && is_pointer_to_complete_type(right_type)) ||
                    (is_pointer_to_complete_type(left_type) && is_arithmetic_type(right_type))) {
-          expr->value_type = is_pointer_type(left_type) ? left_type : right_type;
+          expr->value_type = unqualify_type(is_pointer_type(left_type) ? left_type : right_type);
           return true;
         } else {
           type_error_at(expr->loc, "invalid types for pointer arithmetic in addition");
@@ -1566,7 +1652,7 @@ bool typecheck_expr(struct Expr* expr) {
           return true;
         } else if (is_pointer_to_complete_type(left_type) && is_arithmetic_type(right_type)) {
           // Pointer minus integer yields a pointer.
-          expr->value_type = left_type;
+          expr->value_type = unqualify_type(left_type);
           return true;
         } else {
           type_error_at(expr->loc, "invalid types for pointer arithmetic in subtraction");
@@ -1617,8 +1703,8 @@ bool typecheck_expr(struct Expr* expr) {
         return false;
       }
 
-      if (!is_assignable(assign_expr->left)) {
-        type_error_at(expr->loc, "cannot assign to non-lvalue");
+      if (!ensure_modifiable_lvalue(assign_expr->left, expr->loc,
+                                    "cannot assign to non-lvalue")) {
         return false;
       }
 
@@ -1640,8 +1726,8 @@ bool typecheck_expr(struct Expr* expr) {
         return false;
       }
 
-      if (!is_assignable(post_assign_expr->expr)) {
-        type_error_at(expr->loc, "cannot apply post-increment/decrement to non-lvalue");
+      if (!ensure_modifiable_lvalue(post_assign_expr->expr, expr->loc,
+                                    "cannot apply post-increment/decrement to non-lvalue")) {
         return false;
       }
 
@@ -1817,7 +1903,7 @@ bool typecheck_expr(struct Expr* expr) {
     }
     case LIT: {
       struct LitExpr* lit_expr = &expr->expr.lit_expr;
-      expr->value_type = arena_alloc(sizeof(struct Type));
+      expr->value_type = alloc_type(INT_TYPE);
       switch (lit_expr->type) {
         case INT_CONST:
           expr->value_type->type = INT_TYPE;
@@ -1877,8 +1963,7 @@ bool typecheck_expr(struct Expr* expr) {
         return false;
       }
       struct Type* referenced = addr_of_expr->expr->value_type;
-      expr->value_type = arena_alloc(sizeof(struct Type));
-      expr->value_type->type = POINTER_TYPE;
+      expr->value_type = alloc_type(POINTER_TYPE);
       expr->value_type->type_data.pointer_type.referenced_type = referenced;
       return true;
     }
@@ -1935,8 +2020,7 @@ bool typecheck_expr(struct Expr* expr) {
     }
     case STRING: {
       struct StringExpr* str_expr = &expr->expr.string_expr;
-      expr->value_type = arena_alloc(sizeof(struct Type));
-      expr->value_type->type = ARRAY_TYPE;
+      expr->value_type = alloc_type(ARRAY_TYPE);
       expr->value_type->type_data.array_type.size = str_expr->string->len + 1; // include null terminator
       expr->value_type->type_data.array_type.element_type = &kCharType;
       return true;
@@ -2016,7 +2100,7 @@ bool typecheck_expr(struct Expr* expr) {
       }
       while (member != NULL) {
         if (compare_slice_to_slice(member->key, expr->expr.dot_expr.member)) {
-          expr->value_type = member->type;
+          expr->value_type = member_type_from_aggregate(member->type, struct_type);
           return true;   
         }
         member = member->next;
@@ -2058,7 +2142,7 @@ bool typecheck_expr(struct Expr* expr) {
       }
       while (member != NULL) {
         if (compare_slice_to_slice(member->key, expr->expr.arrow_expr.member)) {
-          expr->value_type = member->type;
+          expr->value_type = member_type_from_aggregate(member->type, struct_type);
           return true;   
         }
         member = member->next;
@@ -2266,6 +2350,9 @@ size_t get_type_alignment(struct Type* type) {
 // Returns a common type or NULL if incompatible.
 // Pointer types are not handled here.
 struct Type* get_common_type(struct Type* t1, struct Type* t2) {
+  // Arithmetic conversions use rvalue types, so top-level const is irrelevant.
+  t1 = unqualify_type(t1);
+  t2 = unqualify_type(t2);
   // promote char types to int
   if (is_char_type(t1)) {
     t1 = &kIntType;
@@ -2419,6 +2506,16 @@ struct Type* get_common_pointer_type(struct Expr* expr1, struct Expr* expr2) {
   } else if (is_null_pointer_constant(expr2)) {
     return t1;
   }
+
+  // `int *` and `const int *` share a composite type of `const int *`.
+  if (is_pointer_type(t1) && is_pointer_type(t2)) {
+    struct Type* ref1 = t1->type_data.pointer_type.referenced_type;
+    struct Type* ref2 = t2->type_data.pointer_type.referenced_type;
+    if (compare_types_ignore_top_qualifiers(ref1, ref2)) {
+      struct Type* referenced = ref1->is_const ? ref1 : ref2;
+      return make_pointer_type(referenced);
+    }
+  }
   return NULL;
 }
 
@@ -2443,14 +2540,10 @@ bool convert_by_assignment(struct Expr** expr, struct Type* target) {
     return true;
   }
 
-  if (is_void_pointer_type(target) && is_pointer_type((*expr)->value_type)) {
-    // allow conversion to void* from other pointer types
-    convert_expr_type(expr, target);
-    return true;
-  }
-
-  if (is_pointer_type(target) && is_void_pointer_type((*expr)->value_type)) {
-    // allow conversion from void* to other pointer types
+  if (is_pointer_type(target) && is_pointer_type((*expr)->value_type) &&
+      pointer_types_assignable(target, (*expr)->value_type)) {
+    // Adds qualifiers such as assigning `int *` to `const int *`.
+    // Drops nothing: assigning `const int *` to `int *` is rejected.
     convert_expr_type(expr, target);
     return true;
   }
@@ -3033,8 +3126,7 @@ struct InitList* is_init_const(struct Type* type, struct Initializer* init) {
           struct Slice name_slice = {"string.label", 12};
           struct Slice* string_label = make_unique(&name_slice);
 
-          struct Type* arr_type = arena_alloc(sizeof(struct Type));
-          arr_type->type = ARRAY_TYPE;
+          struct Type* arr_type = alloc_type(ARRAY_TYPE);
           arr_type->type_data.array_type.size = str_expr->string->len + 1; // include null terminator
           arr_type->type_data.array_type.element_type = &kCharType;
 

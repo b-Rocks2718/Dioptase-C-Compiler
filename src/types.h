@@ -1,6 +1,7 @@
 #ifndef TYPES_H
 #define TYPES_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
 // Enumerate C storage classes tracked by declaration/type checking.
@@ -73,9 +74,12 @@ union TypeVariant {
   // no data for other types
 };
 
-// Store a type kind and its variant-specific payload.
+// Store a type kind, its const qualifier, and its variant-specific payload.
+// is_const qualifies this type node. A pointer's const is independent of the
+// const on the type it points at, so `const int *` and `int * const` differ.
 struct Type {
   enum TypeType type;
+  bool is_const;
   union TypeVariant type_data;
 };
 

@@ -1,0 +1,110 @@
+Key: unused.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: a.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: callee
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: b.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+TACProg
+    Func callee global
+        Params: <none>
+        Body:
+            Return Const(7)
+    Func main global
+        Params: <none>
+        Body:
+            Return Const(6)
+Function callee
+CFG (3 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Return Const(7)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+[ENTRY]
+   |
+   v
+ [B1]
+   |
+   v
+[EXIT]
+
+Function main
+CFG (3 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Return Const(6)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+[ENTRY]
+   |
+   v
+ [B1]
+   |
+   v
+[EXIT]

@@ -197,6 +197,9 @@ void print_token(struct Token token){
     case EXTERN_TOK:
       printf("extern");
       break;
+    case CONST_TOK:
+      printf("const");
+      break;
     case SWITCH_TOK:
       printf("switch");
       break;

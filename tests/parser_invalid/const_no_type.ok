@@ -1,0 +1,2 @@
+Parse error at tests/parser_invalid/const_no_type.c:1:1: expected a type specifier
+Parse error at tests/parser_invalid/const_no_type.c:1:1: unexpected token
