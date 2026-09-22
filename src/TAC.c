@@ -1327,8 +1327,6 @@ struct TACInstrList while_to_TAC(struct Slice* func_name,
   struct Slice* break_label = slice_concat(label, ".break");
 
   struct TACInstrList body_instrs = stmt_to_TAC(func_name, body);
-  struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
-  struct TACInstrList cond_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
 
   struct TACInstrList instrs = tac_instr_list(NULL);
 
@@ -1337,7 +1335,7 @@ struct TACInstrList while_to_TAC(struct Slice* func_name,
   // TAC:
   // Label continue
   // <cond>
-  // CondJump CondE cond, 0, break
+  // <condition branches to break when false>
   // <body>
   // Jump continue
   // Label break
@@ -1345,15 +1343,9 @@ struct TACInstrList while_to_TAC(struct Slice* func_name,
   continue_label_instr->instr.tac_label.label = continue_label;
   concat_TAC_instrs(&instrs, tac_instr_list(continue_label_instr));
 
+  struct TACInstrList cond_instrs = cond_to_TAC(func_name, condition, break_label, true);
   concat_TAC_instrs(&instrs, cond_instrs);
 
-  struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
-  cond_jump_instr->instr.tac_cond_jump.src1 = cond_val;
-  cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, cond_val->type);
-  cond_jump_instr->instr.tac_cond_jump.condition = CondE;
-  cond_jump_instr->instr.tac_cond_jump.label = break_label;
-
-  concat_TAC_instrs(&instrs, tac_instr_list(cond_jump_instr));
   concat_TAC_instrs(&instrs, body_instrs);
 
   struct TACInstr* jump_back = tac_instr_create(TACJUMP);
@@ -1384,8 +1376,7 @@ struct TACInstrList do_while_to_TAC(struct Slice* func_name,
   struct Slice* break_label = slice_concat(label, ".break");
 
   struct TACInstrList body_instrs = stmt_to_TAC(func_name, body);
-  struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
-  struct TACInstrList cond_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
+  struct TACInstrList cond_instrs = cond_to_TAC(func_name, condition, start_label, false);
 
   struct TACInstrList instrs = tac_instr_list(NULL);
 
@@ -1396,7 +1387,7 @@ struct TACInstrList do_while_to_TAC(struct Slice* func_name,
   // <body>
   // Label continue
   // <cond>
-  // CondJump CondNE cond, 0, start
+  // Branch to start when cond is true
   // Label break
   struct TACInstr* start_label_instr = tac_instr_create(TACLABEL);
   start_label_instr->instr.tac_label.label = start_label;
@@ -1409,14 +1400,6 @@ struct TACInstrList do_while_to_TAC(struct Slice* func_name,
   concat_TAC_instrs(&instrs, tac_instr_list(continue_label_instr));
 
   concat_TAC_instrs(&instrs, cond_instrs);
-
-  struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
-  cond_jump_instr->instr.tac_cond_jump.src1 = cond_val;
-  cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, cond_val->type);
-  cond_jump_instr->instr.tac_cond_jump.condition = CondNE;
-  cond_jump_instr->instr.tac_cond_jump.label = start_label;
-
-  concat_TAC_instrs(&instrs, tac_instr_list(cond_jump_instr));
 
   struct TACInstr* break_label_instr = tac_instr_create(TACLABEL);
   break_label_instr->instr.tac_label.label = break_label;
@@ -1440,6 +1423,19 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
     return tac_instr_list(NULL);
   }
 
+  // AST:
+  // for (init; cond; end) { body }
+  // TAC:
+  // <init>
+  // Label start
+  // <cond>
+  // <condition branches to break when false>
+  // <body>
+  // Label continue
+  // <end>
+  // Jump start
+  // Label break
+
   struct Slice* start_label = slice_concat(label, ".start");
   struct Slice* continue_label = slice_concat(label, ".continue");
   struct Slice* break_label = slice_concat(label, ".break");
@@ -1449,16 +1445,7 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
 
   struct TACInstrList condition_instrs = tac_instr_list(NULL);
   if (condition != NULL) {
-    struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
-    condition_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
-
-    struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
-    cond_jump_instr->instr.tac_cond_jump.src1 = cond_val;
-    cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, cond_val->type);
-    cond_jump_instr->instr.tac_cond_jump.condition = CondE;
-    cond_jump_instr->instr.tac_cond_jump.label = break_label;
-
-    concat_TAC_instrs(&condition_instrs, tac_instr_list(cond_jump_instr));
+    concat_TAC_instrs(&condition_instrs, cond_to_TAC(func_name, condition, break_label, true));
   }
 
   struct TACInstrList end_instrs = tac_instr_list(NULL);
@@ -1470,18 +1457,6 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
   struct TACInstrList instrs = tac_instr_list(NULL);
   concat_TAC_instrs(&instrs, init_instrs);
 
-  // AST:
-  // for (init; cond; end) { body }
-  // TAC:
-  // <init>
-  // Label start
-  // <cond>
-  // CondJump CondE cond, 0, break
-  // <body>
-  // Label continue
-  // <end>
-  // Jump start
-  // Label break
   struct TACInstr* start_label_instr = tac_instr_create(TACLABEL);
   start_label_instr->instr.tac_label.label = start_label;
   concat_TAC_instrs(&instrs, tac_instr_list(start_label_instr));
@@ -1537,31 +1512,24 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
 // Lower an if statement without an else into TAC control flow.
 // Returns a TAC list implementing the conditional.
 struct TACInstrList if_to_TAC(struct Slice* func_name, struct Expr* condition, struct Statement* if_stmt) {
-  struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
-  struct TACInstrList cond_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
-  struct TACInstrList body_instrs = stmt_to_TAC(func_name, if_stmt);
-
-  struct Slice* end_label = tac_make_label(func_name, "end");
-
   // AST:
   // if (cond) { body }
   // TAC:
   // <cond>
-  // CondJump CondE cond, 0, end
+  // <condition branches to end when false>
   // <body>
   // Label end
-  struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
-  cond_jump_instr->instr.tac_cond_jump.src1 = cond_val;
-  cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, cond_val->type);
-  cond_jump_instr->instr.tac_cond_jump.condition = CondE;
-  cond_jump_instr->instr.tac_cond_jump.label = end_label;
 
+  struct TACInstrList body_instrs = stmt_to_TAC(func_name, if_stmt);
+
+  struct Slice* end_label = tac_make_label(func_name, "end");
   struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
   end_label_instr->instr.tac_label.label = end_label;
 
+  struct TACInstrList cond_instrs = cond_to_TAC(func_name, condition, end_label, true);
+
   struct TACInstrList instrs = tac_instr_list(NULL);
   concat_TAC_instrs(&instrs, cond_instrs);
-  concat_TAC_instrs(&instrs, tac_instr_list(cond_jump_instr));
   concat_TAC_instrs(&instrs, body_instrs);
   concat_TAC_instrs(&instrs, tac_instr_list(end_label_instr));
 
@@ -1574,8 +1542,6 @@ struct TACInstrList if_else_to_TAC(struct Slice* func_name,
                                 struct Expr* condition,
                                 struct Statement* if_stmt,
                                 struct Statement* else_stmt) {
-  struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
-  struct TACInstrList cond_instrs = expr_to_TAC_convert(func_name, condition, cond_val);
   struct TACInstrList if_instrs = stmt_to_TAC(func_name, if_stmt);
   struct TACInstrList else_instrs = stmt_to_TAC(func_name, else_stmt);
   struct Slice* else_label = tac_make_label(func_name, "else");
@@ -1585,17 +1551,13 @@ struct TACInstrList if_else_to_TAC(struct Slice* func_name,
   // if (cond) { if_body } else { else_body }
   // TAC:
   // <cond>
-  // CondJump CondE cond, 0, else
+  // <condition branches to else when false>
   // <if_body>
   // Jump end
   // Label else
   // <else_body>
   // Label end
-  struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
-  cond_jump_instr->instr.tac_cond_jump.src1 = cond_val;
-  cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, cond_val->type);
-  cond_jump_instr->instr.tac_cond_jump.condition = CondE;
-  cond_jump_instr->instr.tac_cond_jump.label = else_label;
+  struct TACInstrList cond_instrs = cond_to_TAC(func_name, condition, else_label, true);
 
   struct TACInstr* jump_end_instr = tac_instr_create(TACJUMP);
   jump_end_instr->instr.tac_jump.label = end_label;
@@ -1608,7 +1570,6 @@ struct TACInstrList if_else_to_TAC(struct Slice* func_name,
 
   struct TACInstrList instrs = tac_instr_list(NULL);
   concat_TAC_instrs(&instrs, cond_instrs);
-  concat_TAC_instrs(&instrs, tac_instr_list(cond_jump_instr));
   concat_TAC_instrs(&instrs, if_instrs);
   concat_TAC_instrs(&instrs, tac_instr_list(jump_end_instr));
   concat_TAC_instrs(&instrs, tac_instr_list(else_label_instr));
@@ -3199,4 +3160,96 @@ struct TACInstrList reverse_instr_list(struct TACInstrList src) {
     }
   }
   return reversed;
+}
+
+// Return the complementary branch condition for a TAC comparison.
+static enum TACCondition invert_tac_condition(enum TACCondition condition) {
+  switch (condition) {
+    case CondE: return CondNE;
+    case CondNE: return CondE;
+    case CondG: return CondLE;
+    case CondGE: return CondL;
+    case CondL: return CondGE;
+    case CondLE: return CondG;
+    case CondA: return CondBE;
+    case CondAE: return CondB;
+    case CondB: return CondAE;
+    case CondBE: return CondA;
+    default:
+      tac_error_at(NULL, "invalid TAC condition %d while inverting branch", (int)condition);
+      return condition;
+  }
+}
+
+// Lower a condition into a branch to target when its truth matches invert.
+// The expression is evaluated once, with C short-circuit evaluation preserved.
+struct TACInstrList cond_to_TAC(struct Slice* func_name, struct Expr* condition,
+                                struct Slice* target, bool invert) {
+  // optimized lowering of expressions when it is only used as an if/loop condition
+
+  if (condition->type == BINARY) {
+    struct BinaryExpr* binary = &condition->expr.bin_expr;
+    if (binary->op == BOOL_AND || binary->op == BOOL_OR) {
+      // lower short-circuit boolean expressions into conditional jumps
+      // rather than evaluating to 0 or 1 and then branching
+
+      struct TACInstrList instrs = tac_instr_list(NULL);
+      if ((binary->op == BOOL_AND && invert) ||
+          (binary->op == BOOL_OR && !invert)) {
+        // Either operand can send control to target; the second runs only if needed.
+        concat_TAC_instrs(&instrs, cond_to_TAC(func_name, binary->left, target, invert));
+        concat_TAC_instrs(&instrs, cond_to_TAC(func_name, binary->right, target, invert));
+      } else {
+        // The first operand can decide the result without reaching target.
+        struct Slice* skip = tac_make_label(func_name, "short_circuit");
+        concat_TAC_instrs(&instrs, cond_to_TAC(func_name, binary->left, skip, !invert));
+        concat_TAC_instrs(&instrs, cond_to_TAC(func_name, binary->right, target, invert));
+        struct TACInstr* skip_instr = tac_instr_create(TACLABEL);
+        skip_instr->instr.tac_label.label = skip;
+        concat_TAC_instrs(&instrs, tac_instr_list(skip_instr));
+      }
+      return instrs;
+    }
+
+    if (is_relational_op(binary->op)) {
+      // Lower relational binary expressions directly into conditional jumps,
+      // rather than evaluating into 0 or 1 and then branching
+
+      // Typechecking has already converted both operands to their common type.
+      struct Val* left = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct Val* right = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct TACInstrList instrs = expr_to_TAC_convert(func_name, binary->left, left);
+      concat_TAC_instrs(&instrs, expr_to_TAC_convert(func_name, binary->right, right));
+
+      enum TACCondition op = relation_to_cond(binary->op, binary->left->value_type);
+      if (invert) {
+        op = invert_tac_condition(op);
+      }
+      struct TACInstr* jump = tac_instr_create(TACCOND_JUMP);
+      jump->instr.tac_cond_jump.src1 = left;
+      jump->instr.tac_cond_jump.src2 = right;
+      jump->instr.tac_cond_jump.condition = op;
+      jump->instr.tac_cond_jump.label = target;
+      concat_TAC_instrs(&instrs, tac_instr_list(jump));
+      return instrs;
+    }
+  }
+
+  if (condition->type == UNARY && condition->expr.un_expr.op == BOOL_NOT) {
+    // BOOL_NOT simply inverts the condition, so we can recursively lower the inner expression with the inverted flag
+    return cond_to_TAC(func_name, condition->expr.un_expr.expr, target, !invert);
+  }
+
+  // no optimized lowering available, fall back to general expression evaluation
+  // branch depending on if expr is nonzero
+
+  struct Val* value = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstrList instrs = expr_to_TAC_convert(func_name, condition, value);
+  struct TACInstr* jump = tac_instr_create(TACCOND_JUMP);
+  jump->instr.tac_cond_jump.src1 = value;
+  jump->instr.tac_cond_jump.src2 = tac_make_const(0, value->type);
+  jump->instr.tac_cond_jump.condition = invert ? CondE : CondNE;
+  jump->instr.tac_cond_jump.label = target;
+  concat_TAC_instrs(&instrs, tac_instr_list(jump));
+  return instrs;
 }

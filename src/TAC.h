@@ -370,6 +370,10 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
                                    struct Slice* label,
                                    struct IdentMap* idents);
 
+// Lower a truth value into a branch; invert selects the false case.
+struct TACInstrList cond_to_TAC(struct Slice* func_name, struct Expr* condition,
+    struct Slice* target, bool invert);
+
 // ----- Utility functions -----
 
 // Build a one-element list, or an empty list if instr is NULL.
