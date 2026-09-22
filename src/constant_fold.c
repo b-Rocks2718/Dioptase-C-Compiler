@@ -112,6 +112,8 @@ static struct TACInstr* constant_instr_create(enum TACInstrType type) {
   instr->type = type;
   instr->reaching_copies.head = NULL;
   instr->reaching_copies.last = NULL;
+  instr->live_vars.head = NULL;
+  instr->live_vars.last = NULL;
   instr->next = NULL;
   return instr;
 }

@@ -273,6 +273,7 @@ struct TACInstr {
   enum TACInstrType type;
   union TACInstrVariant instr;
   struct ReachingCopyList reaching_copies;
+  struct SliceList live_vars; // live variables at this instruction
   struct TACInstr* next;
 };
 
@@ -383,6 +384,10 @@ bool tac_signedness(struct Type* type);
 void print_static_init(const struct InitList* init);
 
 bool compare_bodies(struct TACInstr* body1, struct TACInstr* body2);
+
+// Copy src into a new list in reverse order.
+// Operand pointers are shared with src. Analysis annotations start empty.
+struct TACInstrList reverse_instr_list(struct TACInstrList src);
 
 // Print one TAC instruction to stdout with the requested indentation.
 void print_tac_instr(const struct TACInstr* instr, unsigned tabs);

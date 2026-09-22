@@ -50,4 +50,10 @@ bool slice_list_contains(struct SliceList list, struct Slice* slice);
 // Copy list nodes, sharing the original slice pointers.
 struct SliceList copy_slice_list(struct SliceList src);
 
+// Return true if the two slice lists contain the same slices in the same order, false otherwise.
+bool compare_slice_lists(struct SliceList a, struct SliceList b);
+
+// Remove the first occurrence of a slice equal to slice from the list.
+bool slice_list_remove(struct SliceList* list, struct Slice* slice);
+
 #endif // SLICE_H

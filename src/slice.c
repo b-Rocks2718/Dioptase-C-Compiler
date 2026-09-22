@@ -155,6 +155,44 @@ bool slice_list_contains(struct SliceList list, struct Slice* slice) {
   return false;
 }
 
+// Remove the first occurrence of a slice from the list. Returns true if a slice was removed.
+bool slice_list_remove(struct SliceList* list, struct Slice* slice) {
+  if (list == NULL || slice == NULL) {
+    return false;
+  }
+  struct SliceListNode* prev = NULL;
+  for (struct SliceListNode* curr = list->head; curr != NULL; curr = curr->next) {
+    if (curr->slice != NULL && compare_slice_to_slice(curr->slice, slice)) {
+      if (prev) {
+        prev->next = curr->next;
+      } else {
+        list->head = curr->next;
+      }
+      if (curr == list->last) {
+        list->last = prev;
+      }
+      return true;
+    }
+    prev = curr;
+  }
+  return false;
+}
+
+// Return true if the two slice lists contain the same slices in the same order, false otherwise.
+bool compare_slice_lists(struct SliceList a, struct SliceList b){
+  for (struct SliceListNode* curr = a.head; curr != NULL; curr = curr->next) {
+    if (curr->slice != NULL && !slice_list_contains(b, curr->slice)) {
+      return false;
+    }
+  }
+  for (struct SliceListNode* curr = b.head; curr != NULL; curr = curr->next) {
+    if (curr->slice != NULL && !slice_list_contains(a, curr->slice)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Copy list nodes, sharing the original slice pointers.
 struct SliceList copy_slice_list(struct SliceList src) {
   struct SliceList copy = {0};

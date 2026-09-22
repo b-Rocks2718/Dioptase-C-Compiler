@@ -17,6 +17,8 @@ static struct CFGNode* make_start_node(void) {
   node->body = tac_instr_list(NULL);
   node->reaching_copies.head = NULL;
   node->reaching_copies.last = NULL;
+  node->live_vars.head = NULL;
+  node->live_vars.last = NULL;
   node->marked = false;
   return node;
 }
@@ -32,6 +34,8 @@ static struct CFGNode* make_exit_node(void) {
   node->body = tac_instr_list(NULL);
   node->reaching_copies.head = NULL;
   node->reaching_copies.last = NULL;
+  node->live_vars.head = NULL;
+  node->live_vars.last = NULL;
   node->marked = false;
   return node;
 }
@@ -47,6 +51,8 @@ static struct CFGNode* make_basic_block_node(void) {
   node->body = tac_instr_list(NULL);
   node->reaching_copies.head = NULL;
   node->reaching_copies.last = NULL;
+  node->live_vars.head = NULL;
+  node->live_vars.last = NULL;
   node->marked = false;
   return node;
 }
@@ -59,6 +65,8 @@ static struct TACInstr* copy_instr(const struct TACInstr* instr) {
   *instr_copy = *instr;
   instr_copy->reaching_copies.head = NULL;
   instr_copy->reaching_copies.last = NULL;
+  instr_copy->live_vars.head = NULL;
+  instr_copy->live_vars.last = NULL;
   instr_copy->next = NULL;
   return instr_copy;
 }
