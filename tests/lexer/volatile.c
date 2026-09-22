@@ -1,0 +1,2 @@
+volatile constant;
+int volatile * volatile p;

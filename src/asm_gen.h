@@ -127,6 +127,13 @@ struct AsmTopLevel {
 // Classify the ASM intermediate instruction variants.
 enum AsmInstrType {
   ASM_MOV,
+  // Volatile reads and writes use the same operand shapes as moves, loads, and
+  // stores. Codegen emits ordinary machine accesses; the distinct opcodes keep
+  // later passes from treating them as ordinary copies.
+  ASM_VOLATILE_READ,
+  ASM_VOLATILE_WRITE,
+  ASM_VOLATILE_LOAD,
+  ASM_VOLATILE_STORE,
   ASM_UNARY,
   ASM_BINARY,
   ASM_CMP,
@@ -147,6 +154,18 @@ enum AsmInstrType {
 
 // Store source and destination operands for a move.
 struct AsmMov {
+  struct Operand* dst;
+  struct Operand* src;
+};
+
+// Read a volatile object. Same operands as a move; the read is a side effect.
+struct AsmVolatileRead {
+  struct Operand* dst;
+  struct Operand* src;
+};
+
+// Write a volatile object. Same operands as a move; the write is a side effect.
+struct AsmVolatileWrite {
   struct Operand* dst;
   struct Operand* src;
 };
@@ -215,8 +234,20 @@ struct AsmLoad {
   struct Operand* src;
 };
 
+// Load through a pointer to a volatile object.
+struct AsmVolatileLoad {
+  struct Operand* dst;
+  struct Operand* src;
+};
+
 // Store destination address and source value for a store.
 struct AsmStore {
+  struct Operand* dst;
+  struct Operand* src;
+};
+
+// Store through a pointer to a volatile object.
+struct AsmVolatileStore {
   struct Operand* dst;
   struct Operand* src;
 };
@@ -243,6 +274,8 @@ struct AsmExtend {
 // Select the concrete ASM instruction payload identified by AsmInstrType.
 union AsmInstrVariant {
   struct AsmMov asm_mov;
+  struct AsmVolatileRead asm_volatile_read;
+  struct AsmVolatileWrite asm_volatile_write;
   struct AsmUnary asm_unary;
   struct AsmBinary asm_binary;
   struct AsmCmp asm_cmp;
@@ -254,7 +287,9 @@ union AsmInstrVariant {
   struct AsmLabel asm_label;
   struct AsmGetAddress asm_get_address;
   struct AsmLoad asm_load;
+  struct AsmVolatileLoad asm_volatile_load;
   struct AsmStore asm_store;
+  struct AsmVolatileStore asm_volatile_store;
   struct AsmBoundary asm_boundary;
   struct AsmTrunc asm_trunc;
   struct AsmExtend asm_extend;

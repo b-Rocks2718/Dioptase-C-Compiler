@@ -74,12 +74,14 @@ union TypeVariant {
   // no data for other types
 };
 
-// Store a type kind, its const qualifier, and its variant-specific payload.
-// is_const qualifies this type node. A pointer's const is independent of the
-// const on the type it points at, so `const int *` and `int * const` differ.
+// Store a type kind, its qualifiers, and its variant-specific payload.
+// is_const and is_volatile qualify this type node. A pointer's qualifiers are
+// independent of the qualifiers on the type it points at, so `volatile int *`
+// and `int * volatile` differ.
 struct Type {
   enum TypeType type;
   bool is_const;
+  bool is_volatile;
   union TypeVariant type_data;
 };
 

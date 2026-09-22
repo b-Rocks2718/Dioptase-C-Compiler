@@ -1,0 +1,15 @@
+Program(
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int, x, SingleInit(LitExpr(int, 1):untyped));
+            VarDclr(none, volatile int, y, SingleInit(LitExpr(int, 2):untyped));
+            VarDclr(none, int* volatile, p, SingleInit(AddrOf(Var(x):untyped):untyped));
+            VarDclr(none, volatile int*, q, SingleInit(AddrOf(Var(y):untyped):untyped));
+            VarDclr(none, volatile int* volatile, r, SingleInit(Var(q):untyped));
+            Return(AddOp(AddOp(Dereference(Var(p):untyped):untyped, Dereference(Var(q):untyped):untyped):untyped, Dereference(Var(r):untyped):untyped):untyped);
+    );
+)

@@ -261,6 +261,17 @@ static void transfer(struct CFGNode* block,
         }
         break;
       }
+      case TACVOLATILE_READ: {
+        // The read observes a value that may change. Do not record dst = src,
+        // or a later use of dst could be rewritten back into the volatile object.
+        kill_copies_involving_val(&current_reaching_copies, instr->instr.tac_copy.dst);
+        kill_copies_involving_val(&current_reaching_copies, instr->instr.tac_copy.src);
+        break;
+      }
+      case TACVOLATILE_WRITE:
+        // The write must stay, and a later read of dst must not reuse src.
+        kill_copies_involving_val(&current_reaching_copies, instr->instr.tac_copy.dst);
+        break;
       case TACCALL:
         kill_copies_for_call(&current_reaching_copies, aliased_vars, instr->instr.tac_call.dst);
         break;
@@ -274,6 +285,7 @@ static void transfer(struct CFGNode* block,
         kill_copies_involving_val(&current_reaching_copies, instr->instr.tac_binary.dst);
         break;
       case TACSTORE:
+      case TACVOLATILE_STORE:
         kill_copies_involving_aliased(&current_reaching_copies, aliased_vars);
         break;
       case TACTRUNC:
@@ -285,14 +297,24 @@ static void transfer(struct CFGNode* block,
       case TACLOAD:
         kill_copies_involving_val(&current_reaching_copies, instr->instr.tac_load.dst);
         break;
+      case TACVOLATILE_LOAD:
+        // A volatile memory read can observe an external update of any aliased object.
+        kill_copies_involving_val(&current_reaching_copies, instr->instr.tac_load.dst);
+        kill_copies_involving_aliased(&current_reaching_copies, aliased_vars);
+        break;
       case TACGET_ADDRESS:
         kill_copies_involving_val(&current_reaching_copies, instr->instr.tac_get_address.dst);
         break;
       case TACCOPY_TO_OFFSET:
+      case TACVOLATILE_COPY_TO_OFFSET:
         kill_copies_involving_name(&current_reaching_copies, instr->instr.tac_copy_to_offset.dst);
         break;
       case TACCOPY_FROM_OFFSET:
         kill_copies_involving_val(&current_reaching_copies, instr->instr.tac_copy_from_offset.dst);
+        break;
+      case TACVOLATILE_COPY_FROM_OFFSET:
+        kill_copies_involving_val(&current_reaching_copies, instr->instr.tac_copy_from_offset.dst);
+        kill_copies_involving_name(&current_reaching_copies, instr->instr.tac_copy_from_offset.src);
         break;
       case TACRETURN:
       case TACCOND_JUMP:
@@ -437,6 +459,12 @@ static bool rewrite_instr(struct TACInstr* instr){
       instr->instr.tac_copy.src = replace_operand(instr->instr.tac_copy.src, reaching_copies);
       break;
     }
+    case TACVOLATILE_READ:
+      // The source is the volatile object itself and must be read.
+      break;
+    case TACVOLATILE_WRITE:
+      instr->instr.tac_copy.src = replace_operand(instr->instr.tac_copy.src, reaching_copies);
+      break;
     case TACRETURN: {
       instr->instr.tac_return.src = replace_operand(instr->instr.tac_return.src, reaching_copies);
       break;
@@ -463,11 +491,13 @@ static bool rewrite_instr(struct TACInstr* instr){
       // no operands to replace for a label
       break;
     }
-    case TACLOAD: {
+    case TACLOAD:
+    case TACVOLATILE_LOAD: {
       instr->instr.tac_load.src_ptr = replace_operand(instr->instr.tac_load.src_ptr, reaching_copies);
       break;
     }
-    case TACSTORE: {
+    case TACSTORE:
+    case TACVOLATILE_STORE: {
       instr->instr.tac_store.src = replace_operand(instr->instr.tac_store.src, reaching_copies);
       break;
     }
@@ -487,11 +517,13 @@ static bool rewrite_instr(struct TACInstr* instr){
       // no operands to replace for a boundary instruction
       break;
     }
-    case TACCOPY_TO_OFFSET: {
+    case TACCOPY_TO_OFFSET:
+    case TACVOLATILE_COPY_TO_OFFSET: {
       instr->instr.tac_copy_to_offset.src = replace_operand(instr->instr.tac_copy_to_offset.src, reaching_copies);
       break;
     }
-    case TACCOPY_FROM_OFFSET: {
+    case TACCOPY_FROM_OFFSET:
+    case TACVOLATILE_COPY_FROM_OFFSET: {
       // can't use copy propagation for copy_from_offset
       break;
     }

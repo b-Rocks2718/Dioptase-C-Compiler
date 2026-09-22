@@ -341,6 +341,10 @@ struct TypeSpecifier parse_type_spec(){
     struct TypeSpecifier spec = { CONST_SPEC, NULL };
     return spec;
   }
+  if (consume(VOLATILE_TOK)) {
+    struct TypeSpecifier spec = { VOLATILE_SPEC, NULL };
+    return spec;
+  }
   else {
     struct TypeSpecifier spec = { -1, NULL };
     return spec;
@@ -413,7 +417,8 @@ bool spec_list_valid(struct TypeSpecList* types){
         num_enums++;
         break;
       case CONST_SPEC:
-        // Repeated const is the same qualifier, not a conflicting specifier.
+      case VOLATILE_SPEC:
+        // Repeated const or volatile is the same qualifier, not a conflicting specifier.
         break;
       default:
         break;
@@ -458,18 +463,27 @@ static bool spec_list_has_const(struct TypeSpecList* types) {
   return false;
 }
 
-// Return whether the specifier list names a type, not only qualifiers.
-static bool spec_list_has_base_type(struct TypeSpecList* types) {
+// Return whether the specifier list includes a volatile qualifier.
+static bool spec_list_has_volatile(struct TypeSpecList* types) {
   for (struct TypeSpecList* cur = types; cur != NULL; cur = cur->next) {
-    if (cur->spec.type != CONST_SPEC) return true;
+    if (cur->spec.type == VOLATILE_SPEC) return true;
   }
   return false;
 }
 
-// Apply declaration-specifier const to a type built from those specifiers.
+// Return whether the specifier list names a type, not only qualifiers.
+static bool spec_list_has_base_type(struct TypeSpecList* types) {
+  for (struct TypeSpecList* cur = types; cur != NULL; cur = cur->next) {
+    if (cur->spec.type != CONST_SPEC && cur->spec.type != VOLATILE_SPEC) return true;
+  }
+  return false;
+}
+
+// Apply declaration-specifier const and volatile to a type built from those specifiers.
 static struct Type* qualify_type_from_specs(struct Type* type, struct TypeSpecList* types) {
   if (type != NULL) {
     type->is_const = spec_list_has_const(types);
+    type->is_volatile = spec_list_has_volatile(types);
   }
   return type;
 }
@@ -687,8 +701,17 @@ struct AbstractDeclarator* parse_abstract_declarator(){
   struct Token* old_current = current;
   if (consume(ASTERISK)){
     bool is_const = false;
-    while (consume(CONST_TOK)) {
-      is_const = true;
+    bool is_volatile = false;
+    while (true) {
+      if (consume(CONST_TOK)) {
+        is_const = true;
+        continue;
+      }
+      if (consume(VOLATILE_TOK)) {
+        is_volatile = true;
+        continue;
+      }
+      break;
     }
     struct AbstractDeclarator* declarator = parse_abstract_declarator();
     if (declarator == NULL){
@@ -700,6 +723,7 @@ struct AbstractDeclarator* parse_abstract_declarator(){
     struct AbstractPointer* pointer_data = arena_alloc(sizeof(struct AbstractPointer));
     pointer_data->next = declarator;
     pointer_data->is_const = is_const;
+    pointer_data->is_volatile = is_volatile;
     result->data.pointer_type = pointer_data;
     return result;
   }
@@ -726,6 +750,7 @@ struct Type* process_abstract_declarator(
       struct Type* ptr_type = alloc_type(POINTER_TYPE);
       ptr_type->type_data.pointer_type.referenced_type = base_type;
       ptr_type->is_const = declarator->data.pointer_type->is_const;
+      ptr_type->is_volatile = declarator->data.pointer_type->is_volatile;
       result = process_abstract_declarator(declarator->data.pointer_type->next, ptr_type);
       break;
     case ABSTRACT_ARRAY:
@@ -1639,6 +1664,7 @@ bool is_type_specifier(enum TokenType type){
     case UNION_TOK:
     case ENUM_TOK:
     case CONST_TOK:
+    case VOLATILE_TOK:
       return true;
     default:
       return false;
@@ -2070,8 +2096,17 @@ struct Declarator* parse_declarator(){
   struct Token* old_current = current;
   if (consume(ASTERISK)){
     bool is_const = false;
-    while (consume(CONST_TOK)) {
-      is_const = true;
+    bool is_volatile = false;
+    while (true) {
+      if (consume(CONST_TOK)) {
+        is_const = true;
+        continue;
+      }
+      if (consume(VOLATILE_TOK)) {
+        is_volatile = true;
+        continue;
+      }
+      break;
     }
     struct Declarator* decl = parse_declarator();
     if (decl != NULL){
@@ -2079,6 +2114,7 @@ struct Declarator* parse_declarator(){
       result->type = POINTER_DEC;
       result->declarator.pointer_dec.decl = decl;
       result->declarator.pointer_dec.is_const = is_const;
+      result->declarator.pointer_dec.is_volatile = is_volatile;
       return result;
     } else {
       current = old_current;
@@ -2250,8 +2286,8 @@ struct Declarator* parse_direct_declarator(){
 }
 
 // Build parameter types from a function declarator.
-// Top-level const stays on the parameter object and is omitted from the function type,
-// so `void f(const int)` and `void f(int)` are the same function type.
+// Top-level const and volatile stay on the parameter object and are omitted from the
+// function type, so `void f(volatile int)` and `void f(int)` are the same function type.
 struct ParamTypeList* params_to_types(struct ParamList* params){
   struct ParamTypeList* head = NULL;
   struct ParamTypeList* tail = head;
@@ -2334,6 +2370,7 @@ bool process_declarator(struct Declarator* decl, struct Type* base_type,
       // Build a pointer type and recurse inward for further derivations.
       struct Type* ptr_type = alloc_type(POINTER_TYPE);
       ptr_type->is_const = decl->declarator.pointer_dec.is_const;
+      ptr_type->is_volatile = decl->declarator.pointer_dec.is_volatile;
       ptr_type->type_data.pointer_type.referenced_type = base_type;
       return process_declarator(decl->declarator.pointer_dec.decl, ptr_type,
                                 name_out, derived_type_out, params_out);

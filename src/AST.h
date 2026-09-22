@@ -580,10 +580,11 @@ struct IdentDec {
 };
 
 // Store the nested declarator reached through one pointer layer.
-// is_const records a qualifier on that pointer, as in `T * const`.
+// is_const and is_volatile record qualifiers on that pointer, as in `T * const volatile`.
 struct PointerDec {
   struct Declarator* decl;
   bool is_const;
+  bool is_volatile;
 };
 
 // Store function parameters and the nested return declarator.
@@ -633,10 +634,11 @@ enum AbstractDeclaratorType {
 };
 
 // Link the next inner abstract pointer layer.
-// is_const records a qualifier on this pointer layer.
+// is_const and is_volatile record qualifiers on this pointer layer.
 struct AbstractPointer {
   struct AbstractDeclarator* next;
   bool is_const;
+  bool is_volatile;
 };
 
 // Store an inner abstract declarator and optional array bound.
@@ -678,6 +680,7 @@ enum TypeSpecifierType {
   UNION_SPEC,
   ENUM_SPEC,
   CONST_SPEC,
+  VOLATILE_SPEC,
 };
 
 // Store a type-specifier kind and optional named tag.

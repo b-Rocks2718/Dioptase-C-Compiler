@@ -405,6 +405,7 @@ static void tac_collect_copy_offset_requirements(struct TacCopyOffsetMap* map,
                                                  const struct TACInstr* body) {
   for (const struct TACInstr* cur = body; cur != NULL; cur = cur->next) {
     switch (cur->type) {
+      case TACVOLATILE_COPY_TO_OFFSET:
       case TACCOPY_TO_OFFSET: {
         struct Slice* base = cur->instr.tac_copy_to_offset.dst;
         struct Val* src = cur->instr.tac_copy_to_offset.src;
@@ -416,6 +417,7 @@ static void tac_collect_copy_offset_requirements(struct TacCopyOffsetMap* map,
         tac_copy_offset_map_update(map, base, bytes);
         break;
       }
+      case TACVOLATILE_COPY_FROM_OFFSET:
       case TACCOPY_FROM_OFFSET: {
         struct Slice* base = cur->instr.tac_copy_from_offset.src;
         struct Val* dst = cur->instr.tac_copy_from_offset.dst;
@@ -999,6 +1001,8 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
         tac_assign_val(interp, &frame, pc->instr.tac_binary.dst, result);
         break;
       }
+      case TACVOLATILE_READ:
+      case TACVOLATILE_WRITE:
       case TACCOPY: {
         uint64_t value = tac_eval_val(interp, &frame, pc->instr.tac_copy.src);
         tac_assign_val(interp, &frame, pc->instr.tac_copy.dst, value);
@@ -1125,18 +1129,21 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
         tac_assign_val(interp, &frame, pc->instr.tac_get_address.dst, (uint64_t)addr);
         break;
       }
+      case TACVOLATILE_LOAD:
       case TACLOAD: {
         int addr = (int)tac_eval_val(interp, &frame, pc->instr.tac_load.src_ptr);
         uint64_t value = tac_memory_load(&interp->memory, addr);
         tac_assign_val(interp, &frame, pc->instr.tac_load.dst, value);
         break;
       }
+      case TACVOLATILE_STORE:
       case TACSTORE: {
         int addr = (int)tac_eval_val(interp, &frame, pc->instr.tac_store.dst_ptr);
         uint64_t value = tac_eval_val(interp, &frame, pc->instr.tac_store.src);
         tac_memory_store(&interp->memory, addr, value);
         break;
       }
+      case TACVOLATILE_COPY_TO_OFFSET:
       case TACCOPY_TO_OFFSET: {
         struct Slice* dst = pc->instr.tac_copy_to_offset.dst;
         if (dst == NULL) {
@@ -1159,6 +1166,7 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
         tac_memory_store(&interp->memory, addr, value);
         break;
       }
+      case TACVOLATILE_COPY_FROM_OFFSET:
       case TACCOPY_FROM_OFFSET: {
         struct Slice* src = pc->instr.tac_copy_from_offset.src;
         struct Val* dst = pc->instr.tac_copy_from_offset.dst;
