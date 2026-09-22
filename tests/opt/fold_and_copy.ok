@@ -1,0 +1,59 @@
+Key: main.tmp.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+TACProg
+    Func main global
+        Params: <none>
+        Body:
+            Copy Var(main.tmp.0), Const(12)
+            Copy Var(main.tmp.1), Const(14)
+            Return Const(14)
+            Return Const(0)
+Function main
+CFG (4 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Copy Var(main.tmp.0), Const(12)
+    Copy Var(main.tmp.1), Const(14)
+    Return Const(14)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+       [ENTRY]
+   +------+
+   v
+ [B1]         [B2]
+   +------+     |
+          +-----+
+          v
+       [EXIT]

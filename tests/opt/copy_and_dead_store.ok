@@ -1,0 +1,55 @@
+Key: a.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: b.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+TACProg
+    Func main global
+        Params: <none>
+        Body:
+            Return Const(5)
+            Return Const(0)
+Function main
+CFG (4 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Return Const(5)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+       [ENTRY]
+   +------+
+   v
+ [B1]         [B2]
+   +------+     |
+          +-----+
+          v
+       [EXIT]

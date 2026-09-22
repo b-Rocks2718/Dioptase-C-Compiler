@@ -49,22 +49,22 @@ Optimizations are disabled by default. The following passes are currently implem
 ```text
 -constant-fold        fold constant TAC expressions and branches
 -dead-code            remove unreachable TAC blocks and redundant control flow
+-copy-prop            copy propagation
+-dead-store           dead-store elimination
 ```
 
-`-opt` enables every optimization switch. At present, its effective optimizations are constant folding and dead-code elimination; it also enables the reserved switches below so that newly implemented passes will automatically become part of `-opt`.
+`-opt` enables every optimization switch. At present, its effective optimizations are the four passes above; it also enables the reserved switches below so that newly implemented passes will automatically become part of `-opt`.
 
 These optimization switches are accepted by the compiler, but their passes are not implemented yet and they currently have no effect:
 
 ```text
--copy-prop            copy propagation
--dead-store           dead-store elimination
 -tail-call            tail-call optimization
 -inline               function inlining
 -peephole             low-level peephole optimization
 -reg-alloc            register allocation
 ```
 
-Optimization flags may be combined. For example, `bcc -constant-fold -dead-code input.c` runs both currently implemented passes. The `make release` target only optimizes the `bcc` executable itself; it does not enable optimization of compiled C programs.
+Optimization flags may be combined. For example, `bcc -constant-fold -dead-code input.c` runs both of those passes. The `make release` target only optimizes the `bcc` executable itself; it does not enable optimization of compiled C programs.
 
 For user-mode links, `bcc` always passes `-crt <dir>` through to the assembler. Without an explicit override, it prefers the compiler-local CRT under `Dioptase-Languages/Dioptase-C-Compiler/crt` when `DIOPTASE_ROOT` is set.
 
@@ -83,6 +83,7 @@ For user-mode links, `bcc` always passes `-crt <dir>` through to the assembler. 
 Supported:
 
 - Types: `signed`/`unsigned` `int` and `short`, `void`, `char` types, arrays, functions, strings, structs, unions, enums, and pointers to these types
+- Type qualifiers: `const` on objects, pointers, aggregates, and parameters
 - Storage classes: `static`, `extern`
 - Declarations: global and local variables, function declarations/definitions
 - Expressions:
@@ -101,11 +102,11 @@ Supported:
 Limitations:
 - No floating-point
 - No `long` or `long long` integers
-- No `typedef`, `const`, `volatile`, `inline`, or `restrict`
+- No `typedef`, `volatile`, `inline`, or `restrict`
 - No multiple declarators per declaration (e.g., `int a, b;`)
 - No variadic functions
 - No inline assembly
-- Optimization support is currently limited to constant folding and dead-code elimination; register allocation and the other passes listed above are not implemented yet
+- Optimization support is currently limited to constant folding, dead-code elimination, copy propagation, and dead-store elimination; register allocation and the other passes listed above are not implemented yet
 
 In the future I plan to fix most of these limitations. I'd also like to add a few extensions to C, like classes, templates, and lambdas.  
 
@@ -119,6 +120,8 @@ Stage-specific tests live in these folders:
 - `tests/idents` and `tests/idents_invalid` (`-idents`)
 - `tests/labels` and `tests/labels_invalid` (`-labels`)
 - `tests/types` and `tests/types_invalid` (`-types`)
+- `tests/cfg` (`-cfg`)
+- `tests/opt` (`-tac -cfg`, with optimization flags from a matching `.flags` file)
 
 Each test case is a `.c` file with a matching `.ok` file for expected output. `make test` (debug build) and `make test-release` (release build) write per-test `.out` files next to each case and diff them against the `.ok` files. Invalid tests must fail with a non-zero exit; if a `.ok` file exists, its contents are compared against the captured output.
 

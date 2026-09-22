@@ -1,0 +1,70 @@
+Key: reachable_loop
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+TACProg
+    Func main global
+        Params: <none>
+        Body:
+            Return Const(2)
+    Func reachable_loop global
+        Params: <none>
+        Body:
+            Label reachable_loop.goto.1
+            Jump reachable_loop.goto.1
+Function main
+CFG (3 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Return Const(2)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+[ENTRY]
+   |
+   v
+ [B1]
+   |
+   v
+[EXIT]
+
+Function reachable_loop
+CFG (3 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Label reachable_loop.goto.1
+    Jump reachable_loop.goto.1
+    edges:
+      +-- jump --> [B1]
+
+[EXIT]
+    edges: none
+
+[ENTRY]
+   |
+   v
+ [B1]---+
+   ^----+
+
+[EXIT]

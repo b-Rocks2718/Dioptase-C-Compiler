@@ -1,0 +1,246 @@
+Key: sum.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: negated.4
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: shifted.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: complemented.5
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: product.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.3
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.4
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.5
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.6
+  Type: char
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.7
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: narrowed.6
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: masked.3
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: taken
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+TACProg
+    Func main global
+        Params: <none>
+        Body:
+            Copy Var(main.tmp.0), Const(5)
+            Copy Var(sum.0), Var(main.tmp.0)
+            Copy Var(main.tmp.1), Const(42)
+            Copy Var(product.1), Var(main.tmp.1)
+            Copy Var(main.tmp.2), Const(8)
+            Copy Var(shifted.2), Var(main.tmp.2)
+            Copy Var(main.tmp.3), Const(7)
+            Copy Var(masked.3), Var(main.tmp.3)
+            Copy Var(main.tmp.4), Const(-4)
+            Copy Var(negated.4), Var(main.tmp.4)
+            Copy Var(main.tmp.5), Const(-2)
+            Copy Var(complemented.5), Var(main.tmp.5)
+            Copy Var(main.tmp.6), Const(35)
+            Extend Var(main.tmp.7), Var(main.tmp.6), 1
+            Copy Var(narrowed.6), Var(main.tmp.7)
+            Jump main.end.0
+            Return Const(1)
+            Label main.end.0
+            Return Var(sum.0)
+            Return Const(0)
+    Func taken global
+        Params: <none>
+        Body:
+            Return Const(3)
+            Label taken.end.1
+            Return Const(4)
+            Return Const(0)
+Function main
+CFG (6 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Copy Var(main.tmp.0), Const(5)
+    Copy Var(sum.0), Var(main.tmp.0)
+    Copy Var(main.tmp.1), Const(42)
+    Copy Var(product.1), Var(main.tmp.1)
+    Copy Var(main.tmp.2), Const(8)
+    Copy Var(shifted.2), Var(main.tmp.2)
+    Copy Var(main.tmp.3), Const(7)
+    Copy Var(masked.3), Var(main.tmp.3)
+    Copy Var(main.tmp.4), Const(-4)
+    Copy Var(negated.4), Var(main.tmp.4)
+    Copy Var(main.tmp.5), Const(-2)
+    Copy Var(complemented.5), Var(main.tmp.5)
+    Copy Var(main.tmp.6), Const(35)
+    Extend Var(main.tmp.7), Var(main.tmp.6), 1
+    Copy Var(narrowed.6), Var(main.tmp.7)
+    Jump main.end.0
+    edges:
+      +-- jump --> [B3]
+
+[B2]
+    Return Const(1)
+    edges:
+      +-- return --> [EXIT]
+
+[B3]
+    Label main.end.0
+    Return Var(sum.0)
+    edges:
+      +-- return --> [EXIT]
+
+[B4]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+             [ENTRY]
+   +------------+
+   v
+ [B1]         [B2]         [B4]
+   +------------+            |
+                +------------|------+
+                |            +------|--+
+                v                   |  |
+              [B3]                  |  |
+                +-------------------+  |
+                |                      |
+                +----------------------+
+                v
+             [EXIT]
+
+Function taken
+CFG (5 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Return Const(3)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Label taken.end.1
+    Return Const(4)
+    edges:
+      +-- return --> [EXIT]
+
+[B3]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+             [ENTRY]
+   +------------+
+   v
+ [B1]         [B2]         [B3]
+   +------------+            |
+                |            |
+                +------------+
+                v
+             [EXIT]

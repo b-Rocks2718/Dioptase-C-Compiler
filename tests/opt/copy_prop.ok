@@ -1,0 +1,215 @@
+Key: propagate
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: p.7
+  Type: int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: a.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: a.3
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: a.5
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: b.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: b.4
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: b.6
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: c.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: propagate.tmp.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: aliased
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: redundant
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: aliased.tmp.1
+  Type: int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+TACProg
+    Func propagate global
+        Params: <none>
+        Body:
+            Copy Var(a.0), Const(4)
+            Copy Var(b.1), Const(4)
+            Binary AddOp Var(propagate.tmp.0), Const(4), Const(1)
+            Copy Var(c.2), Var(propagate.tmp.0)
+            Return Var(propagate.tmp.0)
+            Return Const(0)
+    Func redundant global
+        Params: <none>
+        Body:
+            Copy Var(a.3), Const(4)
+            Copy Var(b.4), Const(4)
+            Return Const(4)
+            Return Const(0)
+    Func aliased global
+        Params: <none>
+        Body:
+            Copy Var(a.5), Const(1)
+            Copy Var(b.6), Const(1)
+            GetAddress Var(aliased.tmp.1), &Var(a.5)
+            Copy Var(p.7), Var(aliased.tmp.1)
+            Store [Var(p.7)], Const(2)
+            Return Var(a.5)
+            Return Const(0)
+Function propagate
+CFG (4 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Copy Var(a.0), Const(4)
+    Copy Var(b.1), Const(4)
+    Binary AddOp Var(propagate.tmp.0), Const(4), Const(1)
+    Copy Var(c.2), Var(propagate.tmp.0)
+    Return Var(propagate.tmp.0)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+       [ENTRY]
+   +------+
+   v
+ [B1]         [B2]
+   +------+     |
+          +-----+
+          v
+       [EXIT]
+
+Function redundant
+CFG (4 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Copy Var(a.3), Const(4)
+    Copy Var(b.4), Const(4)
+    Return Const(4)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+       [ENTRY]
+   +------+
+   v
+ [B1]         [B2]
+   +------+     |
+          +-----+
+          v
+       [EXIT]
+
+Function aliased
+CFG (4 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Copy Var(a.5), Const(1)
+    Copy Var(b.6), Const(1)
+    GetAddress Var(aliased.tmp.1), &Var(a.5)
+    Copy Var(p.7), Var(aliased.tmp.1)
+    Store [Var(p.7)], Const(2)
+    Return Var(a.5)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+       [ENTRY]
+   +------+
+   v
+ [B1]         [B2]
+   +------+     |
+          +-----+
+          v
+       [EXIT]

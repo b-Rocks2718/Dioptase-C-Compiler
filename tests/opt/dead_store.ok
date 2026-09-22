@@ -1,0 +1,202 @@
+Key: keep_addressed
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: kept
+  Type: int
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Tentative
+    Is Defined: false
+    Storage Class: Static
+
+Key: p.3
+  Type: int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: keep_addressed.tmp.2
+  Type: int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: keep_addressed.tmp.3
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: a.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: callee
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: live.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: dead.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+TACProg
+    StaticVar kept local type=int <no inits>
+    Func callee global
+        Params: <none>
+        Body:
+            Return Const(1)
+            Return Const(0)
+    Func main global
+        Params: <none>
+        Body:
+            Copy Var(live.1), Const(3)
+            Copy Var(kept), Var(live.1)
+            Call callee -> Var(main.tmp.1) ()
+            Return Var(live.1)
+            Return Const(0)
+    Func keep_addressed global
+        Params: <none>
+        Body:
+            GetAddress Var(keep_addressed.tmp.2), &Var(a.2)
+            Copy Var(p.3), Var(keep_addressed.tmp.2)
+            Copy Var(a.2), Const(2)
+            Load Var(keep_addressed.tmp.3), [Var(p.3)]
+            Return Var(keep_addressed.tmp.3)
+            Return Const(0)
+Function callee
+CFG (4 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Return Const(1)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+       [ENTRY]
+   +------+
+   v
+ [B1]         [B2]
+   +------+     |
+          +-----+
+          v
+       [EXIT]
+
+Function main
+CFG (4 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Copy Var(live.1), Const(3)
+    Copy Var(kept), Var(live.1)
+    Call callee -> Var(main.tmp.1) ()
+    Return Var(live.1)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+       [ENTRY]
+   +------+
+   v
+ [B1]         [B2]
+   +------+     |
+          +-----+
+          v
+       [EXIT]
+
+Function keep_addressed
+CFG (4 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    GetAddress Var(keep_addressed.tmp.2), &Var(a.2)
+    Copy Var(p.3), Var(keep_addressed.tmp.2)
+    Copy Var(a.2), Const(2)
+    Load Var(keep_addressed.tmp.3), [Var(p.3)]
+    Return Var(keep_addressed.tmp.3)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+       [ENTRY]
+   +------+
+   v
+ [B1]         [B2]
+   +------+     |
+          +-----+
+          v
+       [EXIT]

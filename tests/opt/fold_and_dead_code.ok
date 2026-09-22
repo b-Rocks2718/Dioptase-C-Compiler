@@ -1,0 +1,34 @@
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+TACProg
+    Func main global
+        Params: <none>
+        Body:
+            Return Const(2)
+Function main
+CFG (3 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Return Const(2)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+[ENTRY]
+   |
+   v
+ [B1]
+   |
+   v
+[EXIT]

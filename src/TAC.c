@@ -470,8 +470,7 @@ struct Val* make_str_label(struct StringExpr* str_expr){
   struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
   val->val_type = VARIABLE;
   val->val.var_name = string_label;
-  val->type = arena_alloc(sizeof(struct Type));
-  val->type->type = POINTER_TYPE;
+  val->type = alloc_type(POINTER_TYPE);
   val->type->type_data.pointer_type.referenced_type = tac_builtin_type(CHAR_TYPE);
   return val;
 }

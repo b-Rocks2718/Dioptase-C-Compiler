@@ -71,6 +71,7 @@ enum TokenType {
   COMMA,
   STATIC_TOK,
   EXTERN_TOK,
+  CONST_TOK,
   SWITCH_TOK,
   CASE_TOK,
   DEFAULT_TOK,
