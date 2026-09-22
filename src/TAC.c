@@ -131,6 +131,45 @@ static struct Val* tac_make_const(uint64_t value, struct Type* type) {
   return val;
 }
 
+// Return true when type carries a volatile qualifier.
+static bool type_is_volatile(const struct Type* type) {
+  return type != NULL && type->is_volatile;
+}
+
+// Return type with volatile applied. Qualifiers on an array apply to its elements.
+static struct Type* type_with_volatile(struct Type* type) {
+  if (type == NULL) {
+    return NULL;
+  }
+  if (type->type == ARRAY_TYPE) {
+    struct Type* element = type_with_volatile(type->type_data.array_type.element_type);
+    if (element == type->type_data.array_type.element_type) {
+      return type;
+    }
+    struct Type* copy = alloc_type(ARRAY_TYPE);
+    copy->type_data.array_type.size = type->type_data.array_type.size;
+    copy->type_data.array_type.element_type = element;
+    return copy;
+  }
+  if (type->is_volatile) {
+    return type;
+  }
+  struct Type* copy = alloc_type(type->type);
+  *copy = *type;
+  copy->is_volatile = true;
+  return copy;
+}
+
+// Return true when val names a declared volatile object, not a temporary.
+static bool val_is_volatile_var(const struct Val* val) {
+  if (val == NULL || val->val_type != VARIABLE || val->val.var_name == NULL ||
+      !type_is_volatile(val->type) || global_symbol_table == NULL) {
+    return false;
+  }
+  struct SymbolEntry* entry = symbol_table_get(global_symbol_table, val->val.var_name);
+  return entry != NULL && entry->type != NULL && entry->type->is_volatile;
+}
+
 // Allocate a variable TAC value referencing an existing name.
 // name is a Slice that must outlive the TAC; type is the variable type.
 // Returns a Val tagged as VARIABLE.
@@ -768,7 +807,8 @@ struct TACInstrList single_init_to_TAC(struct Slice* func_name,
   if (use_offset_store) {
     struct Val* src = (struct Val*)arena_alloc(sizeof(struct Val));
     struct TACInstrList expr_instrs = expr_to_TAC_convert(func_name, init, src);
-    struct TACInstr* store_instr = tac_instr_create(TACCOPY_TO_OFFSET);
+    struct TACInstr* store_instr = tac_instr_create(
+        type_is_volatile(type) ? TACVOLATILE_COPY_TO_OFFSET : TACCOPY_TO_OFFSET);
     store_instr->instr.tac_copy_to_offset.dst = base_var;
     store_instr->instr.tac_copy_to_offset.src = src;
     store_instr->instr.tac_copy_to_offset.offset =
@@ -900,7 +940,8 @@ static struct TACInstrList string_init_to_TAC(struct Slice* func_name, struct Sl
 
     struct Val* src = tac_make_const(byte, element_type);
     size_t byte_offset = offset + (i * element_size);
-    struct TACInstr* store_instr = tac_instr_create(TACCOPY_TO_OFFSET);
+    struct TACInstr* store_instr = tac_instr_create(
+        type_is_volatile(element_type) ? TACVOLATILE_COPY_TO_OFFSET : TACCOPY_TO_OFFSET);
     store_instr->instr.tac_copy_to_offset.dst = var_name;
     store_instr->instr.tac_copy_to_offset.src = src;
     store_instr->instr.tac_copy_to_offset.offset =
@@ -931,7 +972,11 @@ static struct TACInstrList struct_init_to_TAC(struct Slice* func_name, struct Sl
 
   for (struct MemberEntry* cur_member = members; cur_member != NULL && cur_init != NULL; cur_member = cur_member->next, cur_init = cur_init->next) {
     size_t mem_offset = offset + cur_member->offset;
-    concat_TAC_instrs(&instrs, init_to_TAC(func_name, base, cur_init->init, cur_member->type, mem_offset));
+    // A volatile aggregate qualifies every member, including ones not declared volatile.
+    struct Type* stored_type = type_is_volatile(type)
+                                   ? type_with_volatile(cur_member->type)
+                                   : cur_member->type;
+    concat_TAC_instrs(&instrs, init_to_TAC(func_name, base, cur_init->init, stored_type, mem_offset));
   }
   return instrs;
 }
@@ -1673,37 +1718,60 @@ struct TACInstrList expr_to_TAC_convert(struct Slice* func_name, struct Expr* ex
       // AST:
       // expression used as value
       // TAC:
-      // (no-op)
+      // VolatileRead tmp, var    when var is volatile
+      // (no-op)                  otherwise
+      if (val_is_volatile_var(raw_result.val)) {
+        struct Type* value_type = unqualify_type(raw_result.val->type);
+        struct Val* tmp = make_temp(func_name, value_type);
+        struct TACInstr* read_instr = tac_instr_create(TACVOLATILE_READ);
+        read_instr->instr.tac_copy.dst = tmp;
+        read_instr->instr.tac_copy.src = raw_result.val;
+        concat_TAC_instrs(&instrs, tac_instr_list(read_instr));
+        tac_copy_val(dst, tmp);
+        return instrs;
+      }
       if (dst != NULL) {
         tac_copy_val(dst, raw_result.val);
       }
       return instrs;
     }
     case DEREFERENCED_POINTER: {
-      struct Val* tmp = make_temp(func_name, expr->value_type);
+      struct Type* value_type = type_is_volatile(expr->value_type)
+                                    ? unqualify_type(expr->value_type)
+                                    : expr->value_type;
+      struct Val* tmp = make_temp(func_name, value_type);
       tac_copy_val(dst, tmp);
-    
+      struct Val* load_dst = dst != NULL ? dst : tmp;
+
       // AST:
       // lvalue expression used as value
       // TAC:
-      // Load dst, [ptr]
-      struct TACInstr* load_instr = tac_instr_create(TACLOAD);
-      load_instr->instr.tac_load.dst = dst;
+      // Load dst, [ptr]            or VolatileLoad when the object is volatile
+      struct TACInstr* load_instr = tac_instr_create(
+          type_is_volatile(expr->value_type) ? TACVOLATILE_LOAD : TACLOAD);
+      load_instr->instr.tac_load.dst = load_dst;
       load_instr->instr.tac_load.src_ptr = raw_result.val;
       concat_TAC_instrs(&instrs, tac_instr_list(load_instr));
     
       return instrs;
     }
     case SUB_OBJECT: {
-      struct Val* tmp = make_temp(func_name, expr->value_type);
+      struct Type* value_type = type_is_volatile(expr->value_type)
+                                    ? unqualify_type(expr->value_type)
+                                    : expr->value_type;
+      struct Val* tmp = make_temp(func_name, value_type);
       tac_copy_val(dst, tmp);
+      struct Val* copy_dst = dst != NULL ? dst : tmp;
       // AST:
       // struct.field or ptr->field used as value
       // TAC:
       // CopyFromOffset dst, base_ptr, offset
+      // VolatileCopyFromOffset when the member type is volatile
 
-      struct TACInstr* copy_instr = tac_instr_create(TACCOPY_FROM_OFFSET);
-      copy_instr->instr.tac_copy_from_offset.dst = dst;
+      struct TACInstr* copy_instr = tac_instr_create(
+          type_is_volatile(expr->value_type) ? TACVOLATILE_COPY_FROM_OFFSET
+                                             : TACCOPY_FROM_OFFSET);
+      copy_instr->instr.tac_copy_from_offset.dst = copy_dst;
       copy_instr->instr.tac_copy_from_offset.src = raw_result.sub_object_base;
       copy_instr->instr.tac_copy_from_offset.offset = raw_result.sub_object_offset;
       concat_TAC_instrs(&instrs, tac_instr_list(copy_instr));
@@ -1829,8 +1897,19 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
           // TAC:
           // <lhs lvalue>
           // <rhs>
+          // [volatile] VolatileRead acc, lhs
           // [optional] Binary Mul scaled = rhs * sizeof(T)
-          // Binary op lhs, lhs, rhs_or_scaled
+          // Binary op acc, acc, rhs_or_scaled
+          // [volatile] VolatileWrite lhs, acc
+          bool lhs_volatile = val_is_volatile_var(lhs_result.val);
+          struct Val* acc = lhs_result.val;
+          if (lhs_volatile) {
+            acc = make_temp(func_name, unqualify_type(lhs_type));
+            struct TACInstr* read_instr = tac_instr_create(TACVOLATILE_READ);
+            read_instr->instr.tac_copy.dst = acc;
+            read_instr->instr.tac_copy.src = lhs_result.val;
+            concat_TAC_instrs(&instrs, tac_instr_list(read_instr));
+          }
           struct Val* rhs_for_op = rhs_val;
           if (pointer_lhs && (base_op == ADD_OP || base_op == SUB_OP) && is_arithmetic_type(rhs_type)) {
             struct Type* ref_type = lhs_type->type_data.pointer_type.referenced_type;
@@ -1856,24 +1935,36 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
           if (needs_unsigned_div) {
             // Signed long division/modulo with a narrower unsigned lhs must zero-extend before op.
             // The backend is 32-bit, so emulate by using unsigned ops and fixing the sign.
-            struct TACInstrList div_instrs = emit_unsigned_lhs_signed_divmod(func_name, lhs_result.val, lhs_result.val,
+            struct TACInstrList div_instrs = emit_unsigned_lhs_signed_divmod(func_name, acc, acc,
                                                 rhs_for_op, rhs_for_op->type,
                                                 base_op == MOD_OP);
             concat_TAC_instrs(&instrs, div_instrs);
+            if (lhs_volatile) {
+              struct TACInstr* write_instr = tac_instr_create(TACVOLATILE_WRITE);
+              write_instr->instr.tac_copy.dst = lhs_result.val;
+              write_instr->instr.tac_copy.src = acc;
+              concat_TAC_instrs(&instrs, tac_instr_list(write_instr));
+            }
             result->type = PLAIN_OPERAND;
-            result->val = lhs_result.val;
+            result->val = acc;
             return instrs;
           }
 
           struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
           bin_instr->instr.tac_binary.alu_op = binop_to_aluop(base_op, op_type);
-          bin_instr->instr.tac_binary.dst = lhs_result.val;
-          bin_instr->instr.tac_binary.src1 = lhs_result.val;
+          bin_instr->instr.tac_binary.dst = acc;
+          bin_instr->instr.tac_binary.src1 = acc;
           bin_instr->instr.tac_binary.src2 = rhs_for_op;
           concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
 
+          if (lhs_volatile) {
+            struct TACInstr* write_instr = tac_instr_create(TACVOLATILE_WRITE);
+            write_instr->instr.tac_copy.dst = lhs_result.val;
+            write_instr->instr.tac_copy.src = acc;
+            concat_TAC_instrs(&instrs, tac_instr_list(write_instr));
+          }
           result->type = PLAIN_OPERAND;
-          result->val = lhs_result.val;
+          result->val = acc;
           return instrs;
         }
 
@@ -1887,7 +1978,8 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
           // Binary op cur, cur, rhs_or_scaled
           // Store [ptr], cur
           // Load lvalue before applying the compound operation.
-          struct TACInstr* load_instr = tac_instr_create(TACLOAD);
+          struct TACInstr* load_instr = tac_instr_create(
+              type_is_volatile(lhs_type) ? TACVOLATILE_LOAD : TACLOAD);
           load_instr->instr.tac_load.dst = cur;
           load_instr->instr.tac_load.src_ptr = lhs_result.val;
           concat_TAC_instrs(&instrs, tac_instr_list(load_instr));
@@ -1919,7 +2011,8 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
                                                 rhs_for_op->type, base_op == MOD_OP);
             concat_TAC_instrs(&instrs, div_instrs);
 
-            struct TACInstr* store_instr = tac_instr_create(TACSTORE);
+            struct TACInstr* store_instr = tac_instr_create(
+                type_is_volatile(lhs_type) ? TACVOLATILE_STORE : TACSTORE);
             store_instr->instr.tac_store.dst_ptr = lhs_result.val;
             store_instr->instr.tac_store.src = cur;
             concat_TAC_instrs(&instrs, tac_instr_list(store_instr));
@@ -1936,7 +2029,8 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
           bin_instr->instr.tac_binary.src2 = rhs_for_op;
           concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
 
-          struct TACInstr* store_instr = tac_instr_create(TACSTORE);
+          struct TACInstr* store_instr = tac_instr_create(
+              type_is_volatile(lhs_type) ? TACVOLATILE_STORE : TACSTORE);
           store_instr->instr.tac_store.dst_ptr = lhs_result.val;
           store_instr->instr.tac_store.src = cur;
           concat_TAC_instrs(&instrs, tac_instr_list(store_instr));
@@ -2136,14 +2230,18 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
         // TAC:
         // <lhs lvalue>
         // <rhs>
-        // Copy lhs, rhs
-        struct TACInstr* copy_instr = tac_instr_create(TACCOPY);
+        // Copy lhs, rhs    or VolatileWrite when lhs is volatile
+        bool lhs_volatile = val_is_volatile_var(lhs_result.val);
+        struct TACInstr* copy_instr = tac_instr_create(
+            lhs_volatile ? TACVOLATILE_WRITE : TACCOPY);
         copy_instr->instr.tac_copy.dst = lhs_result.val;
         copy_instr->instr.tac_copy.src = rhs_val;
         concat_TAC_instrs(&instrs, tac_instr_list(copy_instr));
 
         result->type = PLAIN_OPERAND;
-        result->val = lhs_result.val;
+        // A volatile assignment yields the stored value. Re-reading the object
+        // would be a second volatile access.
+        result->val = lhs_volatile ? rhs_val : lhs_result.val;
         return instrs;
       }
 
@@ -2153,8 +2251,10 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
         // TAC:
         // <ptr>
         // <rhs>
-        // Store [ptr], rhs
-        struct TACInstr* store_instr = tac_instr_create(TACSTORE);
+        // Store [ptr], rhs    or VolatileStore when the object is volatile
+        struct Type* stored_type = assign_expr->left->value_type;
+        struct TACInstr* store_instr = tac_instr_create(
+            type_is_volatile(stored_type) ? TACVOLATILE_STORE : TACSTORE);
         store_instr->instr.tac_store.dst_ptr = lhs_result.val;
         store_instr->instr.tac_store.src = rhs_val;
         concat_TAC_instrs(&instrs, tac_instr_list(store_instr));
@@ -2171,7 +2271,10 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
         // <base_ptr>
         // <rhs>
         // CopyToOffset base_ptr, offset, rhs
-        struct TACInstr* copy_instr = tac_instr_create(TACCOPY_TO_OFFSET);
+        struct Type* stored_type = assign_expr->left->value_type;
+        struct TACInstr* copy_instr = tac_instr_create(
+            type_is_volatile(stored_type) ? TACVOLATILE_COPY_TO_OFFSET
+                                          : TACCOPY_TO_OFFSET);
         copy_instr->instr.tac_copy_to_offset.dst = lhs_result.sub_object_base;
         copy_instr->instr.tac_copy_to_offset.offset = lhs_result.sub_object_offset;
         copy_instr->instr.tac_copy_to_offset.src = rhs_val;
@@ -2210,23 +2313,34 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
 
       if (lhs_result.type == PLAIN_OPERAND) {
         struct Val* src = lhs_result.val;
+        bool src_volatile = val_is_volatile_var(src);
 
         // AST:
         // x++ or x--
         // TAC:
-        // Copy old, x
-        // Binary op x, x, step
-        struct TACInstr* copy_instr = tac_instr_create(TACCOPY);
+        // Copy old, x          or VolatileRead when x is volatile
+        // Binary op new, old, step
+        // Copy x, new          or VolatileWrite when x is volatile
+        struct TACInstr* copy_instr = tac_instr_create(
+            src_volatile ? TACVOLATILE_READ : TACCOPY);
         copy_instr->instr.tac_copy.dst = old_val;
         copy_instr->instr.tac_copy.src = src;
         concat_TAC_instrs(&instrs, tac_instr_list(copy_instr));
 
+        struct Val* updated = src_volatile ? make_temp(func_name, unqualify_type(expr->value_type)) : src;
         struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
         bin_instr->instr.tac_binary.alu_op = binop_to_aluop(bin_op, expr->value_type);
-        bin_instr->instr.tac_binary.dst = src;
-        bin_instr->instr.tac_binary.src1 = src;
+        bin_instr->instr.tac_binary.dst = updated;
+        bin_instr->instr.tac_binary.src1 = src_volatile ? old_val : src;
         bin_instr->instr.tac_binary.src2 = step_val;
         concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
+
+        if (src_volatile) {
+          struct TACInstr* write_instr = tac_instr_create(TACVOLATILE_WRITE);
+          write_instr->instr.tac_copy.dst = src;
+          write_instr->instr.tac_copy.src = updated;
+          concat_TAC_instrs(&instrs, tac_instr_list(write_instr));
+        }
 
         result->type = PLAIN_OPERAND;
         result->val = old_val;
@@ -2240,7 +2354,9 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
         // Load old, [ptr]
         // Binary new, old, step
         // Store [ptr], new
-        struct TACInstr* load_instr = tac_instr_create(TACLOAD);
+        bool obj_volatile = type_is_volatile(expr->value_type);
+        struct TACInstr* load_instr = tac_instr_create(
+            obj_volatile ? TACVOLATILE_LOAD : TACLOAD);
         load_instr->instr.tac_load.dst = old_val;
         load_instr->instr.tac_load.src_ptr = lhs_result.val;
         concat_TAC_instrs(&instrs, tac_instr_list(load_instr));
@@ -2253,7 +2369,8 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
         bin_instr->instr.tac_binary.src2 = step_val;
         concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
 
-        struct TACInstr* store_instr = tac_instr_create(TACSTORE);
+        struct TACInstr* store_instr = tac_instr_create(
+            obj_volatile ? TACVOLATILE_STORE : TACSTORE);
         store_instr->instr.tac_store.dst_ptr = lhs_result.val;
         store_instr->instr.tac_store.src = new_val;
         concat_TAC_instrs(&instrs, tac_instr_list(store_instr));
@@ -2980,6 +3097,8 @@ bool compare_instrs(struct TACInstr* instr1, struct TACInstr* instr2) {
     case TACLABEL:
       return instr1->instr.tac_label.label == instr2->instr.tac_label.label;
     case TACCOPY:
+    case TACVOLATILE_READ:
+    case TACVOLATILE_WRITE:
       return (instr1->instr.tac_copy.dst == instr2->instr.tac_copy.dst &&
               instr1->instr.tac_copy.src == instr2->instr.tac_copy.src);
     case TACCALL:
@@ -2996,17 +3115,21 @@ bool compare_instrs(struct TACInstr* instr1, struct TACInstr* instr2) {
       return (instr1->instr.tac_get_address.dst == instr2->instr.tac_get_address.dst &&
               instr1->instr.tac_get_address.src == instr2->instr.tac_get_address.src);
     case TACLOAD:
+    case TACVOLATILE_LOAD:
       return (instr1->instr.tac_load.dst == instr2->instr.tac_load.dst &&
               instr1->instr.tac_load.src_ptr == instr2->instr.tac_load.src_ptr);
     case TACSTORE:
+    case TACVOLATILE_STORE:
       return (instr1->instr.tac_store.dst_ptr == instr2->instr.tac_store.dst_ptr &&
               instr1->instr.tac_store.src == instr2->instr.tac_store.src);
     case TACCOPY_TO_OFFSET:
+    case TACVOLATILE_COPY_TO_OFFSET:
       return (instr1->instr.tac_copy_to_offset.dst == instr2->instr.tac_copy_to_offset.dst &&
               instr1->instr.tac_copy_to_offset.src == instr2->instr.tac_copy_to_offset.src &&
               instr1->instr.tac_copy_to_offset.offset == instr2->instr.tac_copy_to_offset.offset &&
               instr1->instr.tac_copy_to_offset.dst_type == instr2->instr.tac_copy_to_offset.dst_type);
     case TACCOPY_FROM_OFFSET:
+    case TACVOLATILE_COPY_FROM_OFFSET:
       return (instr1->instr.tac_copy_from_offset.dst == instr2->instr.tac_copy_from_offset.dst &&
               instr1->instr.tac_copy_from_offset.src == instr2->instr.tac_copy_from_offset.src &&
               instr1->instr.tac_copy_from_offset.offset == instr2->instr.tac_copy_from_offset.offset);

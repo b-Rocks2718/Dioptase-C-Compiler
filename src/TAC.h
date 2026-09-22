@@ -88,6 +88,14 @@ enum TACInstrType {
   TACJUMP,
   TACLABEL,
   TACCOPY,
+  // Volatile accesses are side effects. They reuse the copy, load, store, and
+  // offset-copy payloads, and optimization passes must not delete or forward them.
+  TACVOLATILE_READ,
+  TACVOLATILE_WRITE,
+  TACVOLATILE_LOAD,
+  TACVOLATILE_STORE,
+  TACVOLATILE_COPY_TO_OFFSET,
+  TACVOLATILE_COPY_FROM_OFFSET,
   TACCALL,
   TACCALL_INDIRECT,
   TACGET_ADDRESS,

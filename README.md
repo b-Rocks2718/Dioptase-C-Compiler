@@ -83,7 +83,7 @@ For user-mode links, `bcc` always passes `-crt <dir>` through to the assembler. 
 Supported:
 
 - Types: `signed`/`unsigned` `int` and `short`, `void`, `char` types, arrays, functions, strings, structs, unions, enums, and pointers to these types
-- Type qualifiers: `const` on objects, pointers, aggregates, and parameters
+- Type qualifiers: `const` and `volatile` on objects, pointers, aggregates, and parameters
 - Storage classes: `static`, `extern`
 - Declarations: global and local variables, function declarations/definitions
 - Expressions:
@@ -102,7 +102,7 @@ Supported:
 Limitations:
 - No floating-point
 - No `long` or `long long` integers
-- No `typedef`, `volatile`, `inline`, or `restrict`
+- No `typedef`, `inline`, or `restrict`
 - No multiple declarators per declaration (e.g., `int a, b;`)
 - No variadic functions
 - No inline assembly

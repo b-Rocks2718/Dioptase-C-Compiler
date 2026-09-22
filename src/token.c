@@ -200,6 +200,9 @@ void print_token(struct Token token){
     case CONST_TOK:
       printf("const");
       break;
+    case VOLATILE_TOK:
+      printf("volatile");
+      break;
     case SWITCH_TOK:
       printf("switch");
       break;

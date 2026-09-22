@@ -20,7 +20,7 @@ void print_param_type_list(struct ParamTypeList* type_list){
   print_param_type_list(type_list->next);
 }
 
-// Allocate a zeroed type node. The const qualifier starts clear.
+// Allocate a zeroed type node. Const and volatile start clear.
 struct Type* alloc_type(enum TypeType kind) {
   struct Type* type = arena_alloc(sizeof(struct Type));
   memset(type, 0, sizeof(*type));
@@ -28,22 +28,26 @@ struct Type* alloc_type(enum TypeType kind) {
   return type;
 }
 
-// Drop only the outermost const qualifier.
+// Drop the outermost const and volatile qualifiers.
 struct Type* unqualify_type(struct Type* type) {
-  if (type == NULL || !type->is_const) {
+  if (type == NULL || (!type->is_const && !type->is_volatile)) {
     return type;
   }
   struct Type* copy = alloc_type(type->type);
   *copy = *type;
   copy->is_const = false;
+  copy->is_volatile = false;
   return copy;
 }
 
 // Print a type tree with its qualifiers, derived types, and aggregate details.
 void print_type(struct Type* type){
-  // Pointer const sits after the star (`int* const`); other consts are prefixes.
+  // Pointer qualifiers sit after the star (`int* const volatile`); others are prefixes.
   if (type->type != POINTER_TYPE && type->is_const) {
     printf("const ");
+  }
+  if (type->type != POINTER_TYPE && type->is_volatile) {
+    printf("volatile ");
   }
   switch (type->type){
     case INT_TYPE:
@@ -78,6 +82,9 @@ void print_type(struct Type* type){
       printf("*");
       if (type->is_const) {
         printf(" const");
+      }
+      if (type->is_volatile) {
+        printf(" volatile");
       }
       break;
     case VOID_TYPE:
@@ -901,12 +908,13 @@ void print_prog(struct Program* prog){
   printf(")\n");
 }
 
-// Compare two type trees. check_top_const requires the outermost const bits to match.
-static bool compare_types_rec(struct Type* a, struct Type* b, bool check_top_const) {
+// Compare two type trees. check_top_qualifiers requires the outermost const and volatile bits to match.
+static bool compare_types_rec(struct Type* a, struct Type* b, bool check_top_qualifiers) {
   if (a->type != b->type) {
     return false;
   }
-  if (check_top_const && a->is_const != b->is_const) {
+  if (check_top_qualifiers &&
+      (a->is_const != b->is_const || a->is_volatile != b->is_volatile)) {
     return false;
   }
 
@@ -980,7 +988,7 @@ bool compare_types(struct Type* a, struct Type* b) {
   return compare_types_rec(a, b, true);
 }
 
-// Compare two types without requiring their outermost const qualifiers to match.
+// Compare two types without requiring their outermost const or volatile qualifiers to match.
 bool compare_types_ignore_top_qualifiers(struct Type* a, struct Type* b) {
   return compare_types_rec(a, b, false);
 }

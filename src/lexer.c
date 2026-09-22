@@ -474,6 +474,7 @@ static struct Token* consume_any(){
   if (consume_keyword("static")) return finish_simple_token(token, STATIC_TOK);
   if (consume_keyword("extern")) return finish_simple_token(token, EXTERN_TOK);
   if (consume_keyword("const")) return finish_simple_token(token, CONST_TOK);
+  if (consume_keyword("volatile")) return finish_simple_token(token, VOLATILE_TOK);
   if (consume_keyword("switch")) return finish_simple_token(token, SWITCH_TOK);
   if (consume_keyword("case")) return finish_simple_token(token, CASE_TOK);
   if (consume_keyword("default")) return finish_simple_token(token, DEFAULT_TOK);

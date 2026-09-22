@@ -267,6 +267,20 @@ void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
       print_tac_val(instr->instr.tac_copy.src);
       printf("\n");
       break;
+    case TACVOLATILE_READ:
+      printf("VolatileRead ");
+      print_tac_val(instr->instr.tac_copy.dst);
+      printf(", ");
+      print_tac_val(instr->instr.tac_copy.src);
+      printf("\n");
+      break;
+    case TACVOLATILE_WRITE:
+      printf("VolatileWrite ");
+      print_tac_val(instr->instr.tac_copy.dst);
+      printf(", ");
+      print_tac_val(instr->instr.tac_copy.src);
+      printf("\n");
+      break;
     case TACCALL: {
       printf("Call ");
       print_slice(instr->instr.tac_call.func_name);
@@ -319,8 +333,22 @@ void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
       print_tac_val(instr->instr.tac_load.src_ptr);
       printf("]\n");
       break;
+    case TACVOLATILE_LOAD:
+      printf("VolatileLoad ");
+      print_tac_val(instr->instr.tac_load.dst);
+      printf(", [");
+      print_tac_val(instr->instr.tac_load.src_ptr);
+      printf("]\n");
+      break;
     case TACSTORE:
       printf("Store [");
+      print_tac_val(instr->instr.tac_store.dst_ptr);
+      printf("], ");
+      print_tac_val(instr->instr.tac_store.src);
+      printf("\n");
+      break;
+    case TACVOLATILE_STORE:
+      printf("VolatileStore [");
       print_tac_val(instr->instr.tac_store.dst_ptr);
       printf("], ");
       print_tac_val(instr->instr.tac_store.src);
@@ -332,6 +360,20 @@ void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
       printf(", ");
       print_tac_val(instr->instr.tac_copy_to_offset.src);
       printf(", %d\n", instr->instr.tac_copy_to_offset.offset);
+      break;
+    case TACVOLATILE_COPY_TO_OFFSET:
+      printf("VolatileCopyToOffset ");
+      print_slice(instr->instr.tac_copy_to_offset.dst);
+      printf(", ");
+      print_tac_val(instr->instr.tac_copy_to_offset.src);
+      printf(", %d\n", instr->instr.tac_copy_to_offset.offset);
+      break;
+    case TACVOLATILE_COPY_FROM_OFFSET:
+      printf("VolatileCopyFromOffset ");
+      print_tac_val(instr->instr.tac_copy_from_offset.dst);
+      printf(", ");
+      print_slice(instr->instr.tac_copy_from_offset.src);
+      printf(", %d\n", instr->instr.tac_copy_from_offset.offset);
       break;
     case TACCOPY_FROM_OFFSET:
       printf("CopyFromOffset ");

@@ -33,8 +33,16 @@ static bool instr_dead(struct TACInstr* instr) {
     case TACCALL:
     case TACCALL_INDIRECT: 
     case TACSTORE: 
-    case TACCOPY_TO_OFFSET:{
-      return false; // these instructions are never dead
+    case TACCOPY_TO_OFFSET:
+    case TACVOLATILE_READ:
+    case TACVOLATILE_WRITE:
+    case TACVOLATILE_LOAD:
+    case TACVOLATILE_STORE:
+    case TACVOLATILE_COPY_TO_OFFSET:
+    case TACVOLATILE_COPY_FROM_OFFSET: {
+      // Control transfers, calls, stores, and volatile accesses are side effects.
+      // A volatile read stays even when its destination is unused.
+      return false;
     }
     case TACUNARY: {
       // if dst not live, the instruction is dead
@@ -205,8 +213,11 @@ static void transfer(struct CFGNode* node, struct SliceList end_live_vars,
         // no effect on live variables
         break;
       }
-      case TACCOPY: {
+      case TACCOPY:
+      case TACVOLATILE_READ:
+      case TACVOLATILE_WRITE: {
         // kill dst, generate src
+        // A volatile write still overwrites dst for liveness, but instr_dead keeps the access.
 
         // dst must be a var, or typechecking would have failed
         slice_list_remove(&current_live_vars, instr->instr.tac_copy.dst->val.var_name);
@@ -269,6 +280,7 @@ static void transfer(struct CFGNode* node, struct SliceList end_live_vars,
         slice_list_remove(&current_live_vars, instr->instr.tac_get_address.dst->val.var_name);
         break;
       }
+      case TACVOLATILE_LOAD:
       case TACLOAD: {
         // kill dst, generate src_ptr, generate every aliased var
         slice_list_remove(&current_live_vars, instr->instr.tac_load.dst->val.var_name);
@@ -284,6 +296,7 @@ static void transfer(struct CFGNode* node, struct SliceList end_live_vars,
         }
         break;
       }
+      case TACVOLATILE_STORE:
       case TACSTORE: {
         // generate src and dst
 
@@ -297,6 +310,7 @@ static void transfer(struct CFGNode* node, struct SliceList end_live_vars,
         }
         break;
       }
+      case TACVOLATILE_COPY_TO_OFFSET:
       case TACCOPY_TO_OFFSET: {
         // generate src, but do not kill dst
         if (instr->instr.tac_copy_to_offset.src->val_type == VARIABLE && 
@@ -305,6 +319,7 @@ static void transfer(struct CFGNode* node, struct SliceList end_live_vars,
         }
         break;
       }
+      case TACVOLATILE_COPY_FROM_OFFSET:
       case TACCOPY_FROM_OFFSET: {
         // generate src, kill dst
 

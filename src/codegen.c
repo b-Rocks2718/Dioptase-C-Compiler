@@ -658,6 +658,9 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
 
       switch (cur->type) {
         case ASM_MOV:
+        case ASM_VOLATILE_READ:
+        case ASM_VOLATILE_WRITE:
+          // Same machine move as Mov. The opcode stays distinct until this point.
           break;
         case ASM_CMP: {
           // Machine: Cmp rScratchA, rScratchB
@@ -993,15 +996,19 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
           }
           break;
         }
-        case ASM_LOAD: {
+        case ASM_LOAD:
+        case ASM_VOLATILE_LOAD: {
           // Pointer operand is loaded into rScratchA; copy to rScratchB for the base register.
+          struct Operand* load_dst = cur->type == ASM_VOLATILE_LOAD
+              ? cur->instr.asm_volatile_load.dst
+              : cur->instr.asm_load.dst;
           struct MachineInstr* mov_ptr = alloc_machine_instr(MACHINE_MOV);
           mov_ptr->instr.reg2.ra = kScratchRegB;
           mov_ptr->instr.reg2.rb = kScratchRegA;
           append_instr(&head, &tail, mov_ptr);
 
           struct MachineInstr* load;
-          switch (cur->instr.asm_load.dst->asm_type->type) {
+          switch (load_dst->asm_type->type) {
             case BYTE:
               load = alloc_machine_instr(MACHINE_LBA);
               break;
@@ -1014,17 +1021,24 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             default:
               codegen_errorf(func_name, cur->type,
                              "unsupported asm type %d for load destination",
-                             (int)cur->instr.asm_load.dst->asm_type->type);
-          }          
+                             (int)load_dst->asm_type->type);
+          }
           load->instr.mem.ra = kScratchRegA;
           load->instr.mem.rb = kScratchRegB;
           load->instr.mem.imm = 0;
           append_instr(&head, &tail, load);
           break;
         }
-        case ASM_STORE: {
+        case ASM_STORE:
+        case ASM_VOLATILE_STORE: {
+          struct Operand* store_src = cur->type == ASM_VOLATILE_STORE
+              ? cur->instr.asm_volatile_store.src
+              : cur->instr.asm_store.src;
+          struct Operand* store_dst = cur->type == ASM_VOLATILE_STORE
+              ? cur->instr.asm_volatile_store.dst
+              : cur->instr.asm_store.dst;
           struct MachineInstr* store;
-          switch (cur->instr.asm_store.src->asm_type->type) {
+          switch (store_src->asm_type->type) {
             case BYTE:
               store = alloc_machine_instr(MACHINE_SBA);
               break;
@@ -1037,8 +1051,8 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
             default:
               codegen_errorf(func_name, cur->type,
                              "unsupported asm type %d for store destination",
-                             (int)cur->instr.asm_store.dst->asm_type->type);
-          }          
+                             (int)store_dst->asm_type->type);
+          }
           store->instr.mem.ra = kScratchRegA;
           store->instr.mem.rb = kScratchRegB;
           store->instr.mem.imm = 0;

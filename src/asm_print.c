@@ -243,6 +243,20 @@ static void print_asm_instr(const struct AsmInstr* instr, unsigned tabs) {
       print_operand(instr->instr.asm_mov.src);
       printf("\n");
       break;
+    case ASM_VOLATILE_READ:
+      printf("VolatileRead ");
+      print_operand(instr->instr.asm_volatile_read.dst);
+      printf(", ");
+      print_operand(instr->instr.asm_volatile_read.src);
+      printf("\n");
+      break;
+    case ASM_VOLATILE_WRITE:
+      printf("VolatileWrite ");
+      print_operand(instr->instr.asm_volatile_write.dst);
+      printf(", ");
+      print_operand(instr->instr.asm_volatile_write.src);
+      printf("\n");
+      break;
     case ASM_UNARY:
       printf("Unary ");
       print_asm_un_op(instr->instr.asm_unary.op);
@@ -358,11 +372,25 @@ static void print_asm_instr(const struct AsmInstr* instr, unsigned tabs) {
       print_operand(instr->instr.asm_load.src);
       printf("\n");
       break;
+    case ASM_VOLATILE_LOAD:
+      printf("VolatileLoad ");
+      print_operand(instr->instr.asm_volatile_load.dst);
+      printf(", ");
+      print_operand(instr->instr.asm_volatile_load.src);
+      printf("\n");
+      break;
     case ASM_STORE:
       printf("Store ");;
       print_operand(instr->instr.asm_store.dst);
       printf(", ");
       print_operand(instr->instr.asm_store.src);
+      printf("\n");
+      break;
+    case ASM_VOLATILE_STORE:
+      printf("VolatileStore ");
+      print_operand(instr->instr.asm_volatile_store.dst);
+      printf(", ");
+      print_operand(instr->instr.asm_volatile_store.src);
       printf("\n");
       break;
     default:

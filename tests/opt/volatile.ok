@@ -1,0 +1,292 @@
+Key: vp.14
+  Type: int* volatile
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: seen.7
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: q.15
+  Type: int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: kept
+  Type: volatile int
+  Attributes:
+    Attr Type: Static Variable
+    Init Type: Tentative
+    Is Defined: false
+    Storage Class: Static
+
+Key: s.11
+  Type: struct Box.0
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: p.2
+  Type: volatile struct Plain.1
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: p.9
+  Type: volatile int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: a.5
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: copied.8
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: b.6
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.3
+  Type: volatile int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.4
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.5
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.6
+  Type: int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.7
+  Type: int*
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.8
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.9
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: dead.4
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: volatile_aggregate.tmp.0
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.10
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: n.13
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: x.3
+  Type: volatile int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: y.10
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: volatile_aggregate
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: z.12
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+TACProg
+    StaticVar kept local type=volatile int <no inits>
+    Func volatile_aggregate global
+        Params: <none>
+        Body:
+            VolatileCopyToOffset p.2, Const(6), 0
+            VolatileCopyFromOffset Var(volatile_aggregate.tmp.0), p.2, 0
+            Return Var(volatile_aggregate.tmp.0)
+    Func main global
+        Params: <none>
+        Body:
+            VolatileWrite Var(x.3), Const(1)
+            VolatileWrite Var(x.3), Const(2)
+            VolatileRead Var(main.tmp.1), Var(x.3)
+            VolatileRead Var(main.tmp.2), Var(x.3)
+            GetAddress Var(main.tmp.3), &Var(x.3)
+            Copy Var(p.9), Var(main.tmp.3)
+            VolatileStore [Var(p.9)], Const(3)
+            VolatileLoad Var(main.tmp.4), [Var(main.tmp.3)]
+            VolatileCopyToOffset s.11, Const(4), 0
+            VolatileCopyFromOffset Var(main.tmp.5), s.11, 0
+            VolatileWrite Var(kept), Var(main.tmp.4)
+            Copy Var(n.13), Const(5)
+            GetAddress Var(main.tmp.6), &Var(n.13)
+            VolatileWrite Var(vp.14), Var(main.tmp.6)
+            VolatileRead Var(main.tmp.7), Var(vp.14)
+            Binary AddOp Var(main.tmp.8), Var(main.tmp.2), Var(main.tmp.5)
+            Load Var(main.tmp.9), [Var(main.tmp.7)]
+            Binary AddOp Var(main.tmp.10), Var(main.tmp.8), Var(main.tmp.9)
+            Return Var(main.tmp.10)
+Function volatile_aggregate
+CFG (3 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    VolatileCopyToOffset p.2, Const(6), 0
+    VolatileCopyFromOffset Var(volatile_aggregate.tmp.0), p.2, 0
+    Return Var(volatile_aggregate.tmp.0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+[ENTRY]
+   |
+   v
+ [B1]
+   |
+   v
+[EXIT]
+
+Function main
+CFG (3 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    VolatileWrite Var(x.3), Const(1)
+    VolatileWrite Var(x.3), Const(2)
+    VolatileRead Var(main.tmp.1), Var(x.3)
+    VolatileRead Var(main.tmp.2), Var(x.3)
+    GetAddress Var(main.tmp.3), &Var(x.3)
+    Copy Var(p.9), Var(main.tmp.3)
+    VolatileStore [Var(p.9)], Const(3)
+    VolatileLoad Var(main.tmp.4), [Var(main.tmp.3)]
+    VolatileCopyToOffset s.11, Const(4), 0
+    VolatileCopyFromOffset Var(main.tmp.5), s.11, 0
+    VolatileWrite Var(kept), Var(main.tmp.4)
+    Copy Var(n.13), Const(5)
+    GetAddress Var(main.tmp.6), &Var(n.13)
+    VolatileWrite Var(vp.14), Var(main.tmp.6)
+    VolatileRead Var(main.tmp.7), Var(vp.14)
+    Binary AddOp Var(main.tmp.8), Var(main.tmp.2), Var(main.tmp.5)
+    Load Var(main.tmp.9), [Var(main.tmp.7)]
+    Binary AddOp Var(main.tmp.10), Var(main.tmp.8), Var(main.tmp.9)
+    Return Var(main.tmp.10)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+[ENTRY]
+   |
+   v
+ [B1]
+   |
+   v
+[EXIT]

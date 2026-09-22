@@ -778,6 +778,18 @@ static const char* tac_instr_name(enum TACInstrType type) {
       return "TACLABEL";
     case TACCOPY:
       return "TACCOPY";
+    case TACVOLATILE_READ:
+      return "TACVOLATILE_READ";
+    case TACVOLATILE_WRITE:
+      return "TACVOLATILE_WRITE";
+    case TACVOLATILE_LOAD:
+      return "TACVOLATILE_LOAD";
+    case TACVOLATILE_STORE:
+      return "TACVOLATILE_STORE";
+    case TACVOLATILE_COPY_TO_OFFSET:
+      return "TACVOLATILE_COPY_TO_OFFSET";
+    case TACVOLATILE_COPY_FROM_OFFSET:
+      return "TACVOLATILE_COPY_FROM_OFFSET";
     case TACCALL:
       return "TACCALL";
     case TACCALL_INDIRECT:
@@ -1103,6 +1115,29 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
       asm_instr->type = ASM_MOV;
       asm_instr->instr.asm_mov.dst = tac_val_to_asm(copy_instr->dst);
       asm_instr->instr.asm_mov.src = tac_val_to_asm(copy_instr->src);
+      asm_instr->next = NULL;
+      return asm_instr;
+    }
+    case TACVOLATILE_READ:
+    case TACVOLATILE_WRITE: {
+      // Same machine move as Copy. The distinct opcode is a side effect.
+      struct TACCopy* copy_instr = &tac_instr->instr.tac_copy;
+      struct Type* copy_type = copy_instr->dst->type != NULL ? copy_instr->dst->type : copy_instr->src->type;
+      if (is_aggregate_type(copy_type)) {
+        return copy_bytes(func_name,
+          tac_val_to_asm(copy_instr->src),
+          tac_val_to_asm(copy_instr->dst),
+          asm_type_size(type_to_asm_type(copy_type)));
+      }
+      if (tac_instr->type == TACVOLATILE_READ) {
+        asm_instr->type = ASM_VOLATILE_READ;
+        asm_instr->instr.asm_volatile_read.dst = tac_val_to_asm(copy_instr->dst);
+        asm_instr->instr.asm_volatile_read.src = tac_val_to_asm(copy_instr->src);
+      } else {
+        asm_instr->type = ASM_VOLATILE_WRITE;
+        asm_instr->instr.asm_volatile_write.dst = tac_val_to_asm(copy_instr->dst);
+        asm_instr->instr.asm_volatile_write.src = tac_val_to_asm(copy_instr->src);
+      }
       asm_instr->next = NULL;
       return asm_instr;
     }
@@ -1603,6 +1638,7 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
       asm_instr->next = NULL;
       return asm_instr;
     }
+    case TACVOLATILE_LOAD:
     case TACLOAD:{
       // TAC:
       // Load dst, [ptr]
@@ -1639,15 +1675,22 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
 
         return head;
       } else {
-        // regular load
-        asm_instr->type = ASM_LOAD;
-        asm_instr->instr.asm_load.dst = tac_val_to_asm(load_instr->dst);
-        asm_instr->instr.asm_load.src = tac_val_to_asm(load_instr->src_ptr);
+        // regular load, or a volatile load that must not be removed
+        if (tac_instr->type == TACVOLATILE_LOAD) {
+          asm_instr->type = ASM_VOLATILE_LOAD;
+          asm_instr->instr.asm_volatile_load.dst = tac_val_to_asm(load_instr->dst);
+          asm_instr->instr.asm_volatile_load.src = tac_val_to_asm(load_instr->src_ptr);
+        } else {
+          asm_instr->type = ASM_LOAD;
+          asm_instr->instr.asm_load.dst = tac_val_to_asm(load_instr->dst);
+          asm_instr->instr.asm_load.src = tac_val_to_asm(load_instr->src_ptr);
+        }
         asm_instr->next = NULL;
 
         return asm_instr;
       }
     }
+    case TACVOLATILE_STORE:
     case TACSTORE:{
       // TAC:
       // Store src, [ptr]
@@ -1684,15 +1727,22 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
 
         return head;
       } else {
-        // regular store
-        asm_instr->type = ASM_STORE;
-        asm_instr->instr.asm_store.dst = tac_val_to_asm(store_instr->dst_ptr);
-        asm_instr->instr.asm_store.src = tac_val_to_asm(store_instr->src);
+        // regular store, or a volatile store that must not be removed
+        if (tac_instr->type == TACVOLATILE_STORE) {
+          asm_instr->type = ASM_VOLATILE_STORE;
+          asm_instr->instr.asm_volatile_store.dst = tac_val_to_asm(store_instr->dst_ptr);
+          asm_instr->instr.asm_volatile_store.src = tac_val_to_asm(store_instr->src);
+        } else {
+          asm_instr->type = ASM_STORE;
+          asm_instr->instr.asm_store.dst = tac_val_to_asm(store_instr->dst_ptr);
+          asm_instr->instr.asm_store.src = tac_val_to_asm(store_instr->src);
+        }
         asm_instr->next = NULL;
 
         return asm_instr;
       }
     }
+    case TACVOLATILE_COPY_TO_OFFSET:
     case TACCOPY_TO_OFFSET:{
       struct TACCopyToOffset* copy_offset_instr = &tac_instr->instr.tac_copy_to_offset;
       struct Type* store_type = copy_offset_instr->dst_type != NULL
@@ -1749,24 +1799,38 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
           append_asm_instr(&head, &tail, add_off);
 
           struct AsmInstr* store_instr = arena_alloc(sizeof(struct AsmInstr));
-          store_instr->type = ASM_STORE;
-          store_instr->instr.asm_store.dst = addr_temp;
-          store_instr->instr.asm_store.src = tac_val_to_asm(copy_offset_instr->src);
+          if (tac_instr->type == TACVOLATILE_COPY_TO_OFFSET) {
+            store_instr->type = ASM_VOLATILE_STORE;
+            store_instr->instr.asm_volatile_store.dst = addr_temp;
+            store_instr->instr.asm_volatile_store.src = tac_val_to_asm(copy_offset_instr->src);
+          } else {
+            store_instr->type = ASM_STORE;
+            store_instr->instr.asm_store.dst = addr_temp;
+            store_instr->instr.asm_store.src = tac_val_to_asm(copy_offset_instr->src);
+          }
           store_instr->next = NULL;
           append_asm_instr(&head, &tail, store_instr);
 
           return head;
         }
 
-        asm_instr->type = ASM_MOV;
-        asm_instr->instr.asm_mov.dst = make_pseudo_mem(copy_offset_instr->dst, type_to_asm_type(store_type), copy_offset_instr->offset);
-        asm_instr->instr.asm_mov.dst->asm_type = type_to_asm_type(store_type);
-        asm_instr->instr.asm_mov.src = tac_val_to_asm(copy_offset_instr->src);
+        if (tac_instr->type == TACVOLATILE_COPY_TO_OFFSET) {
+          asm_instr->type = ASM_VOLATILE_WRITE;
+          asm_instr->instr.asm_volatile_write.dst = make_pseudo_mem(copy_offset_instr->dst, type_to_asm_type(store_type), copy_offset_instr->offset);
+          asm_instr->instr.asm_volatile_write.dst->asm_type = type_to_asm_type(store_type);
+          asm_instr->instr.asm_volatile_write.src = tac_val_to_asm(copy_offset_instr->src);
+        } else {
+          asm_instr->type = ASM_MOV;
+          asm_instr->instr.asm_mov.dst = make_pseudo_mem(copy_offset_instr->dst, type_to_asm_type(store_type), copy_offset_instr->offset);
+          asm_instr->instr.asm_mov.dst->asm_type = type_to_asm_type(store_type);
+          asm_instr->instr.asm_mov.src = tac_val_to_asm(copy_offset_instr->src);
+        }
         asm_instr->next = NULL;
 
         return asm_instr;
       }
     }
+    case TACVOLATILE_COPY_FROM_OFFSET:
     case TACCOPY_FROM_OFFSET: {
       struct TACCopyFromOffset* copy_offset_instr = &tac_instr->instr.tac_copy_from_offset;
       struct Type* load_type = copy_offset_instr->dst->type;
@@ -1821,19 +1885,32 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
           append_asm_instr(&head, &tail, add_off);
 
           struct AsmInstr* load_instr = arena_alloc(sizeof(struct AsmInstr));
-          load_instr->type = ASM_LOAD;
-          load_instr->instr.asm_load.dst = tac_val_to_asm(copy_offset_instr->dst);
-          load_instr->instr.asm_load.src = addr_temp;
+          if (tac_instr->type == TACVOLATILE_COPY_FROM_OFFSET) {
+            load_instr->type = ASM_VOLATILE_LOAD;
+            load_instr->instr.asm_volatile_load.dst = tac_val_to_asm(copy_offset_instr->dst);
+            load_instr->instr.asm_volatile_load.src = addr_temp;
+          } else {
+            load_instr->type = ASM_LOAD;
+            load_instr->instr.asm_load.dst = tac_val_to_asm(copy_offset_instr->dst);
+            load_instr->instr.asm_load.src = addr_temp;
+          }
           load_instr->next = NULL;
           append_asm_instr(&head, &tail, load_instr);
 
           return head;
         }
 
-        asm_instr->type = ASM_MOV;
-        asm_instr->instr.asm_mov.dst = tac_val_to_asm(copy_offset_instr->dst);
-        asm_instr->instr.asm_mov.dst->asm_type = type_to_asm_type(load_type);
-        asm_instr->instr.asm_mov.src = make_pseudo_mem(copy_offset_instr->src, type_to_asm_type(load_type), copy_offset_instr->offset);
+        if (tac_instr->type == TACVOLATILE_COPY_FROM_OFFSET) {
+          asm_instr->type = ASM_VOLATILE_READ;
+          asm_instr->instr.asm_volatile_read.dst = tac_val_to_asm(copy_offset_instr->dst);
+          asm_instr->instr.asm_volatile_read.dst->asm_type = type_to_asm_type(load_type);
+          asm_instr->instr.asm_volatile_read.src = make_pseudo_mem(copy_offset_instr->src, type_to_asm_type(load_type), copy_offset_instr->offset);
+        } else {
+          asm_instr->type = ASM_MOV;
+          asm_instr->instr.asm_mov.dst = tac_val_to_asm(copy_offset_instr->dst);
+          asm_instr->instr.asm_mov.dst->asm_type = type_to_asm_type(load_type);
+          asm_instr->instr.asm_mov.src = make_pseudo_mem(copy_offset_instr->src, type_to_asm_type(load_type), copy_offset_instr->offset);
+        }
         asm_instr->next = NULL;
 
         return asm_instr;
@@ -1970,6 +2047,16 @@ struct Operand** get_srcs(struct AsmInstr* asm_instr, size_t* out_count) {
       struct Operand** srcs_mov = arena_alloc(sizeof(struct Operand*));
       srcs_mov[0] = asm_instr->instr.asm_mov.src;
       return srcs_mov;
+    case ASM_VOLATILE_READ:
+      *out_count = 1;
+      struct Operand** srcs_vread = arena_alloc(sizeof(struct Operand*));
+      srcs_vread[0] = asm_instr->instr.asm_volatile_read.src;
+      return srcs_vread;
+    case ASM_VOLATILE_WRITE:
+      *out_count = 1;
+      struct Operand** srcs_vwrite = arena_alloc(sizeof(struct Operand*));
+      srcs_vwrite[0] = asm_instr->instr.asm_volatile_write.src;
+      return srcs_vwrite;
     case ASM_UNARY:
       *out_count = 1;
       struct Operand** srcs_unary = arena_alloc(sizeof(struct Operand*));
@@ -2002,6 +2089,11 @@ struct Operand** get_srcs(struct AsmInstr* asm_instr, size_t* out_count) {
       struct Operand** srcs_load = arena_alloc(sizeof(struct Operand*));
       srcs_load[0] = asm_instr->instr.asm_load.src;
       return srcs_load;
+    case ASM_VOLATILE_LOAD:
+      *out_count = 1;
+      struct Operand** srcs_vload = arena_alloc(sizeof(struct Operand*));
+      srcs_vload[0] = asm_instr->instr.asm_volatile_load.src;
+      return srcs_vload;
     case ASM_STORE:
       *out_count = 2;
       struct Operand** srcs_store = arena_alloc(2 * sizeof(struct Operand*));
@@ -2009,6 +2101,12 @@ struct Operand** get_srcs(struct AsmInstr* asm_instr, size_t* out_count) {
       // Store uses dst as the address operand.
       srcs_store[1] = asm_instr->instr.asm_store.dst;
       return srcs_store;
+    case ASM_VOLATILE_STORE:
+      *out_count = 2;
+      struct Operand** srcs_vstore = arena_alloc(2 * sizeof(struct Operand*));
+      srcs_vstore[0] = asm_instr->instr.asm_volatile_store.src;
+      srcs_vstore[1] = asm_instr->instr.asm_volatile_store.dst;
+      return srcs_vstore;
     case ASM_TRUNC:
       *out_count = 1;
       struct Operand** srcs_trunc = arena_alloc(sizeof(struct Operand*));
@@ -2035,6 +2133,10 @@ struct Operand* get_dst(struct AsmInstr* asm_instr) {
   switch (asm_instr->type) {
     case ASM_MOV:
       return asm_instr->instr.asm_mov.dst;
+    case ASM_VOLATILE_READ:
+      return asm_instr->instr.asm_volatile_read.dst;
+    case ASM_VOLATILE_WRITE:
+      return asm_instr->instr.asm_volatile_write.dst;
     case ASM_UNARY:
       return asm_instr->instr.asm_unary.dst;
     case ASM_BINARY:
@@ -2043,6 +2145,8 @@ struct Operand* get_dst(struct AsmInstr* asm_instr) {
       return asm_instr->instr.asm_get_address.dst;
     case ASM_LOAD:
       return asm_instr->instr.asm_load.dst;
+    case ASM_VOLATILE_LOAD:
+      return asm_instr->instr.asm_volatile_load.dst;
     case ASM_TRUNC:
       return asm_instr->instr.asm_trunc.dst;
     case ASM_EXTEND:
@@ -2059,6 +2163,14 @@ void replace_pseudo(struct AsmInstr* asm_instr) {
       case ASM_MOV:
         replace_operand_if_pseudo(&instr->instr.asm_mov.dst);
         replace_operand_if_pseudo(&instr->instr.asm_mov.src);
+        break;
+      case ASM_VOLATILE_READ:
+        replace_operand_if_pseudo(&instr->instr.asm_volatile_read.dst);
+        replace_operand_if_pseudo(&instr->instr.asm_volatile_read.src);
+        break;
+      case ASM_VOLATILE_WRITE:
+        replace_operand_if_pseudo(&instr->instr.asm_volatile_write.dst);
+        replace_operand_if_pseudo(&instr->instr.asm_volatile_write.src);
         break;
       case ASM_UNARY:
         replace_operand_if_pseudo(&instr->instr.asm_unary.dst);
@@ -2087,9 +2199,17 @@ void replace_pseudo(struct AsmInstr* asm_instr) {
         replace_operand_if_pseudo(&instr->instr.asm_load.dst);
         replace_operand_if_pseudo(&instr->instr.asm_load.src);
         break;
+      case ASM_VOLATILE_LOAD:
+        replace_operand_if_pseudo(&instr->instr.asm_volatile_load.dst);
+        replace_operand_if_pseudo(&instr->instr.asm_volatile_load.src);
+        break;
       case ASM_STORE:
         replace_operand_if_pseudo(&instr->instr.asm_store.dst);
         replace_operand_if_pseudo(&instr->instr.asm_store.src);
+        break;
+      case ASM_VOLATILE_STORE:
+        replace_operand_if_pseudo(&instr->instr.asm_volatile_store.dst);
+        replace_operand_if_pseudo(&instr->instr.asm_volatile_store.src);
         break;
       case ASM_TRUNC:
         replace_operand_if_pseudo(&instr->instr.asm_trunc.dst);

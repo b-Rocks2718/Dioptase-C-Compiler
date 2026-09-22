@@ -1461,6 +1461,27 @@ static bool type_contains_const(struct Type* type) {
   return false;
 }
 
+// Add volatile to a type. Qualifiers on an array apply to its element type.
+static struct Type* qualify_volatile(struct Type* type) {
+  if (type->type == ARRAY_TYPE) {
+    struct Type* element = qualify_volatile(type->type_data.array_type.element_type);
+    if (element == type->type_data.array_type.element_type) {
+      return type;
+    }
+    struct Type* copy = alloc_type(ARRAY_TYPE);
+    copy->type_data.array_type.size = type->type_data.array_type.size;
+    copy->type_data.array_type.element_type = element;
+    return copy;
+  }
+  if (type->is_volatile) {
+    return type;
+  }
+  struct Type* copy = alloc_type(type->type);
+  *copy = *type;
+  copy->is_volatile = true;
+  return copy;
+}
+
 // Add const to a type. Qualifiers on an array apply to its element type.
 static struct Type* qualify_const(struct Type* type) {
   if (type->type == ARRAY_TYPE) {
@@ -1482,12 +1503,16 @@ static struct Type* qualify_const(struct Type* type) {
   return copy;
 }
 
-// Member access through a const aggregate produces a const member type.
+// Member access through a const or volatile aggregate qualifies the member type.
 static struct Type* member_type_from_aggregate(struct Type* member, struct Type* aggregate) {
-  if (!aggregate->is_const) {
-    return member;
+  struct Type* result = member;
+  if (aggregate->is_const) {
+    result = qualify_const(result);
   }
-  return qualify_const(member);
+  if (aggregate->is_volatile) {
+    result = qualify_volatile(result);
+  }
+  return result;
 }
 
 // Require a modifiable lvalue, including the const restriction.
@@ -1517,6 +1542,9 @@ static bool pointer_types_assignable(struct Type* target, struct Type* source) {
     return false;
   }
   if (source_ref->is_const && !target_ref->is_const) {
+    return false;
+  }
+  if (source_ref->is_volatile && !target_ref->is_volatile) {
     return false;
   }
   return true;
@@ -2507,12 +2535,24 @@ struct Type* get_common_pointer_type(struct Expr* expr1, struct Expr* expr2) {
     return t1;
   }
 
-  // `int *` and `const int *` share a composite type of `const int *`.
+  // `int *` and `const volatile int *` share a composite type that keeps every qualifier.
   if (is_pointer_type(t1) && is_pointer_type(t2)) {
     struct Type* ref1 = t1->type_data.pointer_type.referenced_type;
     struct Type* ref2 = t2->type_data.pointer_type.referenced_type;
     if (compare_types_ignore_top_qualifiers(ref1, ref2)) {
-      struct Type* referenced = ref1->is_const ? ref1 : ref2;
+      bool want_const = ref1->is_const || ref2->is_const;
+      bool want_volatile = ref1->is_volatile || ref2->is_volatile;
+      struct Type* referenced = ref1;
+      if (ref1->is_const != want_const || ref1->is_volatile != want_volatile) {
+        if (ref2->is_const == want_const && ref2->is_volatile == want_volatile) {
+          referenced = ref2;
+        } else {
+          referenced = alloc_type(ref1->type);
+          *referenced = *ref1;
+          referenced->is_const = want_const;
+          referenced->is_volatile = want_volatile;
+        }
+      }
       return make_pointer_type(referenced);
     }
   }
