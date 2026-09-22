@@ -72,6 +72,8 @@ static struct TACInstr* tac_instr_create(enum TACInstrType type) {
   instr->type = type;
   instr->reaching_copies.head = NULL;
   instr->reaching_copies.last = NULL;
+  instr->live_vars.head = NULL;
+  instr->live_vars.last = NULL;
   instr->next = NULL;
   return instr;
 }
@@ -3059,4 +3061,20 @@ bool tac_signedness(struct Type* type){
     default:
       return false;
   }
+}
+
+// Copy src into a new list in reverse order.
+// Operand pointers are shared with src. Analysis annotations start empty.
+struct TACInstrList reverse_instr_list(struct TACInstrList src) {
+  struct TACInstrList reversed = {0};
+  for (struct TACInstr* curr = src.head; curr != NULL; curr = curr->next) {
+    struct TACInstr* node = tac_instr_create(curr->type);
+    node->instr = curr->instr;
+    node->next = reversed.head;
+    reversed.head = node;
+    if (reversed.last == NULL) {
+      reversed.last = node;
+    }
+  }
+  return reversed;
 }

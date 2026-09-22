@@ -35,6 +35,7 @@ struct CFGNode {
   struct TACInstrList body; // basic-block instructions; empty for entry/exit
 
   struct ReachingCopyList reaching_copies; // copies reaching the end of this block
+  struct SliceList live_vars; // live variables at the end of this block
 
   bool marked; // used for marking nodes during traversals
 };

@@ -49,6 +49,25 @@ struct SliceList get_aliased_vars(struct TACInstr* body) {
   return list;
 }
 
+// Collect all static variables in the given function body. Each name appears at most once.
+struct SliceList get_static_vars(struct TACInstr* body) {
+  struct SliceList list = {NULL, NULL};
+
+  if (global_symbol_table != NULL) {
+    for (size_t i = 0; i < global_symbol_table->size; i++) {
+      for (struct SymbolEntry* entry = global_symbol_table->arr[i];
+           entry != NULL;
+           entry = entry->next) {
+        if (is_static_var(entry->key)) {
+          add_aliased_var(&list, entry->key);
+        }
+      }
+    }
+  }
+
+  return list;
+}
+
 // iterate over each function and optimize its body
 void optimize(struct TACProg* prog, struct OptimizationOptions options) {
   if (prog == NULL) {
@@ -70,6 +89,7 @@ struct TACInstr* optimize_body(struct TACInstr* body, struct OptimizationOptions
 
   while (true) {
     struct SliceList aliased_vars = get_aliased_vars(body);
+    struct SliceList static_vars = get_static_vars(body);
 
     struct TACInstr* post_const_fold_body = body;
     if (options.constant_fold) {
@@ -87,7 +107,7 @@ struct TACInstr* optimize_body(struct TACInstr* body, struct OptimizationOptions
     }
 
     if (options.dead_store_elim) {
-      cfg = dead_store_elim(cfg, aliased_vars);
+      cfg = dead_store_elim(cfg, static_vars, aliased_vars);
     }
 
     struct TACInstr* new_body = rebuild_body(cfg);

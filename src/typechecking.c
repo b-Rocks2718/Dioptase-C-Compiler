@@ -1790,6 +1790,14 @@ bool typecheck_expr(struct Expr* expr) {
         type_error_at(expr->loc, "invalid pointer operation in unary expression");
         return false;
       }
+      // ~, unary -, and unary + require an arithmetic operand.
+      // Structs, unions, and void are not arithmetic. Logical not is checked below.
+      if ((unary_expr->op == NEGATE || unary_expr->op == COMPLEMENT ||
+           unary_expr->op == UNARY_PLUS) &&
+          !is_arithmetic_type(expr_type)) {
+        type_error_at(expr->loc, "unary operator requires an arithmetic type");
+        return false;
+      }
       if (is_char_type(expr_type) &&
           (unary_expr->op == NEGATE || unary_expr->op == COMPLEMENT || unary_expr->op == UNARY_PLUS)) {
         //  Promote char to int for these operations.

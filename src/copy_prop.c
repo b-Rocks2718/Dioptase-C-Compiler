@@ -505,6 +505,7 @@ static bool rewrite_instr(struct TACInstr* instr){
       for (unsigned i = 0; i < instr->instr.tac_call_indirect.num_args; i++) {
         instr->instr.tac_call_indirect.args[i] = *replace_operand(&instr->instr.tac_call_indirect.args[i], reaching_copies);
       }
+      instr->instr.tac_call_indirect.func = replace_operand(instr->instr.tac_call_indirect.func, reaching_copies);
       break;
     }
   }
