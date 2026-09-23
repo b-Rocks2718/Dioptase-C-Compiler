@@ -1166,7 +1166,6 @@ static struct AsmInstr* call_to_asm(struct Slice* func_name,
     ret_asm->type = ASM_RET;
     ret_asm->next = NULL;
     *call_tail = ret_asm;
-    call_tail = &ret_asm->next;
   }
 
   return call_head;
