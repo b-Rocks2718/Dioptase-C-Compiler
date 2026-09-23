@@ -30,6 +30,8 @@ Accepted flags:
 -labels               print the AST after loop/switch/goto labeling
 -types                print the symbol table and AST after typechecking
 -tac                  print the generated TAC
+-cfg                  print the control-flow graph of each function
+-asm                  print the intermediate assembly IR (before machine code generation)
 -interp               run the TAC interpreter and print the result
 -s                    emit assembly instead of assembling to hex
 -bin                  pass -bin to the assembler to emit a raw binary output
@@ -51,14 +53,14 @@ Optimizations are disabled by default. The following passes are currently implem
 -dead-code            remove unreachable TAC blocks and redundant control flow
 -copy-prop            copy propagation
 -dead-store           dead-store elimination
+-tail-call            tail-call optimization
 ```
 
-`-opt` enables every optimization switch. At present, its effective optimizations are the four passes above; it also enables the reserved switches below so that newly implemented passes will automatically become part of `-opt`.
+`-opt` enables every optimization switch. At present, its effective optimizations are the five passes above; it also enables the reserved switches below so that newly implemented passes will automatically become part of `-opt`.
 
 These optimization switches are accepted by the compiler, but their passes are not implemented yet and they currently have no effect:
 
 ```text
--tail-call            tail-call optimization
 -inline               function inlining
 -peephole             low-level peephole optimization
 -reg-alloc            register allocation
@@ -106,7 +108,8 @@ Limitations:
 - No multiple declarators per declaration (e.g., `int a, b;`)
 - No variadic functions
 - No inline assembly
-- Optimization support is currently limited to constant folding, dead-code elimination, copy propagation, and dead-store elimination; register allocation and the other passes listed above are not implemented yet
+- Optimization support is currently limited to constant folding, dead-code elimination, copy propagation, dead-store elimination, and tail calls; register allocation and the other passes listed above are not implemented yet
+- The TAC interpreter cannot pass or return structs by value
 
 In the future I plan to fix most of these limitations. I'd also like to add a few extensions to C, like classes, templates, and lambdas.  
 
@@ -132,7 +135,7 @@ make test
 make test-release
 ```
 
-`make test` and `make test-release` also build and run the TAC interpreter, TAC execution, emulator execution, and full emulator execution tests from `tests/tac_interpreter_tests.c`, `tests/tac_exec_tests.c`, `tests/emu_exec_tests.c`, and `tests/emu_exec_full_tests.c` (the execution tests use sources in `tests/tac_exec/` and `tests/exec/`). Each execution suite runs once without optimizations and once with `OPT_TEST_FLAGS`, which defaults to `-opt` near the top of the Makefile.
+`make test` and `make test-release` also build and run the TAC interpreter, TAC execution, emulator execution, and full emulator execution tests from `tests/tac_interpreter_tests.c`, `tests/tac_exec_tests.c`, `tests/emu_exec_tests.c`, and `tests/emu_exec_full_tests.c` All three execution suites run every `.c` file in `tests/exec/`, compile it with the host C compiler as ground truth, and compare `main`'s return value. Each execution suite runs once without optimizations and once with `OPT_TEST_FLAGS`, which defaults to `-opt` near the top of the Makefile. A fixture containing the text `tac-exec: skip` (conventionally in its header comment, with the reason) is skipped by the TAC execution suite but still runs in both emulator suites; use this for programs the TAC interpreter cannot run, such as ones that pass structs by value.
 
 I also use [test cases from Writing a C Compiler](https://github.com/nlsandler/writing-a-c-compiler-tests#) via the wrapper in `tests/wacc_tac_compiler.py`. Run them with:
 
