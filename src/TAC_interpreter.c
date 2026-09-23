@@ -950,12 +950,16 @@ static bool tac_try_builtin_call(const struct TACCall* call,
   return false;
 }
 
-// Execute a TAC function and return its result.
-// Returns the integer result produced by TACRETURN.
+// Execute a TAC function, reusing its host frame across tail calls.
+// Returns the value produced by a return, tail-called function, or tail-called builtin.
 static uint64_t tac_execute_function(struct TacInterpreter* interp,
                                      const struct TopLevel* func,
                                      const uint64_t* args,
                                      size_t num_args) {
+  // Only tail calls replace this frame; ordinary calls still recurse here.
+  uint64_t* owned_tail_args = NULL;
+
+start_function:
   if (func == NULL || func->type != FUNC) {
     tac_interp_error("attempted to call a non-function top-level entry");
   }
@@ -981,6 +985,7 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
                              ? tac_eval_val(interp, &frame, pc->instr.tac_return.src)
                              : 0;
         tac_frame_destroy(&frame);
+        free(owned_tail_args);
         return value;
       }
       case TACUNARY: {
@@ -1025,65 +1030,98 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
       }
       case TACLABEL:
         break;
-      case TACCALL: {
+      case TACCALL:
+      case TACTAIL_CALL: {
+        bool is_tail = pc->type == TACTAIL_CALL;
+        struct TACCall call = is_tail
+            ? (struct TACCall) {
+                .func_name = pc->instr.tac_tail_call.func_name,
+                .dst = pc->instr.tac_tail_call.dst,
+                .args = pc->instr.tac_tail_call.args,
+                .num_args = pc->instr.tac_tail_call.num_args,
+              }
+            : pc->instr.tac_call;
         uint64_t* call_args = NULL;
-        if (pc->instr.tac_call.num_args > 0) {
-          call_args = (uint64_t*)malloc(sizeof(uint64_t) * pc->instr.tac_call.num_args);
+        if (call.num_args > 0) {
+          call_args = (uint64_t*)malloc(sizeof(uint64_t) * call.num_args);
           if (call_args == NULL) {
             tac_interp_error("memory allocation failed while preparing call arguments");
           }
-          for (size_t i = 0; i < pc->instr.tac_call.num_args; i++) {
-            call_args[i] = tac_eval_val(interp, &frame, &pc->instr.tac_call.args[i]);
+          for (size_t i = 0; i < call.num_args; i++) {
+            call_args[i] = tac_eval_val(interp, &frame, &call.args[i]);
           }
         }
         const struct TopLevel* callee = NULL;
         for (const struct TopLevel* cur = interp->prog->head; cur != NULL; cur = cur->next) {
-          if (cur->type == FUNC && compare_slice_to_slice(cur->top.tac_func.name, pc->instr.tac_call.func_name)) {
+          if (cur->type == FUNC && compare_slice_to_slice(cur->top.tac_func.name, call.func_name)) {
             callee = cur;
             break;
           }
         }
         if (callee == NULL) {
           uint64_t builtin_result = 0;
-          if (tac_try_builtin_call(&pc->instr.tac_call, call_args, &builtin_result)) {
+          if (tac_try_builtin_call(&call, call_args, &builtin_result)) {
             free(call_args);
-            if (pc->instr.tac_call.dst != NULL) {
-              tac_assign_val(interp, &frame, pc->instr.tac_call.dst, builtin_result);
+            if (is_tail) {
+              tac_frame_destroy(&frame);
+              free(owned_tail_args);
+              return builtin_result;
+            }
+            if (call.dst != NULL) {
+              tac_assign_val(interp, &frame, call.dst, builtin_result);
             }
             break;
           }
-          tac_interp_error("call to unknown function %.*s",
-                           (int)pc->instr.tac_call.func_name->len,
-                           pc->instr.tac_call.func_name->start);
+          tac_interp_error("%s to unknown function %.*s",
+                           is_tail ? "tail call" : "call",
+                           (int)call.func_name->len, call.func_name->start);
         }
-        uint64_t result =
-            tac_execute_function(interp, callee, call_args, pc->instr.tac_call.num_args);
+        if (is_tail) {
+          // Values and target are ready; release the old frame before entering the callee.
+          tac_frame_destroy(&frame);
+          free(owned_tail_args);
+          owned_tail_args = call_args;
+          func = callee;
+          args = call_args;
+          num_args = call.num_args;
+          goto start_function;
+        }
+        uint64_t result = tac_execute_function(interp, callee, call_args, call.num_args);
         free(call_args);
-        if (pc->instr.tac_call.dst != NULL) {
-          tac_assign_val(interp, &frame, pc->instr.tac_call.dst, result);
+        if (call.dst != NULL) {
+          tac_assign_val(interp, &frame, call.dst, result);
         }
         break;
       }
-      case TACCALL_INDIRECT: {
+      case TACCALL_INDIRECT:
+      case TACTAIL_CALL_INDIRECT: {
+        bool is_tail = pc->type == TACTAIL_CALL_INDIRECT;
+        struct TACCallIndirect call = is_tail
+            ? (struct TACCallIndirect) {
+                .func = pc->instr.tac_tail_call_indirect.func,
+                .dst = pc->instr.tac_tail_call_indirect.dst,
+                .args = pc->instr.tac_tail_call_indirect.args,
+                .num_args = pc->instr.tac_tail_call_indirect.num_args,
+              }
+            : pc->instr.tac_call_indirect;
         uint64_t* call_args = NULL;
-        if (pc->instr.tac_call_indirect.num_args > 0) {
-          call_args =
-              (uint64_t*)malloc(sizeof(uint64_t) * pc->instr.tac_call_indirect.num_args);
+        if (call.num_args > 0) {
+          call_args = (uint64_t*)malloc(sizeof(uint64_t) * call.num_args);
           if (call_args == NULL) {
             tac_interp_error("memory allocation failed while preparing indirect call arguments");
           }
-          for (size_t i = 0; i < pc->instr.tac_call_indirect.num_args; i++) {
-            call_args[i] = tac_eval_val(interp, &frame, &pc->instr.tac_call_indirect.args[i]);
+          for (size_t i = 0; i < call.num_args; i++) {
+            call_args[i] = tac_eval_val(interp, &frame, &call.args[i]);
           }
         }
-        if (pc->instr.tac_call_indirect.func == NULL) {
+        if (call.func == NULL) {
           free(call_args);
-          tac_interp_error("indirect call missing function operand");
+          tac_interp_error("indirect %s missing function operand", is_tail ? "tail call" : "call");
         }
-        uint64_t callee_addr_val = tac_eval_val(interp, &frame, pc->instr.tac_call_indirect.func);
+        uint64_t callee_addr_val = tac_eval_val(interp, &frame, call.func);
         if (callee_addr_val == 0) {
           free(call_args);
-          tac_interp_error("call through null function pointer");
+          tac_interp_error("%s through null function pointer", is_tail ? "tail call" : "call");
         }
         if (callee_addr_val > (uint64_t)INT_MAX) {
           free(call_args);
@@ -1094,16 +1132,25 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
             tac_function_table_find_address(&interp->functions, (int)callee_addr_val);
         if (callee_entry == NULL || callee_entry->func == NULL) {
           free(call_args);
-          tac_interp_error("call through unknown function pointer address %d",
-                           (int)callee_addr_val);
+          tac_interp_error("%s through unknown function pointer address %d",
+                           is_tail ? "tail call" : "call", (int)callee_addr_val);
+        }
+        if (is_tail) {
+          tac_frame_destroy(&frame);
+          free(owned_tail_args);
+          owned_tail_args = call_args;
+          func = callee_entry->func;
+          args = call_args;
+          num_args = call.num_args;
+          goto start_function;
         }
         uint64_t result = tac_execute_function(interp,
                                                callee_entry->func,
                                                call_args,
-                                               pc->instr.tac_call_indirect.num_args);
+                                               call.num_args);
         free(call_args);
-        if (pc->instr.tac_call_indirect.dst != NULL) {
-          tac_assign_val(interp, &frame, pc->instr.tac_call_indirect.dst, result);
+        if (call.dst != NULL) {
+          tac_assign_val(interp, &frame, call.dst, result);
         }
         break;
       }
@@ -1222,7 +1269,8 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
   }
 
   tac_frame_destroy(&frame);
-  tac_interp_error("function %.*s terminated without TACRETURN",
+  free(owned_tail_args);
+  tac_interp_error("function %.*s terminated without TACRETURN or tail call",
                    (int)fn->name->len, fn->name->start);
   return 0;
 }

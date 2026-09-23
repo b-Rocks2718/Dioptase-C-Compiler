@@ -466,7 +466,7 @@ static bool tac_exec_run_tac(const struct TacExecTest* test,
     goto cleanup;
   }
 
-  struct TACProg* tac_prog = prog_to_TAC(prog, false);
+  struct TACProg* tac_prog = prog_to_TAC(prog, false, optimization_options.tail_call_opt);
   if (tac_prog == NULL) {
     tac_exec_error(test->name, "tac", "TAC lowering failed");
     goto cleanup;

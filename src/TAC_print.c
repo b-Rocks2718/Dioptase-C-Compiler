@@ -319,6 +319,33 @@ void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
       printf(")\n");
       break;
     }
+    case TACTAIL_CALL: {
+      // A tail call transfers the caller's result directly to its caller.
+      printf("TailCall ");
+      print_slice(instr->instr.tac_tail_call.func_name);
+      printf(" (");
+      for (size_t i = 0; i < instr->instr.tac_tail_call.num_args; i++) {
+        if (i != 0) {
+          printf(", ");
+        }
+        print_tac_val(&instr->instr.tac_tail_call.args[i]);
+      }
+      printf(")\n");
+      break;
+    }
+    case TACTAIL_CALL_INDIRECT: {
+      printf("TailCallIndirect ");
+      print_tac_val(instr->instr.tac_tail_call_indirect.func);
+      printf(" (");
+      for (size_t i = 0; i < instr->instr.tac_tail_call_indirect.num_args; i++) {
+        if (i != 0) {
+          printf(", ");
+        }
+        print_tac_val(&instr->instr.tac_tail_call_indirect.args[i]);
+      }
+      printf(")\n");
+      break;
+    }
     case TACGET_ADDRESS:
       printf("GetAddress ");
       print_tac_val(instr->instr.tac_get_address.dst);

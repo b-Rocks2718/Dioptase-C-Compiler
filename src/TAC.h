@@ -98,6 +98,8 @@ enum TACInstrType {
   TACVOLATILE_COPY_FROM_OFFSET,
   TACCALL,
   TACCALL_INDIRECT,
+  TACTAIL_CALL,
+  TACTAIL_CALL_INDIRECT,
   TACGET_ADDRESS,
   TACLOAD,
   TACSTORE,
@@ -202,6 +204,22 @@ struct TACCallIndirect {
   size_t num_args;
 };
 
+// Store tail call target, result destination, and arguments.
+struct TACTailCall {
+  struct Slice* func_name;
+  struct Val* dst;
+  struct Val* args;
+  size_t num_args;
+};
+
+// Store indirect tail call target, result destination, and arguments.
+struct TACTailCallIndirect {
+  struct Val* func;
+  struct Val* dst;
+  struct Val* args;
+  size_t num_args;
+};
+
 // Store source object and destination pointer for address calculation.
 struct TACGetAddress {
   struct Val* dst;
@@ -265,6 +283,8 @@ union TACInstrVariant {
   struct TACCopy tac_copy;
   struct TACCall tac_call;
   struct TACCallIndirect tac_call_indirect;
+  struct TACTailCall tac_tail_call;
+  struct TACTailCallIndirect tac_tail_call_indirect;
   struct TACGetAddress tac_get_address;
   struct TACLoad tac_load;
   struct TACStore tac_store;
@@ -310,9 +330,9 @@ struct ExprResult {
 
 // ----- Main TAC conversion functions -----
 
-// Lower a full program into TAC, optionally emitting debug boundaries.
+// Lower a full program into TAC, optionally emitting debug boundaries and tail calls.
 // Returns a TAC program with top-level lists or NULL on failure.
-struct TACProg* prog_to_TAC(struct Program* program, bool emit_debug_info);
+struct TACProg* prog_to_TAC(struct Program* program, bool emit_debug_info, bool enable_tail_calls);
 
 struct TopLevel* file_scope_dclr_to_TAC(struct Declaration* declaration);
 
@@ -373,6 +393,9 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
 // Lower a truth value into a branch; invert selects the false case.
 struct TACInstrList cond_to_TAC(struct Slice* func_name, struct Expr* condition,
     struct Slice* target, bool invert);
+
+// Lower a function call into TAC. If is_tail_call is true, generate a tail call.
+struct TACInstrList call_to_TAC(struct Slice* func_name, struct Expr* expr, struct ExprResult* result, bool is_tail_call);
 
 // ----- Utility functions -----
 

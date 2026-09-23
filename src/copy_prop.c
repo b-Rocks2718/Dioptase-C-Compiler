@@ -321,7 +321,11 @@ static void transfer(struct CFGNode* block,
       case TACJUMP:
       case TACLABEL:
       case TACBOUNDARY:
-        break;
+
+      case TACTAIL_CALL: // these go directly to EXIT
+      case TACTAIL_CALL_INDIRECT: // so we don't need to kill any copies for tail calls
+
+      break;
     }
   }
 
@@ -534,6 +538,19 @@ static bool rewrite_instr(struct TACInstr* instr){
       break;
     }
     case TACCALL_INDIRECT: {
+      for (unsigned i = 0; i < instr->instr.tac_call_indirect.num_args; i++) {
+        instr->instr.tac_call_indirect.args[i] = *replace_operand(&instr->instr.tac_call_indirect.args[i], reaching_copies);
+      }
+      instr->instr.tac_call_indirect.func = replace_operand(instr->instr.tac_call_indirect.func, reaching_copies);
+      break;
+    }
+    case TACTAIL_CALL: {
+      for (unsigned i = 0; i < instr->instr.tac_call.num_args; i++) {
+        instr->instr.tac_call.args[i] = *replace_operand(&instr->instr.tac_call.args[i], reaching_copies);
+      }
+      break;
+    }
+    case TACTAIL_CALL_INDIRECT: {
       for (unsigned i = 0; i < instr->instr.tac_call_indirect.num_args; i++) {
         instr->instr.tac_call_indirect.args[i] = *replace_operand(&instr->instr.tac_call_indirect.args[i], reaching_copies);
       }
