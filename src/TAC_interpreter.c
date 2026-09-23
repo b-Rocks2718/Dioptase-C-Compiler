@@ -950,16 +950,16 @@ static bool tac_try_builtin_call(const struct TACCall* call,
   return false;
 }
 
-// Execute a TAC function, reusing its host frame across tail calls.
+// Execute a TAC function.
 // Returns the value produced by a return, tail-called function, or tail-called builtin.
+// Tail calls are executed as an ordinary call followed by a return: the
+// caller's frame stays alive while the callee runs, so pointers into it remain
+// valid. Whether a tail call may actually release the frame early is decided
+// during asm generation, not here.
 static uint64_t tac_execute_function(struct TacInterpreter* interp,
                                      const struct TopLevel* func,
                                      const uint64_t* args,
                                      size_t num_args) {
-  // Only tail calls replace this frame; ordinary calls still recurse here.
-  uint64_t* owned_tail_args = NULL;
-
-start_function:
   if (func == NULL || func->type != FUNC) {
     tac_interp_error("attempted to call a non-function top-level entry");
   }
@@ -985,7 +985,6 @@ start_function:
                              ? tac_eval_val(interp, &frame, pc->instr.tac_return.src)
                              : 0;
         tac_frame_destroy(&frame);
-        free(owned_tail_args);
         return value;
       }
       case TACUNARY: {
@@ -1064,7 +1063,6 @@ start_function:
             free(call_args);
             if (is_tail) {
               tac_frame_destroy(&frame);
-              free(owned_tail_args);
               return builtin_result;
             }
             if (call.dst != NULL) {
@@ -1076,18 +1074,12 @@ start_function:
                            is_tail ? "tail call" : "call",
                            (int)call.func_name->len, call.func_name->start);
         }
-        if (is_tail) {
-          // Values and target are ready; release the old frame before entering the callee.
-          tac_frame_destroy(&frame);
-          free(owned_tail_args);
-          owned_tail_args = call_args;
-          func = callee;
-          args = call_args;
-          num_args = call.num_args;
-          goto start_function;
-        }
         uint64_t result = tac_execute_function(interp, callee, call_args, call.num_args);
         free(call_args);
+        if (is_tail) {
+          tac_frame_destroy(&frame);
+          return result;
+        }
         if (call.dst != NULL) {
           tac_assign_val(interp, &frame, call.dst, result);
         }
@@ -1135,20 +1127,15 @@ start_function:
           tac_interp_error("%s through unknown function pointer address %d",
                            is_tail ? "tail call" : "call", (int)callee_addr_val);
         }
-        if (is_tail) {
-          tac_frame_destroy(&frame);
-          free(owned_tail_args);
-          owned_tail_args = call_args;
-          func = callee_entry->func;
-          args = call_args;
-          num_args = call.num_args;
-          goto start_function;
-        }
         uint64_t result = tac_execute_function(interp,
                                                callee_entry->func,
                                                call_args,
                                                call.num_args);
         free(call_args);
+        if (is_tail) {
+          tac_frame_destroy(&frame);
+          return result;
+        }
         if (call.dst != NULL) {
           tac_assign_val(interp, &frame, call.dst, result);
         }
@@ -1269,7 +1256,6 @@ start_function:
   }
 
   tac_frame_destroy(&frame);
-  free(owned_tail_args);
   tac_interp_error("function %.*s terminated without TACRETURN or tail call",
                    (int)fn->name->len, fn->name->start);
   return 0;

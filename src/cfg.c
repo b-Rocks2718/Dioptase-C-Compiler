@@ -380,6 +380,9 @@ static const char* cfg_edge_kind(const struct CFG* cfg,
       return "jump";
     case TACRETURN:
       return "return";
+    case TACTAIL_CALL:
+    case TACTAIL_CALL_INDIRECT:
+      return "tail call";
     default:
       return "fallthrough";
   }

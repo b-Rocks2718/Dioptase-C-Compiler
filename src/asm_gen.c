@@ -11,6 +11,10 @@
 
 struct PseudoMap* pseudo_map = NULL;
 
+// True while lowering a function that takes the address of one of its own
+// frame-allocated variables. Set per function by top_level_to_asm.
+static bool frame_address_taken = false;
+
 static struct Slice text_directive_slice = {"text", 4};
 static struct Slice data_directive_slice = {"data", 4};
 
@@ -919,6 +923,25 @@ static bool func_returns_in_memory(struct Slice* func_name) {
   return return_in_memory;
 }
 
+// Return true if body takes the address of any frame-allocated variable
+// (local, parameter, or temporary).
+static bool body_takes_frame_address(struct TACInstr* body) {
+  for (struct TACInstr* instr = body; instr != NULL; instr = instr->next) {
+    if (instr->type != TACGET_ADDRESS) {
+      continue;
+    }
+    struct Val* src = instr->instr.tac_get_address.src;
+    if (src == NULL || src->val_type != VARIABLE) {
+      continue;
+    }
+    struct SymbolEntry* entry = symbol_table_get(global_symbol_table, src->val.var_name);
+    if (entry != NULL && entry->attrs != NULL && entry->attrs->attr_type == LOCAL_ATTR) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Lower a direct or indirect call, or a tail call, made from func_name.
 // Exactly one of callee_label (direct) or callee_ptr (indirect) must be non-NULL.
 //
@@ -929,11 +952,17 @@ static bool func_returns_in_memory(struct Slice* func_name) {
 // Call func
 // Binary Add SP, SP, stack_bytes
 // Mov dst, R1 (if dst != NULL)
-// Ret (if is_tail_call)
 //
-// Tail calls are currently lowered as Call followed by Ret. They have no dst:
-// the callee's result is left in R1/R2 (or written through the forwarded
-// return buffer) and returned unchanged.
+// Tail calls have no dst: the callee's result is left in R1/R2 (or written
+// through our forwarded return buffer) and returned unchanged. A tail call is
+// lowered as
+// Mov R1, [BP-4] (if the result is returned in memory)
+// Mov reg args into R1..R8
+// TailCall func
+// and codegen is responsible for tearing down this frame before jumping.
+// It falls back to Call followed by Ret when any argument goes on the stack
+// (that would require overwriting our own incoming args, which is not
+// supported yet) or when the function takes the address of a frame variable.
 static struct AsmInstr* call_to_asm(struct Slice* func_name,
                                     struct Slice* callee_label,
                                     struct Val* callee_ptr,
@@ -996,6 +1025,11 @@ static struct AsmInstr* call_to_asm(struct Slice* func_name,
 
   // classify arguments
   classify_params(args, num_args, return_in_memory, &reg_args, &stack_args);
+
+  // A real tail call frees our frame before the callee runs, so it is unsound
+  // if the callee might still dereference a pointer into that frame
+  // (e.g. `return g(&local)`, or a pointer stashed in a global earlier).
+  bool emit_tail_call = is_tail_call && stack_args == NULL && !frame_address_taken;
 
   // move register args into R1..R8
   for (struct OperandList* reg_arg_iter = reg_args; reg_arg_iter != NULL; reg_arg_iter = reg_arg_iter->next) {
@@ -1089,6 +1123,21 @@ static struct AsmInstr* call_to_asm(struct Slice* func_name,
     }
   }
 
+  if (emit_tail_call) {
+    // Codegen tears down this frame and jumps; nothing follows in this function.
+    struct AsmInstr* tail_call_asm = arena_alloc(sizeof(struct AsmInstr));
+    if (callee_label != NULL) {
+      tail_call_asm->type = ASM_TAIL_CALL;
+      tail_call_asm->instr.asm_tail_call.label = callee_label;
+    } else {
+      tail_call_asm->type = ASM_TAIL_CALL_INDIRECT;
+      tail_call_asm->instr.asm_tail_call_indirect.src = tac_val_to_asm(callee_ptr);
+    }
+    tail_call_asm->next = NULL;
+    *call_tail = tail_call_asm;
+    return call_head;
+  }
+
   // emit call instruction
   struct AsmInstr* call_asm = arena_alloc(sizeof(struct AsmInstr));
   if (callee_label != NULL) {
@@ -1124,7 +1173,7 @@ static struct AsmInstr* call_to_asm(struct Slice* func_name,
     call_tail = &stack_adjust->next;
   }
 
-  // retreive return value from
+  // retrieve return value from registers
   if (dst != NULL && !return_in_memory) {
     size_t ret_reg_index = 0;
     for (struct OperandList* dest_iter = dests; dest_iter != NULL; dest_iter = dest_iter->next) {
@@ -1198,33 +1247,14 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
 
     struct AsmInstr* asm_body = set_up_params(asm_top->top.asm_func.name, func->params, func->num_params, return_in_memory);
 
-    // prepend stack allocation instruction
-    // ASM:
-    // Binary Sub SP, SP, <stack_bytes>
-    struct AsmInstr* alloc_instr = arena_alloc(sizeof(struct AsmInstr));
-    alloc_instr->type = ASM_BINARY;
-    alloc_instr->instr.asm_binary.alu_op = ALU_SUB;
-    alloc_instr->instr.asm_binary.dst = arena_alloc(sizeof(struct Operand));
-    alloc_instr->instr.asm_binary.dst->type = OPERAND_REG;
-    alloc_instr->instr.asm_binary.dst->op.reg.reg = SP;
-    alloc_instr->instr.asm_binary.dst->asm_type = &kWordType;
-    alloc_instr->instr.asm_binary.src1 = arena_alloc(sizeof(struct Operand));
-    alloc_instr->instr.asm_binary.src1->type = OPERAND_REG;
-    alloc_instr->instr.asm_binary.src1->op.reg.reg = SP;
-    alloc_instr->instr.asm_binary.src1->asm_type = &kWordType;
-    alloc_instr->instr.asm_binary.src2 = arena_alloc(sizeof(struct Operand));
-    alloc_instr->instr.asm_binary.src2->type = OPERAND_LIT;
-    alloc_instr->instr.asm_binary.src2->op.lit.value = 0; // placeholder, to be filled after stack size calculation
-    alloc_instr->instr.asm_binary.src2->asm_type = &kWordType;
-    alloc_instr->next = asm_body;
-    asm_body = alloc_instr;
-
+    // asm_body is NULL when there are no params and no return buffer to spill.
     struct AsmInstr* asm_body_tail = asm_body;
-    while (asm_body_tail->next != NULL) {
+    while (asm_body_tail != NULL && asm_body_tail->next != NULL) {
       asm_body_tail = asm_body_tail->next;
     }
 
     // convert body instructions
+    frame_address_taken = body_takes_frame_address(func->body);
     for (struct TACInstr* tac_instr = func->body; tac_instr != NULL; tac_instr = tac_instr->next) {
       struct AsmInstr* asm_instr = instr_to_asm(func->name, tac_instr);
       append_asm_instrs(&asm_body, &asm_body_tail, asm_instr);
@@ -1237,7 +1267,29 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
     if (asm_has_debug_markers(asm_body)) {
       asm_top->top.asm_func.locals = collect_debug_locals(pseudo_map, &asm_top->top.asm_func.num_locals);
     }
-    asm_body->instr.asm_binary.src2->op.lit.value = (int)stack_size; // update stack allocation size
+
+    if (stack_size > 0) {
+      // prepend stack allocation instruction
+      // ASM:
+      // Binary Sub SP, SP, <stack_bytes>
+      struct AsmInstr* alloc_instr = arena_alloc(sizeof(struct AsmInstr));
+      alloc_instr->type = ASM_BINARY;
+      alloc_instr->instr.asm_binary.alu_op = ALU_SUB;
+      alloc_instr->instr.asm_binary.dst = arena_alloc(sizeof(struct Operand));
+      alloc_instr->instr.asm_binary.dst->type = OPERAND_REG;
+      alloc_instr->instr.asm_binary.dst->op.reg.reg = SP;
+      alloc_instr->instr.asm_binary.dst->asm_type = &kWordType;
+      alloc_instr->instr.asm_binary.src1 = arena_alloc(sizeof(struct Operand));
+      alloc_instr->instr.asm_binary.src1->type = OPERAND_REG;
+      alloc_instr->instr.asm_binary.src1->op.reg.reg = SP;
+      alloc_instr->instr.asm_binary.src1->asm_type = &kWordType;
+      alloc_instr->instr.asm_binary.src2 = arena_alloc(sizeof(struct Operand));
+      alloc_instr->instr.asm_binary.src2->type = OPERAND_LIT;
+      alloc_instr->instr.asm_binary.src2->op.lit.value = stack_size;
+      alloc_instr->instr.asm_binary.src2->asm_type = &kWordType;
+      alloc_instr->next = asm_body;
+      asm_body = alloc_instr;
+    }
 
     replace_pseudo(asm_body);
 
@@ -1991,6 +2043,11 @@ struct Operand** get_srcs(struct AsmInstr* asm_instr, size_t* out_count) {
       struct Operand** srcs_indirect_call = arena_alloc(sizeof(struct Operand*));
       srcs_indirect_call[0] = asm_instr->instr.asm_indirect_call.src;
       return srcs_indirect_call;
+    case ASM_TAIL_CALL_INDIRECT:
+      *out_count = 1;
+      struct Operand** srcs_tail_call_indirect = arena_alloc(sizeof(struct Operand*));
+      srcs_tail_call_indirect[0] = asm_instr->instr.asm_tail_call_indirect.src;
+      return srcs_tail_call_indirect;
     default:
       *out_count = 0;
       return NULL;
@@ -2059,6 +2116,9 @@ void replace_pseudo(struct AsmInstr* asm_instr) {
         break;
       case ASM_INDIRECT_CALL:
         replace_operand_if_pseudo(&instr->instr.asm_indirect_call.src);
+        break;
+      case ASM_TAIL_CALL_INDIRECT:
+        replace_operand_if_pseudo(&instr->instr.asm_tail_call_indirect.src);
         break;
       case ASM_GET_ADDRESS:
         replace_operand_if_pseudo(&instr->instr.asm_get_address.dst);

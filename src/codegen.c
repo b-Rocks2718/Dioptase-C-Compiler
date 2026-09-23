@@ -220,6 +220,40 @@ static void emit_data_load(struct MachineInstr** head,
   }
 }
 
+// Tear down the current frame, leaving the machine as it was just before the
+// caller's `call`: sp points at our incoming stack args, bp is the caller's bp,
+// and ra holds the caller's return address. Only sp, bp, and ra are written, so
+// argument/return registers (r1-r8) survive. The caller of this helper emits
+// the final control transfer (ret, or a jump for a tail call).
+static void emit_function_epilogue(struct MachineInstr** head,
+                                   struct MachineInstr** tail) {
+  // Machine: Comment "Function Epilogue"
+  struct MachineInstr* comment = alloc_machine_instr(MACHINE_COMMENT);
+  comment->instr.comment.text = &kFunctionEpilogueLabel;
+  append_instr(head, tail, comment);
+
+  // Machine: Mov sp, bp; Lwa ra, [bp, 4]; Lwa bp, [bp]; Add sp, sp, 8
+  struct MachineInstr* mov = alloc_machine_instr(MACHINE_MOV);
+  mov->instr.reg2.ra = SP;
+  mov->instr.reg2.rb = BP;
+  append_instr(head, tail, mov);
+  struct MachineInstr* lw_ra = alloc_machine_instr(MACHINE_LWA);
+  lw_ra->instr.mem.ra = RA;
+  lw_ra->instr.mem.rb = BP;
+  lw_ra->instr.mem.imm = kSavedRaOffset;
+  append_instr(head, tail, lw_ra);
+  struct MachineInstr* lw_bp = alloc_machine_instr(MACHINE_LWA);
+  lw_bp->instr.mem.ra = BP;
+  lw_bp->instr.mem.rb = BP;
+  lw_bp->instr.mem.imm = kSavedBpOffset;
+  append_instr(head, tail, lw_bp);
+  struct MachineInstr* addi = alloc_machine_instr(MACHINE_ADD);
+  addi->instr.alu.ra = SP;
+  addi->instr.alu.rb = SP;
+  addi->instr.alu.imm = kEpilogueStackBytes;
+  append_instr(head, tail, addi);
+}
+
 static struct MachineInstr* make_data(struct InitList* init, struct AsmType* type);
 
 // Lower one TAC instruction to machine instructions.
@@ -888,11 +922,33 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
           break;
         }
         case ASM_INDIRECT_CALL: {
-          
+          // Machine: Bra RA, rScratchA
           struct MachineInstr* call = alloc_machine_instr(MACHINE_BRA);
           call->instr.reg2.ra = RA;
           call->instr.reg2.rb = kScratchRegA;
           append_instr(&head, &tail, call);
+          break;
+        }
+        case ASM_TAIL_CALL: {
+          // Machine:
+          // <function epilogue>
+          // tail call
+          emit_function_epilogue(&head, &tail);
+          // Machine: Jmp label
+          struct MachineInstr* jmp = alloc_machine_instr(MACHINE_JMP);
+          jmp->instr.target.label = cur->instr.asm_tail_call.label;
+          append_instr(&head, &tail, jmp);
+          break;
+        }
+        case ASM_TAIL_CALL_INDIRECT: {
+          // Machine:
+          // <function epilogue>
+          emit_function_epilogue(&head, &tail);
+          // Machine: Bra R0, rScratchA
+          struct MachineInstr* bra = alloc_machine_instr(MACHINE_BRA);
+          bra->instr.reg2.ra = R0;
+          bra->instr.reg2.rb = kScratchRegA;
+          append_instr(&head, &tail, bra);
           break;
         }
         case ASM_PUSH: {
@@ -918,31 +974,8 @@ struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* i
           break;
         }
         case ASM_RET: {
-          // Machine: Comment "Function Epilogue"
-          struct MachineInstr* comment = alloc_machine_instr(MACHINE_COMMENT);
-          comment->instr.comment.text = &kFunctionEpilogueLabel;
-          append_instr(&head, &tail, comment);
-
-          // Machine: Mov sp, bp; Lwa ra, [bp, 4]; Lwa bp, [bp]; Add sp, sp, 8; ret
-          struct MachineInstr* mov = alloc_machine_instr(MACHINE_MOV);
-          mov->instr.reg2.ra = SP;
-          mov->instr.reg2.rb = BP;
-          append_instr(&head, &tail, mov);
-          struct MachineInstr* lw_ra = alloc_machine_instr(MACHINE_LWA);
-          lw_ra->instr.mem.ra = RA;
-          lw_ra->instr.mem.rb = BP;
-          lw_ra->instr.mem.imm = kSavedRaOffset;
-          append_instr(&head, &tail, lw_ra);
-          struct MachineInstr* lw_bp = alloc_machine_instr(MACHINE_LWA);
-          lw_bp->instr.mem.ra = BP;
-          lw_bp->instr.mem.rb = BP;
-          lw_bp->instr.mem.imm = kSavedBpOffset;
-          append_instr(&head, &tail, lw_bp);
-          struct MachineInstr* addi = alloc_machine_instr(MACHINE_ADD);
-          addi->instr.alu.ra = SP;
-          addi->instr.alu.rb = SP;
-          addi->instr.alu.imm = kEpilogueStackBytes;
-          append_instr(&head, &tail, addi);
+          // Machine: <epilogue>; ret
+          emit_function_epilogue(&head, &tail);
           struct MachineInstr* ret = alloc_machine_instr(MACHINE_RET);
           append_instr(&head, &tail, ret);
           break;
