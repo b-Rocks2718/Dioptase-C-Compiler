@@ -794,6 +794,10 @@ static const char* tac_instr_name(enum TACInstrType type) {
       return "TACCALL";
     case TACCALL_INDIRECT:
       return "TACCALL_INDIRECT";
+    case TACTAIL_CALL:
+      return "TACTAIL_CALL";
+    case TACTAIL_CALL_INDIRECT:
+      return "TACTAIL_CALL_INDIRECT";
     case TACGET_ADDRESS:
       return "TACGET_ADDRESS";
     case TACLOAD:
@@ -893,6 +897,281 @@ struct AsmProg* prog_to_asm(struct TACProg* tac_prog, bool emit_sections) {
   return asm_prog;
 }
 
+// Report whether func_name returns its value through a caller-provided buffer
+// whose address arrives in R1 and is spilled to BP-4 by the prologue.
+static bool func_returns_in_memory(struct Slice* func_name) {
+  struct SymbolEntry* sym_entry = symbol_table_get(global_symbol_table, func_name);
+  if (sym_entry == NULL || sym_entry->type == NULL || sym_entry->type->type != FUN_TYPE) {
+    asm_gen_error("top-level", func_name,
+                  "missing function type information for %.*s",
+                  (int)func_name->len, func_name->start);
+  }
+  bool return_in_memory = false;
+  struct Type* ret_type = sym_entry->type->type_data.fun_type.return_type;
+  if (ret_type != NULL && ret_type->type != VOID_TYPE) {
+    struct Val ret_val;
+    ret_val.val_type = VARIABLE;
+    ret_val.val.var_name = func_name;
+    ret_val.type = ret_type;
+    struct OperandList* ignored = NULL;
+    classify_return_val(&ret_val, &ignored, &return_in_memory);
+  }
+  return return_in_memory;
+}
+
+// Lower a direct or indirect call, or a tail call, made from func_name.
+// Exactly one of callee_label (direct) or callee_ptr (indirect) must be non-NULL.
+//
+// ASM:
+// Mov R1, &dst (or R1, [BP-4] for tail calls) if the result is returned in memory
+// Mov reg args into R1..R8
+// Push stack args (reverse order)
+// Call func
+// Binary Add SP, SP, stack_bytes
+// Mov dst, R1 (if dst != NULL)
+// Ret (if is_tail_call)
+//
+// Tail calls are currently lowered as Call followed by Ret. They have no dst:
+// the callee's result is left in R1/R2 (or written through the forwarded
+// return buffer) and returned unchanged.
+static struct AsmInstr* call_to_asm(struct Slice* func_name,
+                                    struct Slice* callee_label,
+                                    struct Val* callee_ptr,
+                                    struct Val* dst,
+                                    struct Val* args,
+                                    size_t num_args,
+                                    bool is_tail_call) {
+  if ((callee_label == NULL) == (callee_ptr == NULL)) {
+    asm_gen_error("call", func_name,
+                  "expected exactly one of a callee label or callee pointer, got %s",
+                  callee_label == NULL ? "neither" : "both");
+  }
+
+  struct AsmInstr* call_head = NULL;
+  struct AsmInstr** call_tail = &call_head;
+
+  bool return_in_memory = false;
+  struct OperandList* dests = NULL;
+  size_t reg_index = 0;
+
+  if (dst != NULL) {
+    classify_return_val(dst, &dests, &return_in_memory);
+  } else if (is_tail_call) {
+    // The typechecker only leaves a bare call in a return statement when
+    // its type matches ours, so the callee shares our return convention.
+    return_in_memory = func_returns_in_memory(func_name);
+  }
+
+  if (return_in_memory && is_tail_call) {
+    // Forward our own return buffer pointer (spilled at BP-4) to the callee.
+    struct AsmInstr* load_ret_ptr = arena_alloc(sizeof(struct AsmInstr));
+    load_ret_ptr->type = ASM_MOV;
+    load_ret_ptr->instr.asm_mov.dst = arena_alloc(sizeof(struct Operand));
+    load_ret_ptr->instr.asm_mov.dst->type = OPERAND_REG;
+    load_ret_ptr->instr.asm_mov.dst->op.reg.reg = R1;
+    load_ret_ptr->instr.asm_mov.dst->asm_type = &kWordType;
+    load_ret_ptr->instr.asm_mov.src = make_asm_mem(BP, -4, &kWordType);
+    load_ret_ptr->next = NULL;
+    *call_tail = load_ret_ptr;
+    call_tail = &load_ret_ptr->next;
+
+    reg_index = 1; // R1 used for return address
+  } else if (return_in_memory){
+    struct Operand* dst_operand = tac_val_to_asm(dst);
+    struct AsmInstr* addr_instr = arena_alloc(sizeof(struct AsmInstr));
+    addr_instr->type = ASM_GET_ADDRESS;
+    addr_instr->instr.asm_get_address.dst = arena_alloc(sizeof(struct Operand));
+    addr_instr->instr.asm_get_address.dst->type = OPERAND_REG;
+    addr_instr->instr.asm_get_address.dst->op.reg.reg = R1;
+    addr_instr->instr.asm_get_address.src = dst_operand;
+    addr_instr->next = NULL;
+    *call_tail = addr_instr;
+    call_tail = &addr_instr->next;
+
+    reg_index = 1; // R1 used for return address
+  }
+
+  struct OperandList* reg_args = NULL;
+  struct OperandList* stack_args = NULL;
+
+  // classify arguments
+  classify_params(args, num_args, return_in_memory, &reg_args, &stack_args);
+
+  // move register args into R1..R8
+  for (struct OperandList* reg_arg_iter = reg_args; reg_arg_iter != NULL; reg_arg_iter = reg_arg_iter->next) {
+    struct Operand* arg = reg_arg_iter->opr;
+
+    size_t arg_size = asm_type_size(arg->asm_type);
+    size_t arg_alignment = operand_base_alignment(arg);
+    bool needs_byte_copy = arg->asm_type->type == BYTE_ARRAY || arg_alignment < arg_size;
+
+    if (needs_byte_copy){
+      struct AsmInstr* copy_instrs =
+          copy_bytes_to_reg(func_name, arg, (enum Reg)(R1 + reg_index), arg_size);
+      *call_tail = copy_instrs;
+      // advance call_tail to the end of copy_instrs
+      while (*call_tail != NULL) {
+        call_tail = &((*call_tail)->next);
+      }
+    } else {
+      struct AsmInstr* mov_instr = arena_alloc(sizeof(struct AsmInstr));
+      mov_instr->type = ASM_MOV;
+      mov_instr->instr.asm_mov.dst = arena_alloc(sizeof(struct Operand));
+      mov_instr->instr.asm_mov.dst->type = OPERAND_REG;
+      mov_instr->instr.asm_mov.dst->op.reg.reg = (enum Reg)(R1 + reg_index);
+      mov_instr->instr.asm_mov.dst->asm_type = arg->asm_type;
+      mov_instr->instr.asm_mov.src = arg;
+      mov_instr->next = NULL;
+      *call_tail = mov_instr;
+      call_tail = &mov_instr->next;
+    }
+
+    reg_index++;
+  }
+
+  // push stack args in reverse order
+  size_t stack_bytes = 0; // track how much stack space we use for args
+  size_t stack_arg_count = operand_list_length(stack_args);
+  for (size_t idx = stack_arg_count; idx > 0; ) {
+    idx--;
+    struct Operand* arg = operand_list_get(stack_args, idx);
+
+    size_t copy_size = asm_type_size(arg->asm_type);
+    size_t arg_alignment = operand_base_alignment(arg);
+    // Stack args must occupy full 4-byte slots per ABI to keep SP aligned.
+    bool needs_byte_copy = arg->asm_type->type == BYTE_ARRAY ||
+                           copy_size < kStackSlotBytes ||
+                           arg_alignment < copy_size;
+
+    if (needs_byte_copy){
+      // allocate stack space and copy bytes
+      if (copy_size > kStackSlotBytes) {
+        asm_gen_error("call", func_name,
+                      "stack arg chunk exceeds %zu-byte slot (size=%zu)",
+                      kStackSlotBytes, copy_size);
+      }
+      stack_bytes += kStackSlotBytes;
+
+      struct AsmInstr* alloc_instr = arena_alloc(sizeof(struct AsmInstr));
+      alloc_instr->type = ASM_BINARY;
+      alloc_instr->instr.asm_binary.alu_op = ALU_SUB;
+      alloc_instr->instr.asm_binary.dst = arena_alloc(sizeof(struct Operand));
+      alloc_instr->instr.asm_binary.dst->type = OPERAND_REG;
+      alloc_instr->instr.asm_binary.dst->op.reg.reg = SP;
+      alloc_instr->instr.asm_binary.dst->asm_type = &kWordType;
+      alloc_instr->instr.asm_binary.src1 = arena_alloc(sizeof(struct Operand));
+      alloc_instr->instr.asm_binary.src1->type = OPERAND_REG;
+      alloc_instr->instr.asm_binary.src1->op.reg.reg = SP;
+      alloc_instr->instr.asm_binary.src1->asm_type = &kWordType;
+      alloc_instr->instr.asm_binary.src2 = arena_alloc(sizeof(struct Operand));
+      alloc_instr->instr.asm_binary.src2->type = OPERAND_LIT;
+      alloc_instr->instr.asm_binary.src2->op.lit.value = (int)kStackSlotBytes;
+      alloc_instr->instr.asm_binary.src2->asm_type = &kWordType;
+      alloc_instr->next = NULL;
+      *call_tail = alloc_instr;
+      call_tail = &alloc_instr->next;
+
+      struct AsmInstr* copy_instrs =
+          copy_bytes(func_name, arg, (struct Operand*)&kStackMem, copy_size);
+      *call_tail = copy_instrs;
+      while (*call_tail != NULL) {
+        call_tail = &((*call_tail)->next);
+      }
+    } else {
+      struct AsmInstr* push_instr = arena_alloc(sizeof(struct AsmInstr));
+      push_instr->type = ASM_PUSH;
+      push_instr->instr.asm_push.src = arg;
+      push_instr->next = NULL;
+      stack_bytes += kStackSlotBytes;
+
+      *call_tail = push_instr;
+      call_tail = &push_instr->next;
+    }
+  }
+
+  // emit call instruction
+  struct AsmInstr* call_asm = arena_alloc(sizeof(struct AsmInstr));
+  if (callee_label != NULL) {
+    call_asm->type = ASM_CALL;
+    call_asm->instr.asm_call.label = callee_label;
+  } else {
+    call_asm->type = ASM_INDIRECT_CALL;
+    call_asm->instr.asm_indirect_call.src = tac_val_to_asm(callee_ptr);
+  }
+  call_asm->next = NULL;
+  *call_tail = call_asm;
+  call_tail = &call_asm->next;
+
+  // adjust stack pointer back after call
+  if (stack_bytes > 0) {
+    struct AsmInstr* stack_adjust = arena_alloc(sizeof(struct AsmInstr));
+    stack_adjust->type = ASM_BINARY;
+    stack_adjust->instr.asm_binary.alu_op = ALU_ADD;
+    stack_adjust->instr.asm_binary.dst = arena_alloc(sizeof(struct Operand));
+    stack_adjust->instr.asm_binary.dst->type = OPERAND_REG;
+    stack_adjust->instr.asm_binary.dst->op.reg.reg = SP;
+    stack_adjust->instr.asm_binary.dst->asm_type = &kWordType;
+    stack_adjust->instr.asm_binary.src1 = arena_alloc(sizeof(struct Operand));
+    stack_adjust->instr.asm_binary.src1->type = OPERAND_REG;
+    stack_adjust->instr.asm_binary.src1->op.reg.reg = SP;
+    stack_adjust->instr.asm_binary.src1->asm_type = &kWordType;
+    stack_adjust->instr.asm_binary.src2 = arena_alloc(sizeof(struct Operand));
+    stack_adjust->instr.asm_binary.src2->type = OPERAND_LIT;
+    stack_adjust->instr.asm_binary.src2->op.lit.value = stack_bytes;
+    stack_adjust->instr.asm_binary.src2->asm_type = &kWordType;
+    stack_adjust->next = NULL;
+    *call_tail = stack_adjust;
+    call_tail = &stack_adjust->next;
+  }
+
+  // retreive return value from
+  if (dst != NULL && !return_in_memory) {
+    size_t ret_reg_index = 0;
+    for (struct OperandList* dest_iter = dests; dest_iter != NULL; dest_iter = dest_iter->next) {
+      struct Operand* dest = dest_iter->opr;
+      enum Reg ret_reg = (enum Reg)(R1 + ret_reg_index);
+
+      size_t dest_size = asm_type_size(dest->asm_type);
+      size_t dest_alignment = operand_base_alignment(dest);
+      bool needs_byte_copy = dest->asm_type->type == BYTE_ARRAY ||
+                             dest_alignment < dest_size;
+
+      if (needs_byte_copy){
+        struct AsmInstr* copy_instrs =
+            copy_bytes_from_reg(func_name, ret_reg, dest, dest_size);
+        *call_tail = copy_instrs;
+        // advance call_tail to the end of copy_instrs
+        while (*call_tail != NULL) {
+          call_tail = &((*call_tail)->next);
+        }
+      } else {
+        struct AsmInstr* mov_instr = arena_alloc(sizeof(struct AsmInstr));
+        mov_instr->type = ASM_MOV;
+        mov_instr->instr.asm_mov.dst = dest;
+        mov_instr->instr.asm_mov.src = arena_alloc(sizeof(struct Operand));
+        mov_instr->instr.asm_mov.src->type = OPERAND_REG;
+        mov_instr->instr.asm_mov.src->op.reg.reg = ret_reg;
+        mov_instr->instr.asm_mov.src->asm_type = dest->asm_type;
+        mov_instr->next = NULL;
+        *call_tail = mov_instr;
+        call_tail = &mov_instr->next;
+      }
+
+      ret_reg_index++;
+    }
+  }
+
+  if (is_tail_call) {
+    struct AsmInstr* ret_asm = arena_alloc(sizeof(struct AsmInstr));
+    ret_asm->type = ASM_RET;
+    ret_asm->next = NULL;
+    *call_tail = ret_asm;
+    call_tail = &ret_asm->next;
+  }
+
+  return call_head;
+}
+
 // Convert a TAC top-level structure to an assembly-level top-level structure.
 struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
   if (tac_top == NULL) {
@@ -916,22 +1195,7 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
       asm_gen_error("top-level", func->name,
                     "function symbol not found in ASM symbol table");
     }
-    bool return_in_memory = false;
-    struct SymbolEntry* sym_entry = symbol_table_get(global_symbol_table, func->name);
-    if (sym_entry == NULL || sym_entry->type == NULL || sym_entry->type->type != FUN_TYPE) {
-      asm_gen_error("top-level", func->name,
-                    "missing function type information for %.*s",
-                    (int)func->name->len, func->name->start);
-    }
-    struct Type* ret_type = sym_entry->type->type_data.fun_type.return_type;
-    if (ret_type != NULL && ret_type->type != VOID_TYPE) {
-      struct Val ret_val;
-      ret_val.val_type = VARIABLE;
-      ret_val.val.var_name = func->name;
-      ret_val.type = ret_type;
-      struct OperandList* ignored = NULL;
-      classify_return_val(&ret_val, &ignored, &return_in_memory);
-    }
+    bool return_in_memory = func_returns_in_memory(func->name);
 
     struct AsmInstr* asm_body = set_up_params(asm_top->top.asm_func.name, func->params, func->num_params, return_in_memory);
 
@@ -1214,416 +1478,22 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
       asm_instr->next = NULL;
       return asm_instr;
     }
-    case TACCALL:{
-      // TAC:
-      // Call func -> dst (args...)
-      //
-      // ASM:
-      // Push stack args (reverse order)
-      // Mov reg args into R1..R8
-      // Call func
-      // Binary Add SP, SP, stack_bytes
-      // Mov dst, R1 (if dst != NULL)
+    case TACCALL:
+    case TACTAIL_CALL:{
+      // TACTailCall has the same layout as TACCall; TAC lowering fills both via tac_call.
       struct TACCall* call_instr = &tac_instr->instr.tac_call;
-      struct AsmInstr* call_head = NULL;
-      struct AsmInstr** call_tail = &call_head;
-
-      bool return_in_memory = false;
-      struct OperandList* dests = NULL;
-      size_t reg_index = 0;
-
-      if (call_instr->dst != NULL) {
-        classify_return_val(call_instr->dst, &dests, &return_in_memory);
-      }
-
-      if (return_in_memory){
-        struct Operand* dst_operand = tac_val_to_asm(call_instr->dst);
-        struct AsmInstr* addr_instr = arena_alloc(sizeof(struct AsmInstr));
-        addr_instr->type = ASM_GET_ADDRESS;
-        addr_instr->instr.asm_get_address.dst = arena_alloc(sizeof(struct Operand));
-        addr_instr->instr.asm_get_address.dst->type = OPERAND_REG;
-        addr_instr->instr.asm_get_address.dst->op.reg.reg = R1;
-        addr_instr->instr.asm_get_address.src = dst_operand;
-        addr_instr->next = NULL;
-        *call_tail = addr_instr;
-        call_tail = &addr_instr->next;
-
-        reg_index = 1; // R1 used for return address
-      }
-
-      struct OperandList* reg_args = NULL;
-      struct OperandList* stack_args = NULL;
-
-      // classify arguments
-      classify_params(call_instr->args, call_instr->num_args, return_in_memory,
-        &reg_args, &stack_args);
-
-      // move register args into R1..R8
-      for (struct OperandList* reg_arg_iter = reg_args; reg_arg_iter != NULL; reg_arg_iter = reg_arg_iter->next) {
-        struct Operand* arg = reg_arg_iter->opr;
-
-        size_t arg_size = asm_type_size(arg->asm_type);
-        size_t arg_alignment = operand_base_alignment(arg);
-        bool needs_byte_copy = arg->asm_type->type == BYTE_ARRAY || arg_alignment < arg_size;
-
-        if (needs_byte_copy){
-          struct AsmInstr* copy_instrs =
-              copy_bytes_to_reg(func_name, arg, (enum Reg)(R1 + reg_index), arg_size);
-          *call_tail = copy_instrs;
-          // advance call_tail to the end of copy_instrs
-          while (*call_tail != NULL) {
-            call_tail = &((*call_tail)->next);
-          }
-        } else {
-          struct AsmInstr* mov_instr = arena_alloc(sizeof(struct AsmInstr));
-          mov_instr->type = ASM_MOV;
-          mov_instr->instr.asm_mov.dst = arena_alloc(sizeof(struct Operand));
-          mov_instr->instr.asm_mov.dst->type = OPERAND_REG;
-          mov_instr->instr.asm_mov.dst->op.reg.reg = (enum Reg)(R1 + reg_index);
-          mov_instr->instr.asm_mov.dst->asm_type = arg->asm_type;
-          mov_instr->instr.asm_mov.src = arg;
-          mov_instr->next = NULL;
-          *call_tail = mov_instr;
-          call_tail = &mov_instr->next;
-        }
-
-        reg_index++;
-      }
-
-      // push stack args in reverse order
-      size_t stack_bytes = 0; // track how much stack space we use for args
-      size_t stack_arg_count = operand_list_length(stack_args);
-      for (size_t idx = stack_arg_count; idx > 0; ) {
-        idx--;
-        struct Operand* arg = operand_list_get(stack_args, idx);
-
-        size_t copy_size = asm_type_size(arg->asm_type);
-        size_t arg_alignment = operand_base_alignment(arg);
-        // Stack args must occupy full 4-byte slots per ABI to keep SP aligned.
-        bool needs_byte_copy = arg->asm_type->type == BYTE_ARRAY ||
-                               copy_size < kStackSlotBytes ||
-                               arg_alignment < copy_size;
-
-        if (needs_byte_copy){
-          // allocate stack space and copy bytes
-          if (copy_size > kStackSlotBytes) {
-            asm_gen_error("call", func_name,
-                          "stack arg chunk exceeds %zu-byte slot (size=%zu)",
-                          kStackSlotBytes, copy_size);
-          }
-          stack_bytes += kStackSlotBytes;
-
-          struct AsmInstr* alloc_instr = arena_alloc(sizeof(struct AsmInstr));
-          alloc_instr->type = ASM_BINARY;
-          alloc_instr->instr.asm_binary.alu_op = ALU_SUB;
-          alloc_instr->instr.asm_binary.dst = arena_alloc(sizeof(struct Operand));
-          alloc_instr->instr.asm_binary.dst->type = OPERAND_REG;
-          alloc_instr->instr.asm_binary.dst->op.reg.reg = SP;
-          alloc_instr->instr.asm_binary.dst->asm_type = &kWordType;
-          alloc_instr->instr.asm_binary.src1 = arena_alloc(sizeof(struct Operand));
-          alloc_instr->instr.asm_binary.src1->type = OPERAND_REG;
-          alloc_instr->instr.asm_binary.src1->op.reg.reg = SP;
-          alloc_instr->instr.asm_binary.src1->asm_type = &kWordType;
-          alloc_instr->instr.asm_binary.src2 = arena_alloc(sizeof(struct Operand));
-          alloc_instr->instr.asm_binary.src2->type = OPERAND_LIT;
-          alloc_instr->instr.asm_binary.src2->op.lit.value = (int)kStackSlotBytes;
-          alloc_instr->instr.asm_binary.src2->asm_type = &kWordType;
-          alloc_instr->next = NULL;
-          *call_tail = alloc_instr;
-          call_tail = &alloc_instr->next;
-
-          struct AsmInstr* copy_instrs =
-              copy_bytes(func_name, arg, (struct Operand*)&kStackMem, copy_size);
-          *call_tail = copy_instrs;
-          while (*call_tail != NULL) {
-            call_tail = &((*call_tail)->next);
-          }
-        } else {
-          struct AsmInstr* push_instr = arena_alloc(sizeof(struct AsmInstr));
-          push_instr->type = ASM_PUSH;
-          push_instr->instr.asm_push.src = arg;
-          push_instr->next = NULL;
-          stack_bytes += kStackSlotBytes;
-
-          *call_tail = push_instr;
-          call_tail = &push_instr->next;
-        }
-      }
-
-      // emit call instruction
-      struct AsmInstr* call_asm = arena_alloc(sizeof(struct AsmInstr));
-      call_asm->type = ASM_CALL;
-      call_asm->instr.asm_call.label = call_instr->func_name;
-      call_asm->next = NULL;
-      *call_tail = call_asm;
-      call_tail = &call_asm->next;
-
-      // adjust stack pointer back after call
-      if (stack_bytes > 0) {
-        struct AsmInstr* stack_adjust = arena_alloc(sizeof(struct AsmInstr));
-        stack_adjust->type = ASM_BINARY;
-        stack_adjust->instr.asm_binary.alu_op = ALU_ADD;
-        stack_adjust->instr.asm_binary.dst = arena_alloc(sizeof(struct Operand));
-        stack_adjust->instr.asm_binary.dst->type = OPERAND_REG;
-        stack_adjust->instr.asm_binary.dst->op.reg.reg = SP;
-        stack_adjust->instr.asm_binary.dst->asm_type = &kWordType;
-        stack_adjust->instr.asm_binary.src1 = arena_alloc(sizeof(struct Operand));
-        stack_adjust->instr.asm_binary.src1->type = OPERAND_REG;
-        stack_adjust->instr.asm_binary.src1->op.reg.reg = SP;
-        stack_adjust->instr.asm_binary.src1->asm_type = &kWordType;
-        stack_adjust->instr.asm_binary.src2 = arena_alloc(sizeof(struct Operand));
-        stack_adjust->instr.asm_binary.src2->type = OPERAND_LIT;
-        stack_adjust->instr.asm_binary.src2->op.lit.value = stack_bytes;
-        stack_adjust->instr.asm_binary.src2->asm_type = &kWordType;
-        stack_adjust->next = NULL;
-        *call_tail = stack_adjust;
-        call_tail = &stack_adjust->next;
-      }
-
-      // retreive return value from
-      if (call_instr->dst != NULL && !return_in_memory) {
-        size_t reg_index = 0;
-        for (struct OperandList* dest_iter = dests; dest_iter != NULL; dest_iter = dest_iter->next) {
-          struct Operand* dest = dest_iter->opr;
-          enum Reg ret_reg = (enum Reg)(R1 + reg_index);
-
-          size_t dest_size = asm_type_size(dest->asm_type);
-          size_t dest_alignment = operand_base_alignment(dest);
-          bool needs_byte_copy = dest->asm_type->type == BYTE_ARRAY ||
-                                 dest_alignment < dest_size;
-
-          if (needs_byte_copy){
-            struct AsmInstr* copy_instrs =
-                copy_bytes_from_reg(func_name, ret_reg, dest, dest_size);
-            *call_tail = copy_instrs;
-            // advance call_tail to the end of copy_instrs
-            while (*call_tail != NULL) {
-              call_tail = &((*call_tail)->next);
-            }
-          } else {
-            struct AsmInstr* mov_instr = arena_alloc(sizeof(struct AsmInstr));
-            mov_instr->type = ASM_MOV;
-            mov_instr->instr.asm_mov.dst = dest;
-            mov_instr->instr.asm_mov.src = arena_alloc(sizeof(struct Operand));
-            mov_instr->instr.asm_mov.src->type = OPERAND_REG;
-            mov_instr->instr.asm_mov.src->op.reg.reg = ret_reg;
-            mov_instr->instr.asm_mov.src->asm_type = dest->asm_type;
-            mov_instr->next = NULL;
-            *call_tail = mov_instr;
-            call_tail = &mov_instr->next;
-          }
-
-          reg_index++;
-        }
-      }
-
-      return call_head;
+      return call_to_asm(func_name, call_instr->func_name, NULL, call_instr->dst,
+                         call_instr->args, call_instr->num_args,
+                         tac_instr->type == TACTAIL_CALL);
     }
-    case TACCALL_INDIRECT:{
-      // TAC:
-      // Call func -> dst (args...)
-      //
-      // ASM:
-      // Push stack args (reverse order)
-      // Mov reg args into R1..R8
-      // Call func
-      // Binary Add SP, SP, stack_bytes
-      // Mov dst, R1 (if dst != NULL)
+    case TACCALL_INDIRECT:
+    case TACTAIL_CALL_INDIRECT:{
+      // TACTailCallIndirect has the same layout as TACCallIndirect; TAC
+      // lowering fills both via tac_call_indirect.
       struct TACCallIndirect* call_instr = &tac_instr->instr.tac_call_indirect;
-      struct AsmInstr* call_head = NULL;
-      struct AsmInstr** call_tail = &call_head;
-
-      bool return_in_memory = false;
-      struct OperandList* dests = NULL;
-      size_t reg_index = 0;
-
-      if (call_instr->dst != NULL) {
-        classify_return_val(call_instr->dst, &dests, &return_in_memory);
-      }
-
-      if (return_in_memory){
-        struct Operand* dst_operand = tac_val_to_asm(call_instr->dst);
-        struct AsmInstr* addr_instr = arena_alloc(sizeof(struct AsmInstr));
-        addr_instr->type = ASM_GET_ADDRESS;
-        addr_instr->instr.asm_get_address.dst = arena_alloc(sizeof(struct Operand));
-        addr_instr->instr.asm_get_address.dst->type = OPERAND_REG;
-        addr_instr->instr.asm_get_address.dst->op.reg.reg = R1;
-        addr_instr->instr.asm_get_address.src = dst_operand;
-        addr_instr->next = NULL;
-        *call_tail = addr_instr;
-        call_tail = &addr_instr->next;
-
-        reg_index = 1; // R1 used for return address
-      }
-
-      struct OperandList* reg_args = NULL;
-      struct OperandList* stack_args = NULL;
-
-      // classify arguments
-      classify_params(call_instr->args, call_instr->num_args, return_in_memory,
-        &reg_args, &stack_args);
-
-      // move register args into R1..R8
-      for (struct OperandList* reg_arg_iter = reg_args; reg_arg_iter != NULL; reg_arg_iter = reg_arg_iter->next) {
-        struct Operand* arg = reg_arg_iter->opr;
-
-        size_t arg_size = asm_type_size(arg->asm_type);
-        size_t arg_alignment = operand_base_alignment(arg);
-        bool needs_byte_copy = arg->asm_type->type == BYTE_ARRAY || arg_alignment < arg_size;
-
-        if (needs_byte_copy){
-          struct AsmInstr* copy_instrs =
-              copy_bytes_to_reg(func_name, arg, (enum Reg)(R1 + reg_index), arg_size);
-          *call_tail = copy_instrs;
-          // advance call_tail to the end of copy_instrs
-          while (*call_tail != NULL) {
-            call_tail = &((*call_tail)->next);
-          }
-        } else {
-          struct AsmInstr* mov_instr = arena_alloc(sizeof(struct AsmInstr));
-          mov_instr->type = ASM_MOV;
-          mov_instr->instr.asm_mov.dst = arena_alloc(sizeof(struct Operand));
-          mov_instr->instr.asm_mov.dst->type = OPERAND_REG;
-          mov_instr->instr.asm_mov.dst->op.reg.reg = (enum Reg)(R1 + reg_index);
-          mov_instr->instr.asm_mov.dst->asm_type = arg->asm_type;
-          mov_instr->instr.asm_mov.src = arg;
-          mov_instr->next = NULL;
-          *call_tail = mov_instr;
-          call_tail = &mov_instr->next;
-        }
-
-        reg_index++;
-      }
-
-      // push stack args in reverse order
-      size_t stack_bytes = 0; // track how much stack space we use for args
-      size_t stack_arg_count = operand_list_length(stack_args);
-      for (size_t idx = stack_arg_count; idx > 0; ) {
-        idx--;
-        struct Operand* arg = operand_list_get(stack_args, idx);
-
-        size_t copy_size = asm_type_size(arg->asm_type);
-        size_t arg_alignment = operand_base_alignment(arg);
-        // Stack args must occupy full 4-byte slots per ABI to keep SP aligned.
-        bool needs_byte_copy = arg->asm_type->type == BYTE_ARRAY ||
-                               copy_size < kStackSlotBytes ||
-                               arg_alignment < copy_size;
-
-        if (needs_byte_copy){
-          // allocate stack space and copy bytes
-          if (copy_size > kStackSlotBytes) {
-            asm_gen_error("call", func_name,
-                          "stack arg chunk exceeds %zu-byte slot (size=%zu)",
-                          kStackSlotBytes, copy_size);
-          }
-          stack_bytes += kStackSlotBytes;
-
-          struct AsmInstr* alloc_instr = arena_alloc(sizeof(struct AsmInstr));
-          alloc_instr->type = ASM_BINARY;
-          alloc_instr->instr.asm_binary.alu_op = ALU_SUB;
-          alloc_instr->instr.asm_binary.dst = arena_alloc(sizeof(struct Operand));
-          alloc_instr->instr.asm_binary.dst->type = OPERAND_REG;
-          alloc_instr->instr.asm_binary.dst->op.reg.reg = SP;
-          alloc_instr->instr.asm_binary.dst->asm_type = &kWordType;
-          alloc_instr->instr.asm_binary.src1 = arena_alloc(sizeof(struct Operand));
-          alloc_instr->instr.asm_binary.src1->type = OPERAND_REG;
-          alloc_instr->instr.asm_binary.src1->op.reg.reg = SP;
-          alloc_instr->instr.asm_binary.src1->asm_type = &kWordType;
-          alloc_instr->instr.asm_binary.src2 = arena_alloc(sizeof(struct Operand));
-          alloc_instr->instr.asm_binary.src2->type = OPERAND_LIT;
-          alloc_instr->instr.asm_binary.src2->op.lit.value = (int)kStackSlotBytes;
-          alloc_instr->instr.asm_binary.src2->asm_type = &kWordType;
-          alloc_instr->next = NULL;
-          *call_tail = alloc_instr;
-          call_tail = &alloc_instr->next;
-
-          struct AsmInstr* copy_instrs =
-              copy_bytes(func_name, arg, (struct Operand*)&kStackMem, copy_size);
-          *call_tail = copy_instrs;
-          while (*call_tail != NULL) {
-            call_tail = &((*call_tail)->next);
-          }
-        } else {
-          struct AsmInstr* push_instr = arena_alloc(sizeof(struct AsmInstr));
-          push_instr->type = ASM_PUSH;
-          push_instr->instr.asm_push.src = arg;
-          push_instr->next = NULL;
-          stack_bytes += kStackSlotBytes;
-
-          *call_tail = push_instr;
-          call_tail = &push_instr->next;
-        }
-      }
-
-      // emit call instruction
-      struct AsmInstr* call_asm = arena_alloc(sizeof(struct AsmInstr));
-      call_asm->type = ASM_INDIRECT_CALL;
-      call_asm->instr.asm_indirect_call.src = NULL;
-      call_asm->instr.asm_indirect_call.src = tac_val_to_asm(call_instr->func);
-      call_asm->next = NULL;
-      *call_tail = call_asm;
-      call_tail = &call_asm->next;
-
-      // adjust stack pointer back after call
-      if (stack_bytes > 0) {
-        struct AsmInstr* stack_adjust = arena_alloc(sizeof(struct AsmInstr));
-        stack_adjust->type = ASM_BINARY;
-        stack_adjust->instr.asm_binary.alu_op = ALU_ADD;
-        stack_adjust->instr.asm_binary.dst = arena_alloc(sizeof(struct Operand));
-        stack_adjust->instr.asm_binary.dst->type = OPERAND_REG;
-        stack_adjust->instr.asm_binary.dst->op.reg.reg = SP;
-        stack_adjust->instr.asm_binary.dst->asm_type = &kWordType;
-        stack_adjust->instr.asm_binary.src1 = arena_alloc(sizeof(struct Operand));
-        stack_adjust->instr.asm_binary.src1->type = OPERAND_REG;
-        stack_adjust->instr.asm_binary.src1->op.reg.reg = SP;
-        stack_adjust->instr.asm_binary.src1->asm_type = &kWordType;
-        stack_adjust->instr.asm_binary.src2 = arena_alloc(sizeof(struct Operand));
-        stack_adjust->instr.asm_binary.src2->type = OPERAND_LIT;
-        stack_adjust->instr.asm_binary.src2->op.lit.value = stack_bytes;
-        stack_adjust->instr.asm_binary.src2->asm_type = &kWordType;
-        stack_adjust->next = NULL;
-        *call_tail = stack_adjust;
-        call_tail = &stack_adjust->next;
-      }
-
-      // retreive return value from
-      if (call_instr->dst != NULL && !return_in_memory) {
-        size_t reg_index = 0;
-        for (struct OperandList* dest_iter = dests; dest_iter != NULL; dest_iter = dest_iter->next) {
-          struct Operand* dest = dest_iter->opr;
-          enum Reg ret_reg = (enum Reg)(R1 + reg_index);
-
-          size_t dest_size = asm_type_size(dest->asm_type);
-          size_t dest_alignment = operand_base_alignment(dest);
-          bool needs_byte_copy = dest->asm_type->type == BYTE_ARRAY ||
-                                 dest_alignment < dest_size;
-
-          if (needs_byte_copy){
-            struct AsmInstr* copy_instrs =
-                copy_bytes_from_reg(func_name, ret_reg, dest, dest_size);
-            *call_tail = copy_instrs;
-            // advance call_tail to the end of copy_instrs
-            while (*call_tail != NULL) {
-              call_tail = &((*call_tail)->next);
-            }
-          } else {
-            struct AsmInstr* mov_instr = arena_alloc(sizeof(struct AsmInstr));
-            mov_instr->type = ASM_MOV;
-            mov_instr->instr.asm_mov.dst = dest;
-            mov_instr->instr.asm_mov.src = arena_alloc(sizeof(struct Operand));
-            mov_instr->instr.asm_mov.src->type = OPERAND_REG;
-            mov_instr->instr.asm_mov.src->op.reg.reg = ret_reg;
-            mov_instr->instr.asm_mov.src->asm_type = dest->asm_type;
-            mov_instr->next = NULL;
-            *call_tail = mov_instr;
-            call_tail = &mov_instr->next;
-          }
-
-          reg_index++;
-        }
-      }
-
-      return call_head;
+      return call_to_asm(func_name, NULL, call_instr->func, call_instr->dst,
+                         call_instr->args, call_instr->num_args,
+                         tac_instr->type == TACTAIL_CALL_INDIRECT);
     }
     case TACGET_ADDRESS:{
       // TAC:

@@ -1,9 +1,12 @@
 // scratchpad for random tests and experiments
 
+void fun() {
+
+}
+
 int main() {
-  int x = 0;
-  for (int i = 0; i < 10; i++) {
-    x += i;
-  }
-  return x;
+  // call fun through pointer
+  void (*p)() = fun;
+  p();
+  return 0;
 }
