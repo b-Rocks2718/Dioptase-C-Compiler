@@ -99,19 +99,14 @@ Supported:
   - statement expressions
 - Statements: expression statements, `return`, blocks, `if`/`else`, `while`, `do`/`while`,
   `for`, `break`, `continue`, `switch`/`case`/`default`, labels and `goto`
-- Attributes: just `cleanup` for now, but I will likely add more
+- Attributes: just `cleanup` for now
 
 Limitations:
 - No floating-point
 - No `long` or `long long` integers
 - No `typedef`, `inline`, or `restrict`
-- No multiple declarators per declaration (e.g., `int a, b;`)
 - No variadic functions
 - No inline assembly
-- Optimization support is currently limited to constant folding, dead-code elimination, copy propagation, dead-store elimination, and tail calls; register allocation and the other passes listed above are not implemented yet
-- The TAC interpreter cannot pass or return structs by value
-
-In the future I plan to fix most of these limitations. I'd also like to add a few extensions to C, like classes, templates, and lambdas.  
 
 ## Tests
 

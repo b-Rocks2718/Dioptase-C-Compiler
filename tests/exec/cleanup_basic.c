@@ -2,7 +2,6 @@
 // Expected: main returns 0.
 #define TEST_OK 0
 #define TEST_FAIL 1
-#define TEST_VALUE 37
 
 int result = 0;
 
@@ -12,10 +11,10 @@ void cleanup_int(int *p) { /* Record cleanup of the integer object. */
 
 int main(void) { /* Exercise cleanup basic behavior. */
   {
-    int value __attribute__((cleanup(cleanup_int))) = TEST_VALUE;
+    int value __attribute__((cleanup(cleanup_int))) = 37;
   }
 
-  if (result != TEST_VALUE) {
+  if (result != 37) {
     return TEST_FAIL;
   }
 

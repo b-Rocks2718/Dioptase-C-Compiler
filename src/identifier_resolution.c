@@ -212,12 +212,12 @@ bool resolve_type(struct Type* type){
 bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
   // extern and static declarations don't support cleanup attributes
   if (var_dclr->storage != NONE && var_dclr->attributes.cleanup_func != NULL) {
-    ident_error_at(var_dclr->name->start, "extern/static variables cannot have cleanup attributes");
+    ident_error_at(var_dclr->source_name->start, "extern/static variables cannot have cleanup attributes");
     return false;
   }
 
   if (!resolve_type(var_dclr->type)) {
-    ident_error_at(var_dclr->name->start, "failed to resolve variable type");
+    ident_error_at(var_dclr->source_name->start, "failed to resolve variable type");
     return false;
   }
 
@@ -238,7 +238,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
         // redeclaration with extern linkage in the same block
         return true;
       }
-      ident_error_at(var_dclr->name->start, "multiple declarations for variable");
+      ident_error_at(var_dclr->source_name->start, "multiple declarations for variable");
       return false;
     }
 
@@ -252,7 +252,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
   if (entry != NULL) {
     if (from_current_scope) {
       // already declared in this scope
-      ident_error_at(var_dclr->name->start, "multiple declarations for variable");
+      ident_error_at(var_dclr->source_name->start, "multiple declarations for variable");
       return false;
     } else {
       // Declared in an outer scope; create a new unique local.
@@ -303,7 +303,11 @@ bool resolve_local_dclr(struct Declaration* dclr) {
 bool resolve_for_init(struct ForInit* init) {
   switch (init->type) {
     case DCLR_INIT:
-      return resolve_local_var_dclr(init->init.dclr_init);
+      // In order, so later initializers can see earlier variables.
+      for (struct VarDclrList* var = init->init.dclr_init; var != NULL; var = var->next) {
+        if (!resolve_local_var_dclr(&var->dclr)) return false;
+      }
+      return true;
     case EXPR_INIT:
       if (init->init.expr_init != NULL) {
         return resolve_expr(init->init.expr_init);
@@ -459,7 +463,7 @@ bool resolve_params(struct ParamList* params){
       return false;
     }
     if (!resolve_local_var_dclr(&param->param)) {
-      ident_error_at(param->param.name->start, "failed to resolve parameter");
+      ident_error_at(param->param.source_name->start, "failed to resolve parameter");
       return false;
     }
   }
@@ -496,17 +500,17 @@ bool resolve_block(struct Block* block){
 bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
   // file scope vars don't support cleanup attributes
   if (var_dclr->attributes.cleanup_func != NULL) {
-    ident_error_at(var_dclr->name->start, "file-scope variables cannot have cleanup attributes");
+    ident_error_at(var_dclr->source_name->start, "file-scope variables cannot have cleanup attributes");
     return false;
   }
 
   if (!resolve_type(var_dclr->type)) {
-    ident_error_at(var_dclr->name->start, "failed to resolve variable type");
+    ident_error_at(var_dclr->source_name->start, "failed to resolve variable type");
     return false;
   }
 
   if (var_dclr->init != NULL && !resolve_var_init(var_dclr->init)) {
-    ident_error_at(var_dclr->name->start, "failed to resolve variable initializer");
+    ident_error_at(var_dclr->source_name->start, "failed to resolve variable initializer");
     return false;
   }
 
@@ -515,7 +519,7 @@ bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
   if (entry != NULL) {
     if (!from_current_scope) {
       // this should never happen, as file scope declarations are global
-      ident_error_at(var_dclr->name->start, "declaration is outside file scope");
+      ident_error_at(var_dclr->source_name->start, "declaration is outside file scope");
       return false;
     }
     

@@ -1,12 +1,3 @@
-// Provide named constants for union/global/local/array coverage.
-#define kArrLen 2
-#define kIndex0 0
-#define kIndex1 1
-#define kInitGlobal 7
-#define kInitLocal 5
-#define kArrVal0 3
-#define kArrVal1 4
-
 // Exercise two integer views sharing the same union storage.
 union U {
   int x;
@@ -14,7 +5,7 @@ union U {
 };
 
 // Exercise global union initialization.
-union U g_union = { kInitGlobal };
+union U g_union = { 7 };
 
 // Modify a union by updating its x member.
 // Returns the updated x value.
@@ -24,17 +15,16 @@ int bump_union(union U* u, int delta) {
 }
 
 // Drive union usage across globals, locals, arrays, and pointers.
-// Array indices stay within [0, kArrLen).
 int main(void) {
-  union U local = { kInitLocal };
-  union U arr[kArrLen];
-  union U* ptr = &arr[kIndex1];
+  union U local = { 5 };
+  union U arr[2];
+  union U* ptr = &arr[1];
 
-  arr[kIndex0].x = kArrVal0;
-  arr[kIndex1].y = kArrVal1;
+  arr[0].x = 3;
+  arr[1].y = 4;
 
   return bump_union(&g_union, 1) +
          bump_union(&local, 2) +
-         arr[kIndex0].x +
+         arr[0].x +
          ptr->y;
 }

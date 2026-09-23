@@ -156,15 +156,15 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
   }
 
   if (!is_complete_type(var_dclr->type)) {
-    type_error_at(var_dclr->name->start,
+    type_error_at(var_dclr->source_name->start,
                   "incomplete type for variable %.*s",
-                  (int)var_dclr->name->len, var_dclr->name->start);
+                  (int)var_dclr->source_name->len, var_dclr->source_name->start);
     return false;
   }
   if (!is_valid_type_specifier(var_dclr->type)) {
-    type_error_at(var_dclr->name->start,
+    type_error_at(var_dclr->source_name->start,
                   "invalid type for variable %.*s",
-                  (int)var_dclr->name->len, var_dclr->name->start);
+                  (int)var_dclr->source_name->len, var_dclr->source_name->start);
     return false;
   }
 
@@ -176,7 +176,7 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
       if (!typecheck_had_error) {
         type_error_at(var_dclr->init->loc,
                       "non-constant initializer for global variable %.*s",
-                      (int)var_dclr->name->len, var_dclr->name->start);
+                      (int)var_dclr->source_name->len, var_dclr->source_name->start);
       }
       return false;
     }
@@ -193,25 +193,25 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
 
     // reject function types
     if (entry->type->type == FUN_TYPE) {
-      type_error_at(var_dclr->name->start,
+      type_error_at(var_dclr->source_name->start,
                     "function %.*s redeclared as variable",
-                    (int)var_dclr->name->len, var_dclr->name->start);
+                    (int)var_dclr->source_name->len, var_dclr->source_name->start);
       return false;
     }
 
     // ensure both declarations have the same type
     if (!compare_types(entry->type, var_dclr->type)) {
-      type_error_at(var_dclr->name->start,
+      type_error_at(var_dclr->source_name->start,
                     "conflicting declarations for variable %.*s",
-                    (int)var_dclr->name->len, var_dclr->name->start);
+                    (int)var_dclr->source_name->len, var_dclr->source_name->start);
       return false;
     }
 
     // check for duplicate definitions
     if (entry->attrs->init.init_type == INITIAL && var_dclr->init != NULL) {
-      type_error_at(var_dclr->name->start,
+      type_error_at(var_dclr->source_name->start,
                     "conflicting file scope variable definitions for variable %.*s",
-                    (int)var_dclr->name->len, var_dclr->name->start);
+                    (int)var_dclr->source_name->len, var_dclr->source_name->start);
       return false;
     }
 
@@ -220,9 +220,9 @@ bool typecheck_file_scope_var(struct VariableDclr* var_dclr) {
     bool dclr_internal = (var_dclr->storage == EXTERN) ? entry_internal
                                                        : (var_dclr->storage == STATIC);
     if (entry_internal != dclr_internal) {
-      type_error_at(var_dclr->name->start,
+      type_error_at(var_dclr->source_name->start,
                     "conflicting variable linkage for variable %.*s",
-                    (int)var_dclr->name->len, var_dclr->name->start);
+                    (int)var_dclr->source_name->len, var_dclr->source_name->start);
       return false;
     }
 
@@ -585,16 +585,16 @@ bool typecheck_params(struct ParamList* params) {
   while (cur != NULL) {
     // ensure each parameter has no initializer
     if (cur->param.init != NULL) {
-      type_error_at(cur->param.name->start,
+      type_error_at(cur->param.source_name->start,
                     "function parameter %.*s should not have an initializer",
-                    (int)cur->param.name->len, cur->param.name->start);
+                    (int)cur->param.source_name->len, cur->param.source_name->start);
       return false;
     }
 
     if (!is_valid_type_specifier(cur->param.type)) {
-      type_error_at(cur->param.name->start,
+      type_error_at(cur->param.source_name->start,
                     "invalid type specifier for function parameter %.*s",
-                    (int)cur->param.name->len, cur->param.name->start);
+                    (int)cur->param.source_name->len, cur->param.source_name->start);
       return false;
     }
 
@@ -849,14 +849,17 @@ bool typecheck_stmt(struct Statement* stmt) {
 bool typecheck_for_init(struct ForInit* init_) {
   switch (init_->type) {
     case DCLR_INIT:
-      if (init_->init.dclr_init->storage != NONE) {
-        type_error_at(init_->init.dclr_init->name->start,
-                      "storage class not allowed in for-loop initializer for variable %.*s",
-                      (int)init_->init.dclr_init->name->len,
-                      init_->init.dclr_init->name->start);
-        return false;
+      for (struct VarDclrList* var = init_->init.dclr_init; var != NULL; var = var->next) {
+        if (var->dclr.storage != NONE) {
+          type_error_at(var->dclr.source_name->start,
+                        "storage class not allowed in for-loop initializer for variable %.*s",
+                        (int)var->dclr.source_name->len,
+                        var->dclr.source_name->start);
+          return false;
+        }
+        if (!typecheck_local_var(&var->dclr)) return false;
       }
-      return typecheck_local_var(init_->init.dclr_init);
+      return true;
     case EXPR_INIT:
       if (init_->init.expr_init != NULL) {
         return typecheck_convert_expr(&init_->init.expr_init);
@@ -893,15 +896,15 @@ bool typecheck_local_dclr(struct Declaration* dclr) {
 // Returns true on success; false on any type error.
 bool typecheck_local_var(struct VariableDclr* var_dclr) {
   if (!is_complete_type(var_dclr->type)) {
-    type_error_at(var_dclr->name->start,
+    type_error_at(var_dclr->source_name->start,
                   "incomplete type for variable %.*s",
-                  (int)var_dclr->name->len, var_dclr->name->start);
+                  (int)var_dclr->source_name->len, var_dclr->source_name->start);
     return false;
   }
   if (!is_valid_type_specifier(var_dclr->type)) {
-    type_error_at(var_dclr->name->start,
+    type_error_at(var_dclr->source_name->start,
                   "invalid type for variable %.*s",
-                  (int)var_dclr->name->len, var_dclr->name->start);
+                  (int)var_dclr->source_name->len, var_dclr->source_name->start);
     return false;
   }
 
@@ -910,7 +913,7 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
     if (var_dclr->init != NULL) {
       type_error_at(var_dclr->init->loc,
                     "initializer on local extern variable declaration for variable %.*s",
-                    (int)var_dclr->name->len, var_dclr->name->start);
+                    (int)var_dclr->source_name->len, var_dclr->source_name->start);
       return false;
     }
 
@@ -928,17 +931,17 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
     } else {
       // ensure the existing entry is not a function
       if (entry->type->type == FUN_TYPE) {
-        type_error_at(var_dclr->name->start,
+        type_error_at(var_dclr->source_name->start,
                       "function %.*s redeclared as variable",
-                      (int)var_dclr->name->len, var_dclr->name->start);
+                      (int)var_dclr->source_name->len, var_dclr->source_name->start);
         return false;
       }
 
       // ensure both declarations have the same type
       if (!compare_types(entry->type, var_dclr->type)) {
-        type_error_at(var_dclr->name->start,
+        type_error_at(var_dclr->source_name->start,
                       "conflicting declarations for variable %.*s",
-                      (int)var_dclr->name->len, var_dclr->name->start);
+                      (int)var_dclr->source_name->len, var_dclr->source_name->start);
         return false;
       }
 
@@ -955,7 +958,7 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
         if (!typecheck_had_error) {
           type_error_at(var_dclr->init->loc,
                         "non-constant initializer for global variable %.*s",
-                        (int)var_dclr->name->len, var_dclr->name->start);
+                        (int)var_dclr->source_name->len, var_dclr->source_name->start);
         }
         return false;
       }
@@ -964,7 +967,7 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
         if (!is_null_pointer_constant(init_expr) && init_expr->type != STRING) {
           type_error_at(var_dclr->init->loc,
                         "invalid pointer initializer for static local variable %.*s",
-                        (int)var_dclr->name->len, var_dclr->name->start);
+                        (int)var_dclr->source_name->len, var_dclr->source_name->start);
           return false;
         }
       }
@@ -986,25 +989,25 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
     } else {
       // ensure the existing entry is not a function
       if (entry->type->type == FUN_TYPE) {
-        type_error_at(var_dclr->name->start,
+        type_error_at(var_dclr->source_name->start,
                       "function %.*s redeclared as variable",
-                      (int)var_dclr->name->len, var_dclr->name->start);
+                      (int)var_dclr->source_name->len, var_dclr->source_name->start);
         return false;
       }
 
       // ensure both declarations have the same type
       if (!compare_types(entry->type, var_dclr->type)) {
-        type_error_at(var_dclr->name->start,
+        type_error_at(var_dclr->source_name->start,
                       "conflicting declarations for variable %.*s",
-                      (int)var_dclr->name->len, var_dclr->name->start);
+                      (int)var_dclr->source_name->len, var_dclr->source_name->start);
         return false;
       }
 
       // check for duplicate definitions
       if (entry->attrs->is_defined && var_dclr->init != NULL) {
-        type_error_at(var_dclr->name->start,
+        type_error_at(var_dclr->source_name->start,
                       "conflicting local static variable definitions for variable %.*s",
-                      (int)var_dclr->name->len, var_dclr->name->start);
+                      (int)var_dclr->source_name->len, var_dclr->source_name->start);
         return false;
       }
 
@@ -1021,9 +1024,9 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
     // Regular local variable must be unique within the current function scope.
     struct SymbolEntry* entry = symbol_table_get(global_symbol_table, var_dclr->name);
     if (entry != NULL) {
-      type_error_at(var_dclr->name->start,
+      type_error_at(var_dclr->source_name->start,
                     "duplicate local variable declaration for variable %.*s",
-                    (int)var_dclr->name->len, var_dclr->name->start);
+                    (int)var_dclr->source_name->len, var_dclr->source_name->start);
       return false;
     }
 
@@ -1050,7 +1053,7 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
       type_error_at(var_dclr->attributes.cleanup_func->start,
                     "unknown cleanup function %.*s for static local variable %.*s",
                     (int)var_dclr->attributes.cleanup_func->len, var_dclr->attributes.cleanup_func->start,
-                    (int)var_dclr->name->len, var_dclr->name->start);
+                    (int)var_dclr->source_name->len, var_dclr->source_name->start);
       return false;
     }
 
@@ -1073,7 +1076,7 @@ bool typecheck_local_var(struct VariableDclr* var_dclr) {
       type_error_at(var_dclr->attributes.cleanup_func->start,
                     "cleanup function %.*s must have type void func(type*) where type matches variable %.*s",
                     (int)var_dclr->attributes.cleanup_func->len, var_dclr->attributes.cleanup_func->start,
-                    (int)var_dclr->name->len, var_dclr->name->start);
+                    (int)var_dclr->source_name->len, var_dclr->source_name->start);
       return false;
     }
   }
