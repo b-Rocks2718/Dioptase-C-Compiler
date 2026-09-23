@@ -140,6 +140,8 @@ enum AsmInstrType {
   ASM_PUSH,
   ASM_CALL,
   ASM_INDIRECT_CALL,
+  ASM_TAIL_CALL,
+  ASM_TAIL_CALL_INDIRECT,
   ASM_JUMP,
   ASM_COND_JUMP,
   ASM_LABEL,
@@ -193,6 +195,18 @@ struct AsmCmp {
 
 // Store the value pushed onto the stack.
 struct AsmPush {
+  struct Operand* src;
+};
+
+// Direct tail call: tear down the current frame, then jump to label with the
+// caller's return address still in place. Arguments are already in R1..R8.
+struct AsmTailCall {
+  struct Slice* label;
+};
+
+// Indirect tail call through src. src may be a BP-relative operand, so it must
+// be read before the current frame is torn down.
+struct AsmTailCallIndirect {
   struct Operand* src;
 };
 
@@ -282,6 +296,8 @@ union AsmInstrVariant {
   struct AsmPush asm_push;
   struct AsmCall asm_call;
   struct AsmIndirectCall asm_indirect_call;
+  struct AsmTailCall asm_tail_call;
+  struct AsmTailCallIndirect asm_tail_call_indirect;
   struct AsmJump asm_jump;
   struct AsmCondJump asm_cond_jump;
   struct AsmLabel asm_label;

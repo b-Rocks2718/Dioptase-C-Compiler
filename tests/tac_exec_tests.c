@@ -41,6 +41,10 @@ static const size_t kTacExecTestListInitialCapacity = 8; // Handles small suites
 static const size_t kTacExecTestListGrowthFactor = 2; // Doubling keeps append amortized constant time.
 static const char kTacExecTestSuffix[] = ".c";
 static const size_t kTacExecTestSuffixLen = sizeof(kTacExecTestSuffix) - 1;
+// Fixtures in tests/exec containing this text are skipped here but still run by
+// the emulator suites, e.g. ones that pass structs by value, which the TAC
+// interpreter does not support.
+static const char kTacExecSkipMarker[] = "tac-exec: skip";
 static const int kTacExecChildPassExitCode = 0;
 static const int kTacExecChildFailExitCode = 1;
 
@@ -320,6 +324,19 @@ static bool tac_exec_read_file(const char* path, char** out_text) {
   return true;
 }
 
+// Check whether a fixture opts out of TAC execution via kTacExecSkipMarker.
+// Returns false if the fixture cannot be read.
+static bool tac_exec_is_skipped(const struct TacExecTest* test, bool* out_skipped) {
+  char* source = NULL;
+  if (!tac_exec_read_file(test->path, &source)) {
+    tac_exec_error(test->name, "read", "unable to read %s: %s", test->path, strerror(errno));
+    return false;
+  }
+  *out_skipped = strstr(source, kTacExecSkipMarker) != NULL;
+  free(source);
+  return true;
+}
+
 // Ensure a directory exists for build outputs.
 // Returns true on success or if it already exists.
 static bool tac_exec_ensure_dir(const char* path) {
@@ -466,7 +483,7 @@ static bool tac_exec_run_tac(const struct TacExecTest* test,
     goto cleanup;
   }
 
-  struct TACProg* tac_prog = prog_to_TAC(prog, false);
+  struct TACProg* tac_prog = prog_to_TAC(prog, false, optimization_options.tail_call_opt);
   if (tac_prog == NULL) {
     tac_exec_error(test->name, "tac", "TAC lowering failed");
     goto cleanup;
@@ -588,16 +605,24 @@ int main(int argc, char** argv) { /* Exercise tac exec tests behavior. */
     return 1;
   }
 
-  size_t total = tests.count;
+  size_t total = 0;
   size_t passed = 0;
+  size_t skipped = 0;
   printf("TAC execution results%s:\n", optimizations_enabled ? " (optimized)" : "");
-  for (size_t i = 0; i < total; i++) {
+  for (size_t i = 0; i < tests.count; i++) {
+    bool skip = false;
+    if (tac_exec_is_skipped(&tests.tests[i], &skip) && skip) {
+      printf("- tac_exec_%s (skipped: contains \"%s\")\n", tests.tests[i].name, kTacExecSkipMarker);
+      skipped++;
+      continue;
+    }
+    total++;
     printf("- tac_exec_%s\n", tests.tests[i].name);
     if (tac_exec_run_test(&tests.tests[i], optimization_options, &tests)) {
       passed++;
     }
   }
-  printf("TAC execution results: %zu / %zu passed.\n", passed, total);
+  printf("TAC execution results: %zu / %zu passed (%zu skipped).\n", passed, total, skipped);
 
   if (passed == total) {
     printf("TAC execution tests passed.\n");

@@ -195,7 +195,9 @@ static struct CFG* partition_into_basic_blocks(const struct TACInstr* body) {
       case TACJUMP:
       case TACCOND_JUMP:
       case TACRETURN:
-        // append jump/return to current block, then begin a new one
+      case TACTAIL_CALL:
+      case TACTAIL_CALL_INDIRECT:
+        // append jump/return/tail call to current block, then begin a new one
         append_instr(cur_block, instr);
         cfg_node_list_append(list, cur_block);
         num_blocks++;
@@ -282,6 +284,8 @@ static struct CFG* link_cfg(struct CFG* cfg) {
           break;
         }
         case TACRETURN: // link to only exit
+        case TACTAIL_CALL:
+        case TACTAIL_CALL_INDIRECT:
           link_nodes(cur, exit_node);
           break;
         default: // link to only next basic block
@@ -376,6 +380,9 @@ static const char* cfg_edge_kind(const struct CFG* cfg,
       return "jump";
     case TACRETURN:
       return "return";
+    case TACTAIL_CALL:
+    case TACTAIL_CALL_INDIRECT:
+      return "tail call";
     default:
       return "fallthrough";
   }

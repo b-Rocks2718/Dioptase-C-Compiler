@@ -40,13 +40,6 @@ Key: main.tmp.1
     Is Defined: true
     Storage Class: None
 
-Key: main.tmp.2
-  Type: int
-  Attributes:
-    Attr Type: Local Variable
-    Is Defined: true
-    Storage Class: None
-
 Key: main
   Type: func(ret_type=int, param_types=[])
   Attributes:

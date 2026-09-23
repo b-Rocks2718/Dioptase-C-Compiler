@@ -13,6 +13,15 @@ static int tac_temp_counter = 0;
 static int tac_label_counter = 0;
 
 static bool debug_info_enabled = 0;
+static bool tail_calls_enabled = false;
+static size_t active_cleanup_count = 0;
+
+// Count cleanup handlers whose declarations have been lowered in the current scope.
+static void note_cleanup_declaration(const struct VariableDclr* declaration) {
+  if (declaration != NULL && declaration->attributes.cleanup_func != NULL) {
+    active_cleanup_count++;
+  }
+}
 
 struct IdentAttr kLocalAttrs = {LOCAL_ATTR, true, NONE, {NO_INIT, NULL}};
 
@@ -516,8 +525,9 @@ struct Val* make_str_label(struct StringExpr* str_expr){
 
 // Lower a full program into a TAC program containing top-level items.
 // Returns a TAC program with a linked list of TopLevel entries.
-struct TACProg* prog_to_TAC(struct Program* program, bool emit_debug_info) {
+struct TACProg* prog_to_TAC(struct Program* program, bool emit_debug_info, bool enable_tail_calls) {
   debug_info_enabled = emit_debug_info;
+  tail_calls_enabled = enable_tail_calls;
 
   struct TACProg* tac_prog = (struct TACProg*)arena_alloc(sizeof(struct TACProg));
   tac_prog->head = NULL;
@@ -631,6 +641,7 @@ struct TopLevel* func_to_TAC(struct FunctionDclr* declaration) {
     return NULL;
   }
 
+  active_cleanup_count = 0;
   struct TACInstrList body = block_to_TAC(declaration->name, declaration->body);
   struct SymbolEntry* symbol = symbol_table_get(global_symbol_table, declaration->name);
   if (symbol == NULL || symbol->attrs->attr_type != FUN_ATTR) {
@@ -675,6 +686,7 @@ struct TopLevel* func_to_TAC(struct FunctionDclr* declaration) {
 // Returns an empty list if the block produces no instructions.
 struct TACInstrList block_to_TAC(struct Slice* func_name, struct Block* block) {
   struct TACInstrList head = tac_instr_list(NULL);
+  size_t enclosing_cleanup_count = active_cleanup_count;
 
   for (struct Block* cur = block; cur != NULL; cur = cur->next) {
     struct TACInstrList item_instrs = tac_instr_list(NULL);
@@ -689,6 +701,9 @@ struct TACInstrList block_to_TAC(struct Slice* func_name, struct Block* block) {
         break;
       case DCLR_ITEM:
         item_instrs = local_dclr_to_TAC(func_name, cur->item->item.dclr);
+        if (cur->item->item.dclr->type == VAR_DCLR) {
+          note_cleanup_declaration(&cur->item->item.dclr->dclr.var_dclr);
+        }
         if (debug_info_enabled) {
           const char* loc = declaration_loc(cur->item->item.dclr);
           if (loc != NULL) {
@@ -710,6 +725,7 @@ struct TACInstrList block_to_TAC(struct Slice* func_name, struct Block* block) {
 
   // call all cleanup handlers for variables going out of scope
   if (block == NULL || block->idents == NULL) {
+    active_cleanup_count = enclosing_cleanup_count;
     return head;
   }
   for (size_t i = 0; i < block->idents->size; ++i){
@@ -735,6 +751,7 @@ struct TACInstrList block_to_TAC(struct Slice* func_name, struct Block* block) {
       }
     }
   }
+  active_cleanup_count = enclosing_cleanup_count;
   return head;
 }
 
@@ -1034,6 +1051,12 @@ struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt)
       struct TACInstrList expr_instrs = tac_instr_list(NULL);
       
       if (stmt->statement.ret_stmt.expr != NULL){
+        // A tail jump cannot bypass cleanup handlers for active locals.
+        if (tail_calls_enabled && active_cleanup_count == 0 &&
+            stmt->statement.ret_stmt.expr->type == FUNCTION_CALL) {
+          return call_to_TAC(func_name, stmt->statement.ret_stmt.expr, NULL, true);
+        }
+
         dst = (struct Val*)arena_alloc(sizeof(struct Val));
         expr_instrs = expr_to_TAC_convert(func_name, stmt->statement.ret_stmt.expr, dst);
       }
@@ -1440,7 +1463,11 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
   struct Slice* continue_label = slice_concat(label, ".continue");
   struct Slice* break_label = slice_concat(label, ".break");
 
+  size_t enclosing_cleanup_count = active_cleanup_count;
   struct TACInstrList init_instrs = for_init_to_TAC(func_name, init_);
+  if (init_ != NULL && init_->type == DCLR_INIT) {
+    note_cleanup_declaration(init_->init.dclr_init);
+  }
   struct TACInstrList body_instrs = stmt_to_TAC(func_name, body);
 
   struct TACInstrList condition_instrs = tac_instr_list(NULL);
@@ -1480,6 +1507,7 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
 
   // call all cleanup functions for variables going out of scope here
   if (idents == NULL) {
+    active_cleanup_count = enclosing_cleanup_count;
     return instrs;
   }
   for (size_t i = 0; i < idents->size; ++i){
@@ -1506,6 +1534,7 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
       }
     }
   }
+  active_cleanup_count = enclosing_cleanup_count;
   return instrs;
 }
 
@@ -1666,6 +1695,88 @@ struct TACInstrList relational_to_TAC(struct Slice* func_name,
   result->val = dst;
 
   return instrs;
+}
+
+struct TACInstrList call_to_TAC(struct Slice* func_name, struct Expr* expr, struct ExprResult* result, bool is_tail_call) {
+  struct Val* args = NULL;
+  size_t num_args = 0;
+  struct TACInstrList arg_instrs = args_to_TAC(func_name, expr->expr.fun_call_expr.args, &args, &num_args);
+
+  struct Val* dst = NULL;
+  if (expr->value_type->type != VOID_TYPE && !is_tail_call) {
+    dst = make_temp(func_name, expr->value_type);
+  }
+
+  struct Expr* func_expr = expr->expr.fun_call_expr.func;
+  struct Type* func_expr_type = func_expr->value_type;
+  bool is_direct_call = false;
+  if (func_expr->type == VAR) {
+    struct SymbolEntry* entry = symbol_table_get(global_symbol_table,
+                                                 func_expr->expr.var_expr.name);
+    if (entry != NULL) {
+      func_expr_type = entry->type;
+      func_expr->value_type = entry->type;
+      if (entry->type->type == FUN_TYPE) {
+        is_direct_call = true;
+      }
+    }
+  }
+  if (is_direct_call) {
+    // normal call
+
+    // AST:
+    // func(arg0, arg1, ...)
+    // TAC:
+    // <arg0>, <arg1>, ...
+    // Call func -> dst
+    struct TACInstr* call_instr = tac_instr_create(is_tail_call ? TACTAIL_CALL : TACCALL);
+    call_instr->instr.tac_call.func_name = func_expr->expr.var_expr.name;
+    call_instr->instr.tac_call.dst = dst;
+    call_instr->instr.tac_call.args = args;
+    call_instr->instr.tac_call.num_args = num_args;
+
+    struct TACInstrList instrs = tac_instr_list(NULL);
+    concat_TAC_instrs(&instrs, arg_instrs);
+    concat_TAC_instrs(&instrs, tac_instr_list(call_instr));
+
+    if (result != NULL) {
+      result->type = PLAIN_OPERAND;
+      result->val = dst;
+    }
+    return instrs;
+  } else {
+    // indirect call
+    if (func_expr_type == NULL) {
+      tac_error_at(expr->loc, "indirect call missing callee type");
+      return tac_instr_list(NULL);
+    }
+
+    // AST:
+    // func(arg0, arg1, ...)
+    // TAC:
+    // tmp <- <func>
+    // <arg0>, <arg1>, ...
+    // Call tmp -> dst
+    struct Val* tmp = make_temp(func_name, func_expr_type);
+    struct TACInstrList func_instrs = expr_to_TAC_convert(func_name, func_expr, tmp);
+
+    struct TACInstr* call_instr = tac_instr_create(is_tail_call ? TACTAIL_CALL_INDIRECT : TACCALL_INDIRECT);
+    call_instr->instr.tac_call_indirect.func = tmp;
+    call_instr->instr.tac_call_indirect.dst = dst;
+    call_instr->instr.tac_call_indirect.args = args;
+    call_instr->instr.tac_call_indirect.num_args = num_args;
+
+    struct TACInstrList instrs = tac_instr_list(NULL);
+    concat_TAC_instrs(&instrs, func_instrs);
+    concat_TAC_instrs(&instrs, arg_instrs);
+    concat_TAC_instrs(&instrs, tac_instr_list(call_instr));
+
+    if (result != NULL) {
+      result->type = PLAIN_OPERAND;
+      result->val = dst;
+    }
+    return instrs;
+  }
 }
 
 // Lower an expression and ensure the result is a plain operand.
@@ -2517,81 +2628,7 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
       return tac_instr_list(NULL);
     }
     case FUNCTION_CALL: {
-      struct Val* args = NULL;
-      size_t num_args = 0;
-      struct TACInstrList arg_instrs = args_to_TAC(func_name, expr->expr.fun_call_expr.args, &args, &num_args);
-
-      struct Val* dst = NULL;
-      if (expr->value_type->type != VOID_TYPE) {
-        dst = make_temp(func_name, expr->value_type);
-      }
-
-      struct Expr* func_expr = expr->expr.fun_call_expr.func;
-      struct Type* func_expr_type = func_expr->value_type;
-      bool is_direct_call = false;
-      if (func_expr->type == VAR) {
-        struct SymbolEntry* entry = symbol_table_get(global_symbol_table,
-                                                     func_expr->expr.var_expr.name);
-        if (entry != NULL) {
-          func_expr_type = entry->type;
-          func_expr->value_type = entry->type;
-          if (entry->type->type == FUN_TYPE) {
-            is_direct_call = true;
-          }
-        }
-      }
-      if (is_direct_call) {
-        // normal call
-
-        // AST:
-        // func(arg0, arg1, ...)
-        // TAC:
-        // <arg0>, <arg1>, ...
-        // Call func -> dst
-        struct TACInstr* call_instr = tac_instr_create(TACCALL);
-        call_instr->instr.tac_call.func_name = func_expr->expr.var_expr.name;
-        call_instr->instr.tac_call.dst = dst;
-        call_instr->instr.tac_call.args = args;
-        call_instr->instr.tac_call.num_args = num_args;
-
-        struct TACInstrList instrs = tac_instr_list(NULL);
-        concat_TAC_instrs(&instrs, arg_instrs);
-        concat_TAC_instrs(&instrs, tac_instr_list(call_instr));
-
-        result->type = PLAIN_OPERAND;
-        result->val = dst;
-        return instrs;
-      } else {
-        // indirect call
-        if (func_expr_type == NULL) {
-          tac_error_at(expr->loc, "indirect call missing callee type");
-          return tac_instr_list(NULL);
-        }
-
-        // AST:
-        // func(arg0, arg1, ...)
-        // TAC:
-        // tmp <- <func>
-        // <arg0>, <arg1>, ...
-        // Call tmp -> dst
-        struct Val* tmp = make_temp(func_name, func_expr_type);
-        struct TACInstrList func_instrs = expr_to_TAC_convert(func_name, func_expr, tmp);
-
-        struct TACInstr* call_instr = tac_instr_create(TACCALL_INDIRECT);
-        call_instr->instr.tac_call_indirect.func = tmp;
-        call_instr->instr.tac_call_indirect.dst = dst;
-        call_instr->instr.tac_call_indirect.args = args;
-        call_instr->instr.tac_call_indirect.num_args = num_args;
-
-        struct TACInstrList instrs = tac_instr_list(NULL);
-        concat_TAC_instrs(&instrs, func_instrs);
-        concat_TAC_instrs(&instrs, arg_instrs);
-        concat_TAC_instrs(&instrs, tac_instr_list(call_instr));
-
-        result->type = PLAIN_OPERAND;
-        result->val = dst;
-        return instrs;
-      }
+      return call_to_TAC(func_name, expr, result, false);
     }
     case CAST: {
       struct CastExpr* cast_expr = &expr->expr.cast_expr;
@@ -2843,6 +2880,7 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
       }
 
       struct TACInstrList instrs = tac_instr_list(NULL);
+      size_t enclosing_cleanup_count = active_cleanup_count;
 
       for (struct Block* cur = stmt_expr->block; cur != NULL; cur = cur->next) {
         // loop though each item here instead of doing it recursively,
@@ -2885,6 +2923,9 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
           }
           case DCLR_ITEM: {
             item_instrs = local_dclr_to_TAC(func_name, cur->item->item.dclr);
+            if (cur->item->item.dclr->type == VAR_DCLR) {
+              note_cleanup_declaration(&cur->item->item.dclr->dclr.var_dclr);
+            }
             if (debug_info_enabled) {
               const char* loc = declaration_loc(cur->item->item.dclr);
               if (loc != NULL) {
@@ -2909,6 +2950,7 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
         concat_TAC_instrs(&instrs, item_instrs);
       }
 
+      active_cleanup_count = enclosing_cleanup_count;
       return instrs;
     }
     case DOT_EXPR: {
@@ -3068,6 +3110,16 @@ bool compare_instrs(struct TACInstr* instr1, struct TACInstr* instr2) {
               instr1->instr.tac_call.args == instr2->instr.tac_call.args &&
               instr1->instr.tac_call.num_args == instr2->instr.tac_call.num_args);
     case TACCALL_INDIRECT:
+      return (instr1->instr.tac_call_indirect.func == instr2->instr.tac_call_indirect.func &&
+              instr1->instr.tac_call_indirect.dst == instr2->instr.tac_call_indirect.dst &&
+              instr1->instr.tac_call_indirect.args == instr2->instr.tac_call_indirect.args &&
+              instr1->instr.tac_call_indirect.num_args == instr2->instr.tac_call_indirect.num_args);
+    case TACTAIL_CALL:
+      return (instr1->instr.tac_call.func_name == instr2->instr.tac_call.func_name &&
+              instr1->instr.tac_call.dst == instr2->instr.tac_call.dst &&
+              instr1->instr.tac_call.args == instr2->instr.tac_call.args &&
+              instr1->instr.tac_call.num_args == instr2->instr.tac_call.num_args);
+    case TACTAIL_CALL_INDIRECT:
       return (instr1->instr.tac_call_indirect.func == instr2->instr.tac_call_indirect.func &&
               instr1->instr.tac_call_indirect.dst == instr2->instr.tac_call_indirect.dst &&
               instr1->instr.tac_call_indirect.args == instr2->instr.tac_call_indirect.args &&

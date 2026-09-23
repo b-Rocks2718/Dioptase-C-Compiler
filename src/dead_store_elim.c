@@ -32,6 +32,8 @@ static bool instr_dead(struct TACInstr* instr) {
     case TACBOUNDARY:
     case TACCALL:
     case TACCALL_INDIRECT: 
+    case TACTAIL_CALL:
+    case TACTAIL_CALL_INDIRECT:
     case TACSTORE: 
     case TACCOPY_TO_OFFSET:
     case TACVOLATILE_READ:
@@ -256,6 +258,44 @@ static void transfer(struct CFGNode* node, struct SliceList end_live_vars,
         if (dst != NULL && dst->val_type == VARIABLE) {
           slice_list_remove(&current_live_vars, dst->val.var_name);
         }
+        if (instr->instr.tac_call_indirect.func->val_type == VARIABLE && 
+            !slice_list_contains(current_live_vars, instr->instr.tac_call_indirect.func->val.var_name)) {
+          slice_list_add(&current_live_vars, instr->instr.tac_call_indirect.func->val.var_name);
+        }
+        for (unsigned i = 0; i < instr->instr.tac_call_indirect.num_args; i++) {
+          struct Val arg = instr->instr.tac_call_indirect.args[i];
+          if (arg.val_type == VARIABLE && 
+              !slice_list_contains(current_live_vars, arg.val.var_name)) {
+            slice_list_add(&current_live_vars, arg.val.var_name);
+          }
+        }
+        for (struct SliceListNode* node = aliased_vars.head; node != NULL; node = node->next) {
+          struct Slice* aliased_var = node->slice;
+          if (!slice_list_contains(current_live_vars, aliased_var)) {
+            slice_list_add(&current_live_vars, aliased_var);
+          }
+        }
+        break;
+      }
+      case TACTAIL_CALL: {
+        // don't kill any variables, generate every argument and aliased variable.
+        for (unsigned i = 0; i < instr->instr.tac_call.num_args; i++) {
+          struct Val arg = instr->instr.tac_call.args[i];
+          if (arg.val_type == VARIABLE && 
+              !slice_list_contains(current_live_vars, arg.val.var_name)) {
+            slice_list_add(&current_live_vars, arg.val.var_name);
+          }
+        }
+        for (struct SliceListNode* node = aliased_vars.head; node != NULL; node = node->next) {
+          struct Slice* aliased_var = node->slice;
+          if (!slice_list_contains(current_live_vars, aliased_var)) {
+            slice_list_add(&current_live_vars, aliased_var);
+          }
+        }
+        break;
+      }
+      case TACTAIL_CALL_INDIRECT: {
+        // don't kill any variables, generate every argument, the function pointer, and every aliased variable.
         if (instr->instr.tac_call_indirect.func->val_type == VARIABLE && 
             !slice_list_contains(current_live_vars, instr->instr.tac_call_indirect.func->val.var_name)) {
           slice_list_add(&current_live_vars, instr->instr.tac_call_indirect.func->val.var_name);

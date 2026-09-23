@@ -588,7 +588,7 @@ int main(int argc, const char *const *const argv) {
     struct AsmProg* asm_prog = NULL;
 
     if (run_full || print_tac || print_cfg_graphs || print_asm || interpret_tac) {
-        tac_prog = prog_to_TAC(prog, emit_debug_info);
+        tac_prog = prog_to_TAC(prog, emit_debug_info, optimization_options.tail_call_opt);
 
         optimize(tac_prog, optimization_options);
 
