@@ -244,9 +244,9 @@ static bool constant_arithmetic_shift_right(uint64_t value,
 }
 
 // Fold constant expressions throughout a TAC body.
-struct TACInstr* constant_fold(struct TACInstr* body){
+struct TACInstrList constant_fold(struct TACInstrList body){
   struct TACInstr* prev = NULL;
-  struct TACInstr* curr = body;
+  struct TACInstr* curr = body.head;
   while (curr != NULL) {
     struct TACInstr* next = curr->next;
     struct ConstantFoldResult fold = constant_fold_instr(curr);
@@ -258,7 +258,7 @@ struct TACInstr* constant_fold(struct TACInstr* body){
       case CONSTANT_FOLD_REPLACE: {
         struct TACInstr* replacement = fold.replacement;
         if (prev == NULL) {
-          body = replacement;
+          body.head = replacement;
         } else {
           prev->next = replacement;
         }
@@ -268,7 +268,7 @@ struct TACInstr* constant_fold(struct TACInstr* body){
       }
       case CONSTANT_FOLD_DELETE:
         if (prev == NULL) {
-          body = next;
+          body.head = next;
         } else {
           prev->next = next;
         }
@@ -276,6 +276,8 @@ struct TACInstr* constant_fold(struct TACInstr* body){
     }
     curr = next;
   }
+  // prev is the last surviving instruction (NULL if everything was deleted)
+  body.last = prev;
   return body;
 }
 

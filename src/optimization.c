@@ -75,28 +75,27 @@ void optimize(struct TACProg* prog, struct OptimizationOptions options) {
   }
   for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
     if (top->type == FUNC) {
-      struct TACInstr* body = top->top.tac_func.body;
-      top->top.tac_func.body = optimize_body(body, options);
+      top->top.tac_func.body = optimize_body(top->top.tac_func.body, options);
     }
   }
 }
 
 // Run the enabled optimization passes over one function body.
-struct TACInstr* optimize_body(struct TACInstr* body, struct OptimizationOptions options) {
-  if (body == NULL) {
+struct TACInstrList optimize_body(struct TACInstrList body, struct OptimizationOptions options) {
+  if (body.head == NULL) {
     return body;
   }
 
   while (true) {
-    struct SliceList aliased_vars = get_aliased_vars(body);
-    struct SliceList static_vars = get_static_vars(body);
+    struct SliceList aliased_vars = get_aliased_vars(body.head);
+    struct SliceList static_vars = get_static_vars(body.head);
 
-    struct TACInstr* post_const_fold_body = body;
+    struct TACInstrList post_const_fold_body = body;
     if (options.constant_fold) {
       post_const_fold_body = constant_fold(body);
     }
 
-    struct CFG* cfg = build_cfg(post_const_fold_body);
+    struct CFG* cfg = build_cfg(post_const_fold_body.head);
 
     if (options.dead_code_elim) {
       cfg = dead_code_elim(cfg);
@@ -110,8 +109,8 @@ struct TACInstr* optimize_body(struct TACInstr* body, struct OptimizationOptions
       cfg = dead_store_elim(cfg, static_vars, aliased_vars);
     }
 
-    struct TACInstr* new_body = rebuild_body(cfg);
-    if (compare_bodies(new_body, body)) {
+    struct TACInstrList new_body = rebuild_body(cfg);
+    if (compare_bodies(new_body.head, body.head)) {
       return new_body;
     }
     body = new_body;

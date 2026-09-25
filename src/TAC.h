@@ -21,11 +21,19 @@ enum TopLevelType {
   STATIC_CONST,
 };
 
+// Own a TAC instruction list with O(1) append via an explicit tail pointer.
+// Empty lists have head == last == NULL. Non-empty lists have last as the
+// final node of the head-linked chain (last->next == NULL).
+struct TACInstrList {
+  struct TACInstr* head;
+  struct TACInstr* last;
+};
+
 // Store function name, linkage, parameters, and TAC body.
 struct TACFunc {
   struct Slice* name;
   bool global;
-  struct TACInstr* body;
+  struct TACInstrList body;
   struct Slice** params;
   size_t num_params;
 };
@@ -303,14 +311,6 @@ struct TACInstr {
   struct ReachingCopyList reaching_copies;
   struct SliceList live_vars; // live variables at this instruction
   struct TACInstr* next;
-};
-
-// Own a TAC instruction list with O(1) append via an explicit tail pointer.
-// Empty lists have head == last == NULL. Non-empty lists have last as the
-// final node of the head-linked chain (last->next == NULL).
-struct TACInstrList {
-  struct TACInstr* head;
-  struct TACInstr* last;
 };
 
 // Classify whether an expression result is a value or aggregate location.

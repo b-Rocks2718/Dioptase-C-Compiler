@@ -80,14 +80,16 @@ static void tac_init_instr(struct TACInstr* instr, enum TACInstrType type) {
 // Clears the node and fills the function variant.
 static void tac_init_func(struct TopLevel* top,
                           struct Slice* name,
-                          struct TACInstr* body,
+                          struct TACInstr* body_head,
+                          struct TACInstr* body_last,
                           struct Slice** params,
                           size_t num_params) {
   memset(top, 0, sizeof(*top));
   top->type = FUNC;
   top->top.tac_func.name = name;
   top->top.tac_func.global = true;
-  top->top.tac_func.body = body;
+  top->top.tac_func.body.head = body_head;
+  top->top.tac_func.body.last = body_last;
   top->top.tac_func.params = params;
   top->top.tac_func.num_params = num_params;
   top->next = NULL;
@@ -125,7 +127,7 @@ static bool tac_test_return_const(void) {
   ret_instr.instr.tac_return.src = &ret_val;
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &ret_instr, NULL, 0);
+  tac_init_func(&main_func, &main_name, &ret_instr, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -199,7 +201,7 @@ static bool tac_test_arithmetic(void) {
   tac_link_instr(&mul_instr, &ret_instr);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &copy_a, NULL, 0);
+  tac_init_func(&main_func, &main_name, &copy_a, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -254,7 +256,7 @@ static bool tac_test_cond_jump(void) {
   tac_link_instr(&label, &ret_true);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &cond_jump, NULL, 0);
+  tac_init_func(&main_func, &main_name, &cond_jump, &ret_true, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -305,7 +307,7 @@ static bool tac_test_call(void) {
 
   struct Slice* add_params[kArgCount] = { &p_name, &q_name };
   struct TopLevel add_func;
-  tac_init_func(&add_func, &add_name, &add_bin, add_params, kArgCount);
+  tac_init_func(&add_func, &add_name, &add_bin, &add_ret, add_params, kArgCount);
 
   struct Val call_args[kArgCount];
   call_args[0] = tac_val_const(kArg0, &kTestIntType);
@@ -323,7 +325,7 @@ static bool tac_test_call(void) {
   tac_link_instr(&call_instr, &main_ret);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &call_instr, NULL, 0);
+  tac_init_func(&main_func, &main_name, &call_instr, &main_ret, NULL, 0);
 
   add_func.next = &main_func;
 
@@ -388,7 +390,7 @@ static bool tac_test_memory_ops(void) {
   tac_link_instr(&load, &ret_instr);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &copy_x, NULL, 0);
+  tac_init_func(&main_func, &main_name, &copy_x, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -480,7 +482,7 @@ static bool tac_test_unary_ops(void) {
   tac_link_instr(&add_1, &ret_instr);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &copy_a, NULL, 0);
+  tac_init_func(&main_func, &main_name, &copy_a, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -529,7 +531,7 @@ static bool tac_test_jump(void) {
   tac_link_instr(&label_instr, &ret_true);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &jump_instr, NULL, 0);
+  tac_init_func(&main_func, &main_name, &jump_instr, &ret_true, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -605,7 +607,7 @@ static bool tac_test_copy_to_offset(void) {
   tac_link_instr(&load, &ret_instr);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &copy_arr0, NULL, 0);
+  tac_init_func(&main_func, &main_name, &copy_arr0, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -623,7 +625,7 @@ static bool tac_expect_folded_constant(const char* name,
                                        struct Val* expected_dst,
                                        struct Type* expected_type,
                                        uint64_t expected_value) {
-  struct TACInstr* folded = constant_fold(instr);
+  struct TACInstr* folded = constant_fold(tac_instr_list(instr)).head;
   if (folded != NULL && folded != instr && folded->type == TACCOPY &&
       folded->instr.tac_copy.dst == expected_dst &&
       folded->instr.tac_copy.src != NULL &&
@@ -680,7 +682,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_binary.dst = &int_dst;
   instr.instr.tac_binary.src1 = &one;
   instr.instr.tac_binary.src2 = &variable_right;
-  struct TACInstr* folded_move = constant_fold(&instr);
+  struct TACInstr* folded_move = constant_fold(tac_instr_list(&instr)).head;
   if (folded_move == NULL || folded_move == &instr ||
       folded_move->type != TACCOPY ||
       folded_move->instr.tac_copy.dst != &int_dst ||
@@ -735,7 +737,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_binary.src1 = &one;
   struct Val zero = tac_val_const(0, &kTestIntType);
   instr.instr.tac_binary.src2 = &zero;
-  if (constant_fold(&instr) != &instr) {
+  if (constant_fold(tac_instr_list(&instr)).head != &instr) {
     printf("constant-folding test division by zero failed: undefined "
            "operation must remain unfolded\n");
     ok = false;
@@ -746,7 +748,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_binary.dst = &int_dst;
   instr.instr.tac_binary.src1 = &int_min_bits;
   instr.instr.tac_binary.src2 = &minus_one_bits;
-  if (constant_fold(&instr) != &instr) {
+  if (constant_fold(tac_instr_list(&instr)).head != &instr) {
     printf("constant-folding test signed division overflow failed: undefined "
            "operation must remain unfolded\n");
     ok = false;
@@ -757,7 +759,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_cond_jump.src2 = &zero;
   instr.instr.tac_cond_jump.condition = CondL;
   instr.instr.tac_cond_jump.label = &target_name;
-  struct TACInstr* folded_jump = constant_fold(&instr);
+  struct TACInstr* folded_jump = constant_fold(tac_instr_list(&instr)).head;
   if (folded_jump == NULL || folded_jump == &instr ||
       folded_jump->type != TACJUMP ||
       folded_jump->instr.tac_jump.label != &target_name) {
@@ -775,10 +777,13 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_cond_jump.label = &target_name;
   return_after_jump.instr.tac_return.src = &one;
   tac_link_instr(&instr, &return_after_jump);
-  struct TACInstr* folded_fallthrough = constant_fold(&instr);
-  if (folded_fallthrough != &return_after_jump) {
+  struct TACInstrList fallthrough_body = {&instr, &return_after_jump};
+  struct TACInstrList folded_fallthrough = constant_fold(fallthrough_body);
+  if (folded_fallthrough.head != &return_after_jump ||
+      folded_fallthrough.last != &return_after_jump) {
     printf("constant-folding test unsigned conditional jump failed: expected "
-           "the never-taken jump to be removed\n");
+           "the never-taken jump to be removed, leaving the return as both "
+           "head and tail\n");
     ok = false;
   }
 
@@ -1038,8 +1043,9 @@ static bool tac_test_cfg_rebuild(void) {
     return false;
   }
 
-  struct TACInstr* first = rebuild_body(cfg);
-  struct TACInstr* second = rebuild_body(cfg);
+  struct TACInstrList first_list = rebuild_body(cfg);
+  struct TACInstr* first = first_list.head;
+  struct TACInstr* second = rebuild_body(cfg).head;
   if (!compare_bodies(&copy, first) || !compare_bodies(first, second)) {
     printf("CFG rebuild test failed: repeated rebuilds changed TAC instruction order\n");
     ok = false;
@@ -1050,7 +1056,7 @@ static bool tac_test_cfg_rebuild(void) {
   }
 
   struct CFG* second_cfg = build_cfg(first);
-  struct TACInstr* second_round_trip = rebuild_body(second_cfg);
+  struct TACInstr* second_round_trip = rebuild_body(second_cfg).head;
   if (!compare_bodies(first, second_round_trip)) {
     printf("CFG rebuild test failed: a second TAC-to-CFG-to-TAC round trip "
            "changed the body\n");
@@ -1068,7 +1074,8 @@ static bool tac_test_cfg_rebuild(void) {
     instr_count++;
   }
   if (instr_count != kExpectedInstrCount || first == NULL ||
-      rebuilt_tail == NULL || rebuilt_tail->next != NULL) {
+      rebuilt_tail == NULL || rebuilt_tail->next != NULL ||
+      first_list.last != rebuilt_tail) {
     printf("CFG rebuild test failed: expected %u instructions in a well-formed list\n",
            kExpectedInstrCount);
     ok = false;

@@ -677,7 +677,7 @@ struct TopLevel* func_to_TAC(struct FunctionDclr* declaration) {
   ret_instr->instr.tac_return.src = tac_make_const(0, tac_builtin_type(INT_TYPE)); // default return 0
 
   concat_TAC_instrs(&body, tac_instr_list(ret_instr));
-  top_level->top.tac_func.body = body.head;
+  top_level->top.tac_func.body = body;
 
   return top_level;
 }

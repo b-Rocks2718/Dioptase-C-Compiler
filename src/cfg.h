@@ -54,7 +54,7 @@ struct CFG* build_cfg(struct TACInstr* body);
 void print_cfg(const struct CFG* cfg);
 
 // Rebuild a linear TAC body from the CFG's current basic blocks.
-struct TACInstr* rebuild_body(struct CFG* cfg);
+struct TACInstrList rebuild_body(struct CFG* cfg);
 
 // Append node at the end of list. An empty list has both head and tail NULL.
 void cfg_node_list_append(struct CFGNodeList* list, struct CFGNode* node);

@@ -941,7 +941,7 @@ void print_cfg(const struct CFG* cfg) {
 // Rebuild a detached TAC function body from basic blocks in layout order. The
 // copies keep CFG block lists independent, so rebuilding does not consume or
 // otherwise mutate the graph.
-struct TACInstr* rebuild_body(struct CFG* cfg) {
+struct TACInstrList rebuild_body(struct CFG* cfg) {
   if (cfg == NULL || cfg->nodes == NULL) {
     fprintf(stderr,
             "CFG error: cannot rebuild a TAC body from a null or uninitialized CFG\n");
@@ -984,7 +984,7 @@ struct TACInstr* rebuild_body(struct CFG* cfg) {
     }
   }
 
-  return rebuilt.head;
+  return rebuilt;
 }
 
 // Reset all marked flags in the CFG for traversal.
@@ -1005,8 +1005,8 @@ struct CFG* repair_cfg(struct CFG* cfg){
 
   // rebuild_body does not use CFG edges, 
   // so this is safe even if the CFG has dangling edges.
-  struct TACInstr* instrs = rebuild_body(cfg);
+  struct TACInstrList instrs = rebuild_body(cfg);
 
   // instrs is now valid, so we can safely rebuild the CFG from it
-  return build_cfg(instrs);
+  return build_cfg(instrs.head);
 }

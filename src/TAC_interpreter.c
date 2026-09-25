@@ -971,13 +971,13 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
   }
 
   struct TacFrame frame;
-  tac_frame_init(&frame, interp, fn->body);
+  tac_frame_init(&frame, interp, fn->body.head);
 
   for (size_t i = 0; i < num_args; i++) {
     tac_write_var(interp, &frame, fn->params[i], args[i]);
   }
 
-  struct TACInstr* pc = fn->body;
+  struct TACInstr* pc = fn->body.head;
   while (pc != NULL) {
     switch (pc->type) {
       case TACRETURN: {
