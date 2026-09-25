@@ -883,7 +883,10 @@ struct Expr* parse_unary(){
     const char* op_loc = (current - 1)->start;
     struct Expr* inner = parse_factor();
     if (inner == NULL) {
-      current = old_current - 1;
+      // old_current was saved before the operator, so this un-consumes
+      // exactly the operator. Backing up further would re-expose an earlier
+      // token (e.g. the '(' in "(-)3"), letting the caller re-parse it forever.
+      current = old_current;
       return NULL;
     }
     struct UnaryExpr expr = {op, inner};

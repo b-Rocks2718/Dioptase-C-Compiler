@@ -110,22 +110,20 @@ static struct TACInstr* constant_instr_create(enum TACInstrType type) {
     return NULL;
   }
   instr->type = type;
-  instr->reaching_copies.head = NULL;
-  instr->reaching_copies.last = NULL;
-  instr->live_vars.head = NULL;
-  instr->live_vars.last = NULL;
   instr->next = NULL;
   return instr;
 }
 
 // Allocate a typed constant value for a folded instruction.
+// Operand Vals are shared by every later copy of the instruction, including
+// the final TAC body, so they must outlive the optimizer's scratch arena.
 static struct Val* constant_value_create(uint64_t value, struct Type* type) {
   uint64_t normalized;
   if (!normalize_constant(value, type, &normalized)) {
     return NULL;
   }
 
-  struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct Val* val = (struct Val*)arena_alloc_persistent(sizeof(struct Val));
   if (val == NULL) {
     return NULL;
   }

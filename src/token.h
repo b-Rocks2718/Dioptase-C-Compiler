@@ -101,15 +101,13 @@ union TokenVariant {
   struct Slice* ident_name;
 };
 
-// Store token kind, payload, and its source span.
+// Store token kind, payload, and where the token starts in the preprocessed
+// text. Identifier and string payload slices are owned by the TokenArray.
 struct Token {
   enum TokenType type;
   union TokenVariant data;
   const char* start;
-  size_t len;
 };
-
-void free_token(struct Token* token);
 
 void print_token(struct Token token);
 

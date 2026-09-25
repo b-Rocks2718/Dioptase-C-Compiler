@@ -18,6 +18,8 @@
 
 static char const * program;
 static char const * current;
+// Token array being filled by lex(); owns identifier and string payload slices.
+static struct TokenArray* lex_tokens;
 // Define numeric literal bounds for target integer sizes.
 static const uint64_t kIntBits = 32;
 static const uint64_t kLongBits = 64;
@@ -218,9 +220,8 @@ static bool consume_identifier_or_keyword(struct Token* token) {
     size_t len = (size_t)(current - start);
     token->type = classify_identifier(start, len);
     token->start = start;
-    token->len = len;
     if (token->type == IDENT) {
-      struct Slice* slice = malloc(sizeof(struct Slice));
+      struct Slice* slice = token_array_new_slice(lex_tokens, start, len);
       if (slice == NULL) {
         fprintf(stderr,
                 "Lexer memory error: unable to allocate identifier slice at "
@@ -231,8 +232,6 @@ static bool consume_identifier_or_keyword(struct Token* token) {
         lexer_failed = true;
         return false;
       }
-      slice->start = start;
-      slice->len = len;
       token->data.ident_name = slice;
     }
     return true;
@@ -326,7 +325,6 @@ static bool consume_literal(struct Token* token) {
       }
     }
     token->start = start;
-    token->len = (size_t)(current - start);
     return true;
   } else if (*current == '\'') {
     const char* start = current;
@@ -422,7 +420,6 @@ static bool consume_literal(struct Token* token) {
 
     token->start = start;
     token->type = CHAR_LIT;
-    token->len = (size_t)(current - start);
     return true;
   } else if (*current == '\"') {
     const char* start = current;
@@ -481,13 +478,21 @@ static bool consume_literal(struct Token* token) {
 
     current++;
 
-    struct Slice* slice = malloc(sizeof(struct Slice));
-    slice->len = (size_t)(current - start - 2);
-    slice->start = start + 1;
+    struct Slice* slice = token_array_new_slice(lex_tokens, start + 1,
+                                                (size_t)(current - start - 2));
+    if (slice == NULL) {
+      fprintf(stderr,
+              "Lexer memory error: unable to allocate string literal slice at "
+              "%s:%zu:%zu\n",
+              source_filename_for_ptr(start),
+              source_location_from_ptr(start).line,
+              source_location_from_ptr(start).column);
+      lexer_failed = true;
+      return false;
+    }
     token->data.string_val = slice;
     token->start = start;
     token->type = STRING_LIT;
-    token->len = (size_t)(current - start);
     return true;
 
   } else {
@@ -501,7 +506,6 @@ static struct Token* finish_punctuation(struct Token* token,
                                         size_t len) {
   token->type = type;
   token->start = current;
-  token->len = len;
   current += len;
   return token;
 }
@@ -576,24 +580,13 @@ static struct Token* consume_punctuation(struct Token* token) {
   }
 }
 
-// Consume the next available token.
-// Returns a heap-allocated Token or NULL if no token matches.
-static struct Token* consume_any(){
-  struct Token* token = malloc(sizeof(struct Token));
-  if (token == NULL) {
-    fprintf(stderr, "Lexer memory error: unable to allocate token\n");
-    lexer_failed = true;
-    return NULL;
-  }
-
+// Consume the next available token into *token.
+// Returns false if no token matches (end of input or a lexical error).
+static bool consume_any(struct Token* token){
   skip();
-  if (consume_identifier_or_keyword(token)) return token;
-  struct Token* punctuation = consume_punctuation(token);
-  if (punctuation != NULL) return punctuation;
-  if (consume_literal(token)) return token;
-
-  free(token);
-  return NULL;
+  if (consume_identifier_or_keyword(token)) return true;
+  if (consume_punctuation(token) != NULL) return true;
+  return consume_literal(token);
 }
 
 // Tokenize a preprocessed source buffer into a TokenArray.
@@ -606,12 +599,13 @@ struct TokenArray* lex(char* prog){
   lexer_failed = false;
 
   struct TokenArray* result = create_token_array(1000);
+  lex_tokens = result;
 
-  struct Token* current_token = consume_any();
-  while (current_token != NULL){    
-    token_array_append(result, current_token);
-    current_token = consume_any();
+  struct Token current_token;
+  while (consume_any(&current_token)){
+    token_array_append(result, &current_token);
   }
+  lex_tokens = NULL;
 
   if (lexer_failed) {
     destroy_token_array(result);
@@ -624,5 +618,6 @@ struct TokenArray* lex(char* prog){
     return NULL;
   }
 
+  token_array_shrink(result);
   return result;
 }

@@ -509,6 +509,9 @@ int main(int argc, const char *const *const argv) {
        arena_destroy();
        return 2;
     };
+    // The AST keeps only payload slices and source pointers, not tokens, so
+    // the token entries can go now; their slices live until the final cleanup.
+    token_array_release_tokens(tokens);
 
     if (print_ast)  {
         print_prog(prog);

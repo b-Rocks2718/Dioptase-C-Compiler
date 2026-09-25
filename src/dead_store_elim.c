@@ -565,16 +565,17 @@ static void reverse_block_body(struct TACInstrList* body) {
 }
 
 // Return node's stable position in cfg->nodes. CFG edges store pointers, while
-// pass-local arrays are indexed by this position.
+// pass-local arrays are indexed by this position. dead_store_elim numbers the
+// nodes on entry, so this is O(1); the check still rejects an edge to a node
+// that is not in this graph.
 static unsigned cfg_node_index(const struct CFG* cfg, const struct CFGNode* node) {
-  for (unsigned i = 0; i < cfg->num_nodes; ++i) {
-    if (cfg->nodes[i] == node) {
-      return i;
-    }
+  if (node->index < cfg->num_nodes && cfg->nodes[node->index] == node) {
+    return node->index;
   }
   fprintf(stderr,
           "Dead-store elimination error: CFG edge references a node outside "
-          "the current graph\n");
+          "the current graph (stale index %u, graph has %u nodes)\n",
+          node->index, cfg->num_nodes);
   exit(1);
 }
 
@@ -815,6 +816,7 @@ struct CFG* dead_store_elim(struct CFG* cfg,
   if (cfg == NULL || cfg->num_nodes <= 2) {
     return cfg;
   }
+  cfg_number_nodes(cfg);
 
   struct VariableIndex index;
   variable_index_init(&index);

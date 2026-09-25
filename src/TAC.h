@@ -304,12 +304,11 @@ union TACInstrVariant {
 };
 
 // Link one TAC instruction with the next instruction in its list.
-// reaching_copies is empty until copy-propagation analysis fills it.
+// Optimizer analyses keep their per-instruction facts in pass-local arrays,
+// so an instruction carries no analysis annotations.
 struct TACInstr {
   enum TACInstrType type;
   union TACInstrVariant instr;
-  struct ReachingCopyList reaching_copies;
-  struct SliceList live_vars; // live variables at this instruction
   struct TACInstr* next;
 };
 

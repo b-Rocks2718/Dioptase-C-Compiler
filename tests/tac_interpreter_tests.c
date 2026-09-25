@@ -69,10 +69,6 @@ static struct Val tac_val_var(struct Slice* name, struct Type* type) {
 static void tac_init_instr(struct TACInstr* instr, enum TACInstrType type) {
   memset(instr, 0, sizeof(*instr));
   instr->type = type;
-  instr->reaching_copies.head = NULL;
-  instr->reaching_copies.last = NULL;
-  instr->live_vars.head = NULL;
-  instr->live_vars.last = NULL;
   instr->next = NULL;
 }
 
@@ -1312,12 +1308,90 @@ static bool tac_test_get_aliased_vars(void) {
   return ok;
 }
 
+/*
+Copy propagation must rewrite call arguments copy-on-write.
+
+CFG instructions are shallow copies, so a call's argument array is shared
+with the body the CFG was built from. The optimizer's fixed-point check
+compares argument arrays by pointer, so rewriting the shared array in place
+both corrupts the earlier body and hides the change from that check.
+
+TAC:
+  x = a
+  r = f(x)
+  return r
+After copy propagation the CFG call must read f(a) through a new array while
+the original array still holds x.
+*/
+static bool tac_test_copy_prop_args_copy_on_write(void) {
+  struct Slice a_name = tac_slice_literal("a");
+  struct Slice x_name = tac_slice_literal("x");
+  struct Slice r_name = tac_slice_literal("r");
+  struct Slice f_name = tac_slice_literal("f");
+  struct Val a_val = tac_val_var(&a_name, &kTestIntType);
+  struct Val x_val = tac_val_var(&x_name, &kTestIntType);
+  struct Val r_val = tac_val_var(&r_name, &kTestIntType);
+  struct Val args[1];
+  args[0] = x_val;
+  struct TACInstr copy_instr;
+  struct TACInstr call_instr;
+  struct TACInstr ret_instr;
+  struct SliceList no_aliased = {NULL, NULL};
+  bool ok = true;
+
+  arena_init(1024);
+  tac_init_instr(&copy_instr, TACCOPY);
+  copy_instr.instr.tac_copy.dst = &x_val;
+  copy_instr.instr.tac_copy.src = &a_val;
+  tac_init_instr(&call_instr, TACCALL);
+  call_instr.instr.tac_call.func_name = &f_name;
+  call_instr.instr.tac_call.dst = &r_val;
+  call_instr.instr.tac_call.args = args;
+  call_instr.instr.tac_call.num_args = 1;
+  tac_init_instr(&ret_instr, TACRETURN);
+  ret_instr.instr.tac_return.src = &r_val;
+  tac_link_instr(&copy_instr, &call_instr);
+  tac_link_instr(&call_instr, &ret_instr);
+
+  struct CFG* cfg = copy_prop(build_cfg(&copy_instr), no_aliased);
+  struct TACInstr* rewritten = NULL;
+  for (unsigned i = 0; i < cfg->num_nodes; i++) {
+    for (struct TACInstr* instr = cfg->nodes[i]->body.head; instr != NULL; instr = instr->next) {
+      if (instr->type == TACCALL) {
+        rewritten = instr;
+      }
+    }
+  }
+
+  if (!compare_slice_to_slice(args[0].val.var_name, &x_name)) {
+    printf("copy_prop args test failed: the shared argument array was modified in place; "
+           "earlier bodies and the fixed-point check would see the rewrite\n");
+    ok = false;
+  }
+  if (rewritten == NULL) {
+    printf("copy_prop args test failed: the call instruction disappeared from the CFG\n");
+    ok = false;
+  } else if (rewritten->instr.tac_call.args == args) {
+    printf("copy_prop args test failed: a rewritten call must use a new argument array "
+           "so compare_instrs detects the change\n");
+    ok = false;
+  } else if (!compare_slice_to_slice(rewritten->instr.tac_call.args[0].val.var_name, &a_name)) {
+    printf("copy_prop args test failed: x = a reaches the call, so f(x) should become f(a)\n");
+    ok = false;
+  }
+
+  arena_destroy();
+  return ok;
+}
+
 // Run all TAC interpreter tests.
 // Returns 0 on success and non-zero on failure.
 int main(void) {
   bool ok = true;
   printf("- tac_test_copy_is_type_safe\n");
   ok = tac_test_copy_is_type_safe() && ok;
+  printf("- tac_test_copy_prop_args_copy_on_write\n");
+  ok = tac_test_copy_prop_args_copy_on_write() && ok;
   printf("- tac_test_get_aliased_vars\n");
   ok = tac_test_get_aliased_vars() && ok;
   printf("- tac_test_slice_list\n");
