@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <stdarg.h>
+#include <string.h>
 
 #include "slice.h"
 #include "token.h"
@@ -23,8 +24,6 @@ static const uint64_t kLongBits = 64;
 static const uint64_t kIntMax = (UINT64_C(1) << (kIntBits - 1)) - 1;
 static const uint64_t kUIntMax = (UINT64_C(1) << kIntBits) - 1;
 static const uint64_t kLongMax = (UINT64_C(1) << (kLongBits - 1)) - 1;
-static char const * last_token_start;
-static size_t last_token_len;
 // Distinguish a diagnosed malformed literal from an ordinary token miss.
 // Reset at the start of every lex() invocation.
 static bool lexer_failed;
@@ -115,11 +114,10 @@ static void skip() {
   }
 }
 
-// Consume a fixed string token at the current cursor.
-// Returns true on match and updates last_token_* metadata.
+// Consume a fixed string at the current cursor.
+// Returns true on match and advances current.
 static bool consume(const char* str) {
   skip();
-  const char* start = current;
   size_t i = 0;
   while (true) {
     char const expected = str[i];
@@ -127,8 +125,6 @@ static bool consume(const char* str) {
     if (expected == 0) {
       /* survived to the end of the expected string */
       current += i;
-      last_token_start = start;
-      last_token_len = i;
       return true;
     }
     if (expected != found) {
@@ -139,39 +135,79 @@ static bool consume(const char* str) {
   } 
 }
 
-// Consume a keyword token, enforcing a word boundary.
-// Returns true on match and updates last_token_* metadata.
-static bool consume_keyword(const char* str) {
-  skip();
-  const char* start = current;
-  size_t i = 0;
-  while (true) {
-    char const expected = str[i];
-    char const found = current[i];
-    if (expected == 0) {
-      /* survived to the end of the expected string */
-      if (!isalnum((unsigned char)found) && found != '_') {
-        // word break
-        current += i;
-        last_token_start = start;
-        last_token_len = i;
-        return true;
-      } else {
-        return false;
-      }
-    }
-    if (expected != found) {
-      return false;
-    }
-    // assertion: found != 0
-    i += 1;
-  } 
+// Compare a scanned identifier span with a keyword spelling.
+static bool span_equals(const char* start, size_t len, const char* keyword) {
+  size_t keyword_len = strlen(keyword);
+  return len == keyword_len && memcmp(start, keyword, len) == 0;
 }
 
-// Consume an identifier token and allocate its slice.
-// Returns true on success and advances current past the identifier.
-// Identifier slices point into the source buffer.
-static bool consume_identifier(struct Token* token) {
+// Classify an identifier-shaped span. Dispatching by its first byte avoids
+// rescanning the source once for every keyword candidate.
+static enum TokenType classify_identifier(const char* start, size_t len) {
+  switch (start[0]) {
+    case '_':
+      if (span_equals(start, len, "__attribute__")) return ATTRIBUTE_TOK;
+      break;
+    case 'b':
+      if (span_equals(start, len, "break")) return BREAK_TOK;
+      break;
+    case 'c':
+      if (span_equals(start, len, "case")) return CASE_TOK;
+      if (span_equals(start, len, "char")) return CHAR_TOK;
+      if (span_equals(start, len, "const")) return CONST_TOK;
+      if (span_equals(start, len, "continue")) return CONTINUE_TOK;
+      break;
+    case 'd':
+      if (span_equals(start, len, "default")) return DEFAULT_TOK;
+      if (span_equals(start, len, "do")) return DO_TOK;
+      break;
+    case 'e':
+      if (span_equals(start, len, "else")) return ELSE_TOK;
+      if (span_equals(start, len, "enum")) return ENUM_TOK;
+      if (span_equals(start, len, "extern")) return EXTERN_TOK;
+      break;
+    case 'f':
+      if (span_equals(start, len, "for")) return FOR_TOK;
+      break;
+    case 'g':
+      if (span_equals(start, len, "goto")) return GOTO_TOK;
+      break;
+    case 'i':
+      if (span_equals(start, len, "if")) return IF_TOK;
+      if (span_equals(start, len, "int")) return INT_TOK;
+      break;
+    case 'l':
+      if (span_equals(start, len, "long")) return LONG_TOK;
+      break;
+    case 'r':
+      if (span_equals(start, len, "return")) return RETURN_TOK;
+      break;
+    case 's':
+      if (span_equals(start, len, "short")) return SHORT_TOK;
+      if (span_equals(start, len, "signed")) return SIGNED_TOK;
+      if (span_equals(start, len, "sizeof")) return SIZEOF_TOK;
+      if (span_equals(start, len, "static")) return STATIC_TOK;
+      if (span_equals(start, len, "struct")) return STRUCT_TOK;
+      if (span_equals(start, len, "switch")) return SWITCH_TOK;
+      break;
+    case 'u':
+      if (span_equals(start, len, "union")) return UNION_TOK;
+      if (span_equals(start, len, "unsigned")) return UNSIGNED_TOK;
+      break;
+    case 'v':
+      if (span_equals(start, len, "void")) return VOID_TOK;
+      if (span_equals(start, len, "volatile")) return VOLATILE_TOK;
+      break;
+    case 'w':
+      if (span_equals(start, len, "while")) return WHILE_TOK;
+      break;
+  }
+  return IDENT;
+}
+
+// Consume an identifier or keyword in a single scan. Identifier slices point
+// into the source buffer; keywords do not allocate an unused slice.
+static bool consume_identifier_or_keyword(struct Token* token) {
   skip();
   if (isalpha((unsigned char)*current) || *current == '_') {
     char const * start = current;
@@ -179,14 +215,26 @@ static bool consume_identifier(struct Token* token) {
       current += 1;
     } while(isalnum((unsigned char)*current) || *current == '_');
 
-    struct Slice* slice = malloc(sizeof(struct Slice));
-    slice->start = start;
-    slice->len = (current - start);
-
-    token->type = IDENT;
-    token->data.ident_name = slice;
+    size_t len = (size_t)(current - start);
+    token->type = classify_identifier(start, len);
     token->start = start;
-    token->len = slice->len;
+    token->len = len;
+    if (token->type == IDENT) {
+      struct Slice* slice = malloc(sizeof(struct Slice));
+      if (slice == NULL) {
+        fprintf(stderr,
+                "Lexer memory error: unable to allocate identifier slice at "
+                "%s:%zu:%zu\n",
+                source_filename_for_ptr(start),
+                source_location_from_ptr(start).line,
+                source_location_from_ptr(start).column);
+        lexer_failed = true;
+        return false;
+      }
+      slice->start = start;
+      slice->len = len;
+      token->data.ident_name = slice;
+    }
     return true;
   } else {
     return false;
@@ -447,96 +495,101 @@ static bool consume_literal(struct Token* token) {
   }
 }
 
-// Finalize a token that was consumed via a fixed string match.
-// Returns token after populating its type/start/len fields.
-static struct Token* finish_simple_token(struct Token* token, enum TokenType type) {
+// Consume a punctuation token of length len at the current cursor.
+static struct Token* finish_punctuation(struct Token* token,
+                                        enum TokenType type,
+                                        size_t len) {
   token->type = type;
-  token->start = last_token_start;
-  token->len = last_token_len;
+  token->start = current;
+  token->len = len;
+  current += len;
   return token;
+}
+
+// Recognize punctuation by its first byte, checking multi-byte operators
+// longest-first. Returns NULL without advancing when current is not punctuation.
+static struct Token* consume_punctuation(struct Token* token) {
+  switch (current[0]) {
+    case '.': return finish_punctuation(token, DOT_TOK, 1);
+    case ',': return finish_punctuation(token, COMMA, 1);
+    case '?': return finish_punctuation(token, QUESTION, 1);
+    case ':': return finish_punctuation(token, COLON, 1);
+    case ';': return finish_punctuation(token, SEMI, 1);
+    case '(': return finish_punctuation(token, OPEN_P, 1);
+    case ')': return finish_punctuation(token, CLOSE_P, 1);
+    case '{': return finish_punctuation(token, OPEN_B, 1);
+    case '}': return finish_punctuation(token, CLOSE_B, 1);
+    case '[': return finish_punctuation(token, OPEN_S, 1);
+    case ']': return finish_punctuation(token, CLOSE_S, 1);
+    case '~': return finish_punctuation(token, TILDE, 1);
+    case '+':
+      if (current[1] == '+') return finish_punctuation(token, INC_TOK, 2);
+      if (current[1] == '=') return finish_punctuation(token, PLUS_EQ, 2);
+      return finish_punctuation(token, PLUS, 1);
+    case '-':
+      if (current[1] == '>') return finish_punctuation(token, ARROW_TOK, 2);
+      if (current[1] == '-') return finish_punctuation(token, DEC_TOK, 2);
+      if (current[1] == '=') return finish_punctuation(token, MINUS_EQ, 2);
+      return finish_punctuation(token, MINUS, 1);
+    case '*':
+      if (current[1] == '=') return finish_punctuation(token, TIMES_EQ, 2);
+      return finish_punctuation(token, ASTERISK, 1);
+    case '/':
+      if (current[1] == '=') return finish_punctuation(token, DIV_EQ, 2);
+      return finish_punctuation(token, SLASH, 1);
+    case '%':
+      if (current[1] == '=') return finish_punctuation(token, MOD_EQ, 2);
+      return finish_punctuation(token, PERCENT, 1);
+    case '&':
+      if (current[1] == '&') return finish_punctuation(token, DOUBLE_AMPERSAND, 2);
+      if (current[1] == '=') return finish_punctuation(token, AND_EQ, 2);
+      return finish_punctuation(token, AMPERSAND, 1);
+    case '|':
+      if (current[1] == '|') return finish_punctuation(token, DOUBLE_PIPE, 2);
+      if (current[1] == '=') return finish_punctuation(token, OR_EQ, 2);
+      return finish_punctuation(token, PIPE, 1);
+    case '^':
+      if (current[1] == '=') return finish_punctuation(token, XOR_EQ, 2);
+      return finish_punctuation(token, CARAT, 1);
+    case '>':
+      if (current[1] == '>') {
+        if (current[2] == '=') return finish_punctuation(token, SHR_EQ, 3);
+        return finish_punctuation(token, SHIFT_R_TOK, 2);
+      }
+      if (current[1] == '=') return finish_punctuation(token, GREATER_THAN_EQ, 2);
+      return finish_punctuation(token, GREATER_THAN, 1);
+    case '<':
+      if (current[1] == '<') {
+        if (current[2] == '=') return finish_punctuation(token, SHL_EQ, 3);
+        return finish_punctuation(token, SHIFT_L_TOK, 2);
+      }
+      if (current[1] == '=') return finish_punctuation(token, LESS_THAN_EQ, 2);
+      return finish_punctuation(token, LESS_THAN, 1);
+    case '!':
+      if (current[1] == '=') return finish_punctuation(token, NOT_EQUAL, 2);
+      return finish_punctuation(token, EXCLAMATION, 1);
+    case '=':
+      if (current[1] == '=') return finish_punctuation(token, DOUBLE_EQUALS, 2);
+      return finish_punctuation(token, EQUALS, 1);
+    default:
+      return NULL;
+  }
 }
 
 // Consume the next available token.
 // Returns a heap-allocated Token or NULL if no token matches.
 static struct Token* consume_any(){
   struct Token* token = malloc(sizeof(struct Token));
+  if (token == NULL) {
+    fprintf(stderr, "Lexer memory error: unable to allocate token\n");
+    lexer_failed = true;
+    return NULL;
+  }
 
-  if (consume_keyword("return")) return finish_simple_token(token, RETURN_TOK);
-  if (consume_keyword("void")) return finish_simple_token(token, VOID_TOK);
-  if (consume_keyword("if")) return finish_simple_token(token, IF_TOK);
-  if (consume_keyword("else")) return finish_simple_token(token, ELSE_TOK);
-  if (consume_keyword("do")) return finish_simple_token(token, DO_TOK);
-  if (consume_keyword("while")) return finish_simple_token(token, WHILE_TOK);
-  if (consume_keyword("for")) return finish_simple_token(token, FOR_TOK);
-  if (consume_keyword("goto")) return finish_simple_token(token, GOTO_TOK);
-  if (consume_keyword("break")) return finish_simple_token(token, BREAK_TOK);
-  if (consume_keyword("continue")) return finish_simple_token(token, CONTINUE_TOK);
-  if (consume_keyword("static")) return finish_simple_token(token, STATIC_TOK);
-  if (consume_keyword("extern")) return finish_simple_token(token, EXTERN_TOK);
-  if (consume_keyword("const")) return finish_simple_token(token, CONST_TOK);
-  if (consume_keyword("volatile")) return finish_simple_token(token, VOLATILE_TOK);
-  if (consume_keyword("switch")) return finish_simple_token(token, SWITCH_TOK);
-  if (consume_keyword("case")) return finish_simple_token(token, CASE_TOK);
-  if (consume_keyword("default")) return finish_simple_token(token, DEFAULT_TOK);
-  if (consume_keyword("int")) return finish_simple_token(token, INT_TOK);
-  if (consume_keyword("unsigned")) return finish_simple_token(token, UNSIGNED_TOK);
-  if (consume_keyword("signed")) return finish_simple_token(token, SIGNED_TOK);
-  if (consume_keyword("long")) return finish_simple_token(token, LONG_TOK);
-  if (consume_keyword("short")) return finish_simple_token(token, SHORT_TOK);
-  if (consume_keyword("char")) return finish_simple_token(token, CHAR_TOK);
-  if (consume_keyword("sizeof")) return finish_simple_token(token, SIZEOF_TOK);
-  if (consume_keyword("__attribute__")) return finish_simple_token(token, ATTRIBUTE_TOK);
-  if (consume_keyword("struct")) return finish_simple_token(token, STRUCT_TOK);
-  if (consume_keyword("union")) return finish_simple_token(token, UNION_TOK);
-  if (consume_keyword("enum")) return finish_simple_token(token, ENUM_TOK);
-
-  if (consume(".")) return finish_simple_token(token, DOT_TOK);
-  if (consume("->")) return finish_simple_token(token, ARROW_TOK);
-  if (consume(",")) return finish_simple_token(token, COMMA);
-  if (consume("?")) return finish_simple_token(token, QUESTION);
-  if (consume(":")) return finish_simple_token(token, COLON);
-  if (consume(";")) return finish_simple_token(token, SEMI);
-  if (consume("(")) return finish_simple_token(token, OPEN_P);
-  if (consume(")")) return finish_simple_token(token, CLOSE_P);
-  if (consume("{")) return finish_simple_token(token, OPEN_B);
-  if (consume("}")) return finish_simple_token(token, CLOSE_B);
-  if (consume("[")) return finish_simple_token(token, OPEN_S);
-  if (consume("]")) return finish_simple_token(token, CLOSE_S);
-  if (consume("~")) return finish_simple_token(token, TILDE);
-  if (consume("++")) return finish_simple_token(token, INC_TOK);
-  if (consume("--")) return finish_simple_token(token, DEC_TOK);
-  if (consume("+=")) return finish_simple_token(token, PLUS_EQ);
-  if (consume("-=")) return finish_simple_token(token, MINUS_EQ);
-  if (consume("*=")) return finish_simple_token(token, TIMES_EQ);
-  if (consume("/=")) return finish_simple_token(token, DIV_EQ);
-  if (consume("%=")) return finish_simple_token(token, MOD_EQ);
-  if (consume("+")) return finish_simple_token(token, PLUS);
-  if (consume("-")) return finish_simple_token(token, MINUS);
-  if (consume("*")) return finish_simple_token(token, ASTERISK);
-  if (consume("/")) return finish_simple_token(token, SLASH);
-  if (consume("%")) return finish_simple_token(token, PERCENT);
-  if (consume("&&")) return finish_simple_token(token, DOUBLE_AMPERSAND);
-  if (consume("||")) return finish_simple_token(token, DOUBLE_PIPE);
-  if (consume("&=")) return finish_simple_token(token, AND_EQ);
-  if (consume("|=")) return finish_simple_token(token, OR_EQ);
-  if (consume("^=")) return finish_simple_token(token, XOR_EQ);
-  if (consume(">>=")) return finish_simple_token(token, SHR_EQ);
-  if (consume("<<=")) return finish_simple_token(token, SHL_EQ);
-  if (consume("&")) return finish_simple_token(token, AMPERSAND);
-  if (consume("|")) return finish_simple_token(token, PIPE);
-  if (consume("^")) return finish_simple_token(token, CARAT);
-  if (consume(">>")) return finish_simple_token(token, SHIFT_R_TOK);
-  if (consume("<<")) return finish_simple_token(token, SHIFT_L_TOK);
-  if (consume("!=")) return finish_simple_token(token, NOT_EQUAL);
-  if (consume("!")) return finish_simple_token(token, EXCLAMATION);
-  if (consume("==")) return finish_simple_token(token, DOUBLE_EQUALS);
-  if (consume(">=")) return finish_simple_token(token, GREATER_THAN_EQ);
-  if (consume("<=")) return finish_simple_token(token, LESS_THAN_EQ);
-  if (consume("=")) return finish_simple_token(token, EQUALS);
-  if (consume(">")) return finish_simple_token(token, GREATER_THAN);
-  if (consume("<")) return finish_simple_token(token, LESS_THAN);
-
-  if (consume_identifier(token)) return token;
+  skip();
+  if (consume_identifier_or_keyword(token)) return token;
+  struct Token* punctuation = consume_punctuation(token);
+  if (punctuation != NULL) return punctuation;
   if (consume_literal(token)) return token;
 
   free(token);

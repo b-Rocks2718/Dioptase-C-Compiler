@@ -293,9 +293,10 @@ static bool ifstack_pop(struct IfStack* stack) {
 }
 
 // Strip comments while preserving strings and character literals.
-// prog is a NUL-terminated source buffer; filename identifies the source.
+// prog is a NUL-terminated source buffer of prog_len bytes; filename identifies
+// the source. Comment removal cannot exceed prog_len, so output is reserved once.
 // Returns true on success and fills out with comment-stripped text and mappings.
-static bool strip_comments(const char* prog, const char* filename,
+static bool strip_comments(const char* prog, size_t prog_len, const char* filename,
                            struct FileTable* files, struct Buffer* out) {
   const char* interned = file_table_intern(files, filename);
   if (interned == NULL) {
@@ -309,6 +310,10 @@ static bool strip_comments(const char* prog, const char* filename,
   bool in_string = false;
   bool in_char = false;
   bool escape = false;
+
+  // Comment removal never enlarges the input. Reserve its maximum output size
+  // once so the hot byte-copy loop can write the text and source map directly.
+  if (!buffer_reserve(out, prog_len)) goto fail;
 
   while (prog[prog_index] != 0) {
     char c = prog[prog_index];
@@ -376,7 +381,9 @@ static bool strip_comments(const char* prog, const char* filename,
       }
     }
 
-    if (!buffer_append_char(out, c, loc)) goto fail;
+    out->data[out->len] = c;
+    out->map[out->len] = loc;
+    out->len++;
     prog_index++;
     if (c == '\n') {
       line++;
@@ -612,59 +619,14 @@ static bool try_expand_builtin_macro(const char* name, size_t len,
   return true;
 }
 
-// Expand macros in a single line, skipping strings and char literals.
-// Returns true on success and appends expanded content to out.
+// Expand macros in a single line while copying strings, character literals,
+// punctuation, and whitespace in mapped spans. Returns true on success and
+// appends expanded content to out.
 static bool expand_macros_in_line(const char* line, size_t len,
                                   const struct SourceMappingEntry* line_map,
                                   struct Macro* macros, struct Buffer* out) {
-  bool in_string = false;
-  bool in_char = false;
-  bool escape = false;
-
   for (size_t i = 0; i < len; ) {
-    char c = line[i];
-    struct SourceMappingEntry loc = line_map[i];
-
-    if (in_string) {
-      if (!buffer_append_char(out, c, loc)) return false;
-      if (escape) {
-        escape = false;
-      } else if (c == '\\') {
-        escape = true;
-      } else if (c == '"') {
-        in_string = false;
-      }
-      i++;
-      continue;
-    }
-
-    if (in_char) {
-      if (!buffer_append_char(out, c, loc)) return false;
-      if (escape) {
-        escape = false;
-      } else if (c == '\\') {
-        escape = true;
-      } else if (c == '\'') {
-        in_char = false;
-      }
-      i++;
-      continue;
-    }
-
-    if (c == '"') {
-      in_string = true;
-      if (!buffer_append_char(out, c, loc)) return false;
-      i++;
-      continue;
-    }
-    if (c == '\'') {
-      in_char = true;
-      if (!buffer_append_char(out, c, loc)) return false;
-      i++;
-      continue;
-    }
-
-    if (is_ident_start(c)) {
+    if (is_ident_start(line[i])) {
       size_t start = i;
       i++;
       while (i < len && is_ident_char(line[i])) i++;
@@ -683,8 +645,33 @@ static bool expand_macros_in_line(const char* line, size_t len,
       continue;
     }
 
-    if (!buffer_append_char(out, c, loc)) return false;
-    i++;
+    // Copy punctuation, whitespace, and quoted literals as one mapped span.
+    // Identifiers inside literals are deliberately skipped by scanning to the
+    // matching unescaped quote before resuming identifier recognition.
+    size_t start = i;
+    while (i < len && !is_ident_start(line[i])) {
+      if (line[i] != '"' && line[i] != '\'') {
+        i++;
+        continue;
+      }
+
+      char quote = line[i++];
+      bool escape = false;
+      while (i < len) {
+        char literal_char = line[i++];
+        if (escape) {
+          escape = false;
+        } else if (literal_char == '\\') {
+          escape = true;
+        } else if (literal_char == quote) {
+          break;
+        }
+      }
+    }
+    if (!buffer_append_str_with_map(out, line + start, i - start,
+                                    line_map + start)) {
+      return false;
+    }
   }
 
   return true;
@@ -1025,13 +1012,14 @@ static bool preprocess_buffer(const char* prog, const char* filename,
                               struct Macro** macros, struct FileTable* files,
                               struct PreprocessOutput* out) {
   struct Buffer no_comments;
-  size_t initial_cap = strlen(prog) + 1;
+  size_t prog_len = strlen(prog);
+  size_t initial_cap = prog_len + 1;
   if (initial_cap < 64) initial_cap = 64;
   if (!buffer_init(&no_comments, initial_cap)) {
     fprintf(stderr, "Preprocessor memory error\n");
     return false;
   }
-  if (!strip_comments(prog, filename, files, &no_comments)) {
+  if (!strip_comments(prog, prog_len, filename, files, &no_comments)) {
     free(no_comments.data);
     free(no_comments.map);
     return false;
