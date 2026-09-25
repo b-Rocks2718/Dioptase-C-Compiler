@@ -27,13 +27,9 @@ struct OptimizationOptions {
 // point. This is a no-op when no implemented body pass is selected.
 void optimize(struct TACProg* prog, struct OptimizationOptions options);
 
-// Apply enabled body optimizations to one function until reaching a fixed
-// point. This remains public for transformations that synthesize function TAC.
-struct TACInstrList optimize_body(struct TACInstrList body, struct OptimizationOptions options);
-
 // Collect address-taken variables in body together with every translation-unit
 // static variable. Returned list nodes are owned by the compiler arena.
-struct SliceList get_aliased_vars(struct TACInstr* body);
+struct SliceList get_aliased_vars(struct TACInstr* body, struct SliceList static_vars);
 
 // Collect all static variables in the translation unit exactly once per name.
 // Returned list nodes are owned by the compiler arena.

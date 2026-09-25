@@ -1284,7 +1284,7 @@ static bool tac_test_get_aliased_vars(void) {
   tac_link_instr(&get_local, &get_local_again);
   tac_link_instr(&get_local_again, &get_static);
 
-  struct SliceList aliased = get_aliased_vars(&get_local);
+  struct SliceList aliased = get_aliased_vars(&get_local, get_static_vars());
   unsigned count = 0;
   for (struct SliceListNode* node = aliased.head; node != NULL; node = node->next) {
     count++;

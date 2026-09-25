@@ -39,8 +39,8 @@ static void add_unique_vars(struct SliceList* list, struct SliceList additions) 
 // program-wide static-variable set. Optimizer passes cannot introduce a new
 // TACGET_ADDRESS, so this conservative set is invariant across fixed-point
 // iterations for one function.
-static struct SliceList get_aliased_vars_with_statics(struct TACInstr* body,
-                                                      struct SliceList static_vars) {
+static struct SliceList get_aliased_vars(struct TACInstr* body,
+                                         struct SliceList static_vars) {
   struct SliceList list = {NULL, NULL};
   add_unique_vars(&list, static_vars);
 
@@ -54,12 +54,6 @@ static struct SliceList get_aliased_vars_with_statics(struct TACInstr* body,
     }
   }
   return list;
-}
-
-// Collect address-taken variables in body together with every static variable.
-// Each name appears at most once.
-struct SliceList get_aliased_vars(struct TACInstr* body) {
-  return get_aliased_vars_with_statics(body, get_static_vars());
 }
 
 // Collect every static variable in the translation unit. Each name appears at
@@ -82,7 +76,7 @@ struct SliceList get_static_vars(void) {
   return list;
 }
 
-static struct TACInstrList optimize_body_with_statics(
+static struct TACInstrList optimize_body(
     struct TACInstrList body,
     struct OptimizationOptions options,
     struct SliceList static_vars);
@@ -101,14 +95,14 @@ void optimize(struct TACProg* prog, struct OptimizationOptions options) {
   for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
     if (top->type == FUNC) {
       top->top.tac_func.body =
-          optimize_body_with_statics(top->top.tac_func.body, options, static_vars);
+          optimize_body(top->top.tac_func.body, options, static_vars);
     }
   }
 }
 
 // Run the enabled optimization passes over one function body while reusing the
 // translation-unit static-variable set supplied by the caller.
-static struct TACInstrList optimize_body_with_statics(
+static struct TACInstrList optimize_body(
     struct TACInstrList body,
     struct OptimizationOptions options,
     struct SliceList static_vars) {
@@ -117,7 +111,7 @@ static struct TACInstrList optimize_body_with_statics(
   }
 
   struct SliceList aliased_vars =
-      get_aliased_vars_with_statics(body.head, static_vars);
+      get_aliased_vars(body.head, static_vars);
   while (true) {
     struct TACInstrList post_const_fold_body = body;
     if (options.constant_fold) {
@@ -144,10 +138,4 @@ static struct TACInstrList optimize_body_with_statics(
     }
     body = new_body;
   }
-}
-
-// Run the enabled optimization passes over one standalone function body.
-struct TACInstrList optimize_body(struct TACInstrList body,
-                                  struct OptimizationOptions options) {
-  return optimize_body_with_statics(body, options, get_static_vars());
 }
