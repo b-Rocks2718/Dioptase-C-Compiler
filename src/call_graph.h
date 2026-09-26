@@ -3,34 +3,40 @@
 
 #include "TAC.h"
 
-// Link one predecessor or successor into a CFG adjacency list.
-struct CallGraphNodeEntry {
+// Link one function into a call-graph adjacency list.
+struct CallGraphEntry {
   struct CallGraphNode* node;
-  struct CallGraphNodeEntry* next;
+  struct CallGraphEntry* next;
 };
 
-// Own an insertion-ordered list of CFG edges.
+// Own an insertion-ordered list of call-graph nodes or edges.
 struct CallGraphNodeList {
-  struct CallGraphNodeEntry* head;
-  struct CallGraphNodeEntry* tail;
+  struct CallGraphEntry* head;
+  struct CallGraphEntry* tail;
 };
 
-// Reserve the call-graph result type while interprocedural analysis is unimplemented.
+// Call graph for the function definitions in the current translation unit.
 struct CallGraph {
-  struct CallGraphNodeList nodes; // one for each function
-  unsigned num_nodes; // number of functions in the call graph
+  struct CallGraphNodeList nodes;
 };
 
-// Represent one control-flow node with bidirectional edges and an optional TAC block.
+// Represent one function definition and its bidirectional call relationships.
 struct CallGraphNode {
-  // caller and callee links are bidirectional.
+  // Every direct edge appears in both lists. Repeated calls produce one edge.
   struct CallGraphNodeList callers;
   struct CallGraphNodeList callees;
 
-  struct TACInstrList body; // instructions making up the function body
+  struct TACInstrList body;
+
+  struct Slice* func_name;
+  bool contains_indirect_calls;
 };
 
-// Build interprocedural call relationships; currently unimplemented and returns NULL.
-struct CallGraph* build_callgraph(struct TACProg* program);
+// Build direct caller-to-callee relationships between function definitions.
+// Direct calls outside this translation unit are intentionally not represented.
+struct CallGraph build_call_graph(struct TACProg* program);
+
+// Print a stable adjacency-list visualization of direct and indirect calls.
+void print_call_graph(const struct CallGraph* call_graph);
 
 #endif // CALL_GRAPH_H

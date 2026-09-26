@@ -31,6 +31,7 @@ Accepted flags:
 -types                print the symbol table and AST after typechecking
 -tac                  print the generated TAC
 -cfg                  print the control-flow graph of each function
+-cg                   print the translation unit's function call graph
 -asm                  print the intermediate assembly IR (before machine code generation)
 -interp               run the TAC interpreter and print the result
 -s                    emit assembly instead of assembling to hex
@@ -121,6 +122,7 @@ Stage-specific tests live in these folders:
 - `tests/labels` and `tests/labels_invalid` (`-labels`)
 - `tests/types` and `tests/types_invalid` (`-types`)
 - `tests/cfg` (`-cfg`)
+- `tests/call_graph` (`-cg`)
 - `tests/opt` (`-tac -cfg`, with optimization flags from a matching `.flags` file)
 
 Each test case is a `.c` file with a matching `.ok` file for expected output. `make test` (debug build) and `make test-release` (release build) write per-test `.out` files next to each case and diff them against the `.ok` files. Invalid tests must fail with a non-zero exit; if a `.ok` file exists, its contents are compared against the captured output.

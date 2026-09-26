@@ -17,6 +17,7 @@
 #include "typechecking.h"
 #include "TAC.h"
 #include "cfg.h"
+#include "call_graph.h"
 #include "optimization.h"
 #include "asm_gen.h"
 #include "codegen.h"
@@ -237,6 +238,7 @@ int main(int argc, const char *const *const argv) {
     bool print_types = false;
     bool print_tac = false;
     bool print_cfg_graphs = false;
+    bool print_call_graph_flag = false;
     bool print_asm = false;
     bool interpret_tac = false;
     bool kernel_mode = false;
@@ -287,6 +289,10 @@ int main(int argc, const char *const *const argv) {
         }
         if (strcmp(arg, "-cfg") == 0) {
             print_cfg_graphs = true;
+            continue;
+        }
+        if (strcmp(arg, "-cg") == 0) {
+            print_call_graph_flag = true;
             continue;
         }
         if (strcmp(arg, "-asm") == 0) {
@@ -387,7 +393,7 @@ int main(int argc, const char *const *const argv) {
         }
         if (arg[0] == '-') {
             fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-cg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
             free(cli_defines);
             exit(1);
         }
@@ -396,13 +402,13 @@ int main(int argc, const char *const *const argv) {
             continue;
         }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-cg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
 
     if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
+        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-cg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
         exit(1);
     }
@@ -470,7 +476,7 @@ int main(int argc, const char *const *const argv) {
     const bool any_stage_flag =
         print_preprocess || print_tokens || print_ast || print_idents ||
         print_labels || print_types || print_tac || print_cfg_graphs ||
-        print_asm || interpret_tac;
+        print_call_graph_flag || print_asm || interpret_tac;
     // Diagnostic flags normally stop after the latest requested stage. An
     // explicit -s still requests a file, so it must carry the compilation
     // through machine assembly after printing any selected diagnostics.
@@ -478,7 +484,7 @@ int main(int argc, const char *const *const argv) {
     const bool stop_after_preprocess =
         !run_full && print_preprocess &&
         !(print_tokens || print_ast || print_idents || print_labels ||
-          print_types || print_tac || print_cfg_graphs || print_asm || interpret_tac);
+          print_types || print_tac || print_cfg_graphs || print_call_graph_flag || print_asm || interpret_tac);
 
     if (stop_after_preprocess) {
         destroy_preprocess_result(&preprocessed);
@@ -497,7 +503,7 @@ int main(int argc, const char *const *const argv) {
     const bool stop_after_tokens =
         !run_full && print_tokens &&
         !(print_ast || print_idents || print_labels ||
-          print_types || print_tac || print_cfg_graphs || print_asm || interpret_tac);
+          print_types || print_tac || print_cfg_graphs || print_call_graph_flag || print_asm || interpret_tac);
     if (stop_after_tokens) {
         destroy_preprocess_result(&preprocessed);
         destroy_token_array(tokens);
@@ -522,7 +528,7 @@ int main(int argc, const char *const *const argv) {
     const bool stop_after_ast =
         !run_full && print_ast &&
         !(print_idents || print_labels ||
-          print_types || print_tac || print_cfg_graphs || print_asm || interpret_tac);
+          print_types || print_tac || print_cfg_graphs || print_call_graph_flag || print_asm || interpret_tac);
     if (stop_after_ast) {
         destroy_preprocess_result(&preprocessed);
         destroy_token_array(tokens);
@@ -542,7 +548,7 @@ int main(int argc, const char *const *const argv) {
     }
     const bool stop_after_idents =
         !run_full && print_idents &&
-        !(print_labels || print_types || print_tac || print_cfg_graphs ||
+        !(print_labels || print_types || print_tac || print_cfg_graphs || print_call_graph_flag ||
           print_asm || interpret_tac);
     if (stop_after_idents) {
         destroy_preprocess_result(&preprocessed);
@@ -562,7 +568,7 @@ int main(int argc, const char *const *const argv) {
     }
     const bool stop_after_labels =
         !run_full && print_labels &&
-        !(print_types || print_tac || print_cfg_graphs || print_asm || interpret_tac);
+        !(print_types || print_tac || print_cfg_graphs || print_call_graph_flag || print_asm || interpret_tac);
     if (stop_after_labels) {
         destroy_preprocess_result(&preprocessed);
         destroy_token_array(tokens);
@@ -582,7 +588,7 @@ int main(int argc, const char *const *const argv) {
     }
     const bool stop_after_types =
         !run_full && print_types &&
-        !(print_tac || print_cfg_graphs || print_asm || interpret_tac);
+        !(print_tac || print_cfg_graphs || print_call_graph_flag || print_asm || interpret_tac);
     if (stop_after_types) {
         destroy_preprocess_result(&preprocessed);
         destroy_token_array(tokens);
@@ -593,7 +599,7 @@ int main(int argc, const char *const *const argv) {
     struct TACProg* tac_prog = NULL;
     struct AsmProg* asm_prog = NULL;
 
-    if (run_full || print_tac || print_cfg_graphs || print_asm || interpret_tac) {
+    if (run_full || print_tac || print_cfg_graphs || print_call_graph_flag || print_asm || interpret_tac) {
         tac_prog = prog_to_TAC(prog, emit_debug_info, optimization_options.tail_call_opt);
 
         optimize(tac_prog, optimization_options);
@@ -632,8 +638,12 @@ int main(int argc, const char *const *const argv) {
                 printf("CFG: no function definitions\n");
             }
         }
+        if (print_call_graph_flag) {
+            struct CallGraph call_graph = build_call_graph(tac_prog);
+            print_call_graph(&call_graph);
+        }
         const bool stop_after_tac =
-            !run_full && (print_tac || print_cfg_graphs) &&
+            !run_full && (print_tac || print_cfg_graphs || print_call_graph_flag) &&
             !(print_asm || interpret_tac);
         if (stop_after_tac) {
             destroy_preprocess_result(&preprocessed);

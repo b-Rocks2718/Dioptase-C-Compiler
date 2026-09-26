@@ -1,0 +1,19 @@
+Call graph (4 functions)
+========================
+[leaf]
+    calls: none
+
+[recursive]
+    calls:
+      +-- direct --> [recursive]
+
+[dispatch]
+    calls:
+      +-- indirect --> [UNKNOWN]
+
+[main]
+    calls:
+      |-- direct --> [leaf]
+      |-- direct --> [recursive]
+      +-- direct --> [dispatch]
+

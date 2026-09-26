@@ -188,7 +188,7 @@ void optimize(struct TACProg* prog, struct OptimizationOptions options) {
   arena_free(arenas.iteration[0]);
   arena_free(arenas.iteration[1]);
 
-  build_callgraph(prog);
+  build_call_graph(prog);
 }
 
 // Copy body into the compilation arena. Operand pointers are shared with the
