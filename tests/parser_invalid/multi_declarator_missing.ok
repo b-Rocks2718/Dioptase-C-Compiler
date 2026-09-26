@@ -1,0 +1,2 @@
+Parse error at tests/parser_invalid/multi_declarator_missing.c:2:8: expected declarator after ',' in declaration
+Parse error at tests/parser_invalid/multi_declarator_missing.c:2:8: unexpected token

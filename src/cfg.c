@@ -10,15 +10,12 @@
 static struct CFGNode* make_start_node(void) {
   struct CFGNode* node = (struct CFGNode*)arena_alloc(sizeof(struct CFGNode));
   node->type = CFG_ENTRY;
+  node->index = 0; // assigned when the node is placed in a CFG
   node->predecessors.head = NULL;
   node->predecessors.tail = NULL;
   node->successors.head = NULL;
   node->successors.tail = NULL;
   node->body = tac_instr_list(NULL);
-  node->reaching_copies.head = NULL;
-  node->reaching_copies.last = NULL;
-  node->live_vars.head = NULL;
-  node->live_vars.last = NULL;
   node->marked = false;
   return node;
 }
@@ -27,15 +24,12 @@ static struct CFGNode* make_start_node(void) {
 static struct CFGNode* make_exit_node(void) {
   struct CFGNode* node = (struct CFGNode*)arena_alloc(sizeof(struct CFGNode));
   node->type = CFG_EXIT;
+  node->index = 0; // assigned when the node is placed in a CFG
   node->predecessors.head = NULL;
   node->predecessors.tail = NULL;
   node->successors.head = NULL;
   node->successors.tail = NULL;
   node->body = tac_instr_list(NULL);
-  node->reaching_copies.head = NULL;
-  node->reaching_copies.last = NULL;
-  node->live_vars.head = NULL;
-  node->live_vars.last = NULL;
   node->marked = false;
   return node;
 }
@@ -44,15 +38,12 @@ static struct CFGNode* make_exit_node(void) {
 static struct CFGNode* make_basic_block_node(void) {
   struct CFGNode* node = (struct CFGNode*)arena_alloc(sizeof(struct CFGNode));
   node->type = CFG_BASIC_BLOCK;
+  node->index = 0; // assigned when the node is placed in a CFG
   node->predecessors.head = NULL;
   node->predecessors.tail = NULL;
   node->successors.head = NULL;
   node->successors.tail = NULL;
   node->body = tac_instr_list(NULL);
-  node->reaching_copies.head = NULL;
-  node->reaching_copies.last = NULL;
-  node->live_vars.head = NULL;
-  node->live_vars.last = NULL;
   node->marked = false;
   return node;
 }
@@ -63,10 +54,6 @@ static struct TACInstr* copy_instr(const struct TACInstr* instr) {
   // links belong exclusively to the new instruction list.
   struct TACInstr* instr_copy = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
   *instr_copy = *instr;
-  instr_copy->reaching_copies.head = NULL;
-  instr_copy->reaching_copies.last = NULL;
-  instr_copy->live_vars.head = NULL;
-  instr_copy->live_vars.last = NULL;
   instr_copy->next = NULL;
   return instr_copy;
 }
@@ -169,6 +156,7 @@ static struct CFG* make_cfg_from_basic_blocks(struct CFGNodeList* list,
     cfg->nodes[i++] = entry->node;
   }
   cfg->nodes[i++] = make_exit_node(); // final node is always EXIT node
+  cfg_number_nodes(cfg);
   return cfg;
 }
 
@@ -250,10 +238,78 @@ static struct CFGNode* find_target_of_jump(const struct CFG* cfg,
   return NULL;
 }
 
+// Minimum slot count for LabelIndex; keep the table at most half full.
+enum { kLabelIndexMinSlots = 16, kLabelIndexSlotsPerLabel = 2 };
+
+// Map a block's leading label (by content) to the block, so resolving each
+// jump is O(1) instead of a scan over every block. Pass-local to link_cfg;
+// owns only its slot array.
+struct LabelIndex {
+  const struct Slice** labels;
+  struct CFGNode** blocks;
+  size_t slot_count; // power of two
+};
+
+// Index every block that begins with a label. Like find_target_of_jump, the
+// first block (in layout order) with a given label wins.
+static struct LabelIndex label_index_build(const struct CFG* cfg) {
+  struct LabelIndex index;
+  index.slot_count = kLabelIndexMinSlots;
+  while (index.slot_count < (size_t)cfg->num_nodes * kLabelIndexSlotsPerLabel) {
+    index.slot_count *= 2;
+  }
+  index.labels = calloc(index.slot_count, sizeof(*index.labels));
+  index.blocks = calloc(index.slot_count, sizeof(*index.blocks));
+  if (index.labels == NULL || index.blocks == NULL) {
+    fprintf(stderr,
+            "CFG error: unable to allocate a %zu-slot label index while linking "
+            "a %u-node CFG\n",
+            index.slot_count, cfg->num_nodes);
+    exit(1);
+  }
+  size_t mask = index.slot_count - 1;
+  for (unsigned i = 0; i < cfg->num_nodes; i++) {
+    struct CFGNode* node = cfg->nodes[i];
+    struct TACInstr* head = node->body.head;
+    if (head == NULL || head->type != TACLABEL) {
+      continue;
+    }
+    const struct Slice* label = head->instr.tac_label.label;
+    size_t slot = hash_slice(label) & mask;
+    while (index.labels[slot] != NULL &&
+           !compare_slice_to_slice(index.labels[slot], label)) {
+      slot = (slot + 1) & mask;
+    }
+    if (index.labels[slot] == NULL) {
+      index.labels[slot] = label;
+      index.blocks[slot] = node;
+    }
+  }
+  return index;
+}
+
+// Return the block whose leading label is the jump's target, or NULL.
+static struct CFGNode* label_index_find_target(const struct LabelIndex* index,
+                                               const struct TACInstr* jump_instr) {
+  const struct Slice* target_label = jump_instr->type == TACJUMP
+                                         ? jump_instr->instr.tac_jump.label
+                                         : jump_instr->instr.tac_cond_jump.label;
+  size_t mask = index->slot_count - 1;
+  size_t slot = hash_slice(target_label) & mask;
+  while (index->labels[slot] != NULL) {
+    if (compare_slice_to_slice(index->labels[slot], target_label)) {
+      return index->blocks[slot];
+    }
+    slot = (slot + 1) & mask;
+  }
+  return NULL;
+}
+
 // Link basic blocks and populate their CFG edges.
 static struct CFG* link_cfg(struct CFG* cfg) {
   struct CFGNode* start_node = cfg->nodes[0];
   struct CFGNode* exit_node = cfg->nodes[cfg->num_nodes - 1];
+  struct LabelIndex labels = label_index_build(cfg);
 
   // link ENTRY to first basic block
   link_nodes(start_node, cfg->nodes[1]);
@@ -269,7 +325,7 @@ static struct CFG* link_cfg(struct CFG* cfg) {
           link_nodes(cur, next);
           /* fall through */
         case TACJUMP: { // link to only jump target
-          struct CFGNode* target = find_target_of_jump(cfg, last_instr);
+          struct CFGNode* target = label_index_find_target(&labels, last_instr);
           if (target != NULL) {
             link_nodes(cur, target);
           } else {
@@ -295,6 +351,8 @@ static struct CFG* link_cfg(struct CFG* cfg) {
     }
   }
 
+  free(labels.labels);
+  free(labels.blocks);
   return cfg;
 }
 
@@ -941,7 +999,7 @@ void print_cfg(const struct CFG* cfg) {
 // Rebuild a detached TAC function body from basic blocks in layout order. The
 // copies keep CFG block lists independent, so rebuilding does not consume or
 // otherwise mutate the graph.
-struct TACInstr* rebuild_body(struct CFG* cfg) {
+struct TACInstrList rebuild_body(struct CFG* cfg) {
   if (cfg == NULL || cfg->nodes == NULL) {
     fprintf(stderr,
             "CFG error: cannot rebuild a TAC body from a null or uninitialized CFG\n");
@@ -984,7 +1042,14 @@ struct TACInstr* rebuild_body(struct CFG* cfg) {
     }
   }
 
-  return rebuilt.head;
+  return rebuilt;
+}
+
+// Record each node's position in cfg->nodes in its index field.
+void cfg_number_nodes(struct CFG* cfg) {
+  for (unsigned i = 0; i < cfg->num_nodes; i++) {
+    cfg->nodes[i]->index = i;
+  }
 }
 
 // Reset all marked flags in the CFG for traversal.
@@ -1005,8 +1070,8 @@ struct CFG* repair_cfg(struct CFG* cfg){
 
   // rebuild_body does not use CFG edges, 
   // so this is safe even if the CFG has dangling edges.
-  struct TACInstr* instrs = rebuild_body(cfg);
+  struct TACInstrList instrs = rebuild_body(cfg);
 
   // instrs is now valid, so we can safely rebuild the CFG from it
-  return build_cfg(instrs);
+  return build_cfg(instrs.head);
 }

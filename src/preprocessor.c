@@ -15,10 +15,11 @@
 // Only #include "path", #define, #ifdef/#ifndef/#else/#endif
 //                         are supported; no function-like macros or #undef.
 
-// Track a growable output buffer and source mapping during preprocessing.
+// Track a growable output buffer and its run-length source mapping during
+// preprocessing. map.length always equals len.
 struct Buffer {
   char* data;
-  struct SourceMappingEntry* map;
+  struct SourceMapping map;
   size_t len;
   size_t cap;
 };
@@ -78,20 +79,27 @@ static void preprocessor_error_at(const char* filename, size_t line_no, const ch
   fprintf(stderr, "\n");
 }
 
-// Allocate an empty output buffer and a parallel source-location map.
-// Returns false if either allocation fails.
+// Allocate an empty output buffer with an empty source mapping.
+// Returns false if the allocation fails.
 static bool buffer_init(struct Buffer* buf, size_t cap) {
   buf->data = malloc(cap);
   if (buf->data == NULL) return false;
-  buf->map = malloc(cap * sizeof(*buf->map));
-  if (buf->map == NULL) {
-    free(buf->data);
-    buf->data = NULL;
-    return false;
-  }
+  buf->map.runs = NULL;
+  buf->map.run_count = 0;
+  buf->map.run_cap = 0;
+  buf->map.length = 0;
   buf->len = 0;
   buf->cap = cap;
   return true;
+}
+
+// Free the buffer's text and source mapping.
+static void buffer_free(struct Buffer* buf) {
+  free(buf->data);
+  buf->data = NULL;
+  source_mapping_free(&buf->map);
+  buf->len = 0;
+  buf->cap = 0;
 }
 
 // Ensure the buffer can append add bytes plus a trailing NUL.
@@ -103,9 +111,6 @@ static bool buffer_reserve(struct Buffer* buf, size_t add) {
   char* next = realloc(buf->data, new_cap);
   if (next == NULL) return false;
   buf->data = next;
-  struct SourceMappingEntry* next_map = realloc(buf->map, new_cap * sizeof(*buf->map));
-  if (next_map == NULL) return false;
-  buf->map = next_map;
   buf->cap = new_cap;
   return true;
 }
@@ -115,8 +120,8 @@ static bool buffer_reserve(struct Buffer* buf, size_t add) {
 // buffer_reserve must succeed for append.
 static bool buffer_append_char(struct Buffer* buf, char c, struct SourceMappingEntry loc) {
   if (!buffer_reserve(buf, 1)) return false;
+  if (!source_mapping_append(&buf->map, loc, 1, true)) return false;
   buf->data[buf->len++] = c;
-  buf->map[buf->len - 1] = loc;
   return true;
 }
 
@@ -126,22 +131,20 @@ static bool buffer_append_char(struct Buffer* buf, char c, struct SourceMappingE
 static bool buffer_append_str_with_loc(struct Buffer* buf, const char* s, size_t len,
                                        struct SourceMappingEntry loc) {
   if (!buffer_reserve(buf, len)) return false;
+  if (!source_mapping_append(&buf->map, loc, len, false)) return false;
   memcpy(buf->data + buf->len, s, len);
-  for (size_t i = 0; i < len; ++i) {
-    buf->map[buf->len + i] = loc;
-  }
   buf->len += len;
   return true;
 }
 
-// Append a string slice with per-byte source mappings.
+// Append src bytes [offset, offset + len) together with their source mapping.
 // Returns true on success and increments buf->len.
-// map has at least len entries.
-static bool buffer_append_str_with_map(struct Buffer* buf, const char* s, size_t len,
-                                       const struct SourceMappingEntry* map) {
+static bool buffer_append_range(struct Buffer* buf, const char* src_text,
+                                const struct SourceMapping* src_map,
+                                size_t offset, size_t len) {
   if (!buffer_reserve(buf, len)) return false;
-  memcpy(buf->data + buf->len, s, len);
-  memcpy(buf->map + buf->len, map, len * sizeof(*buf->map));
+  if (!source_mapping_append_range(&buf->map, src_map, offset, len)) return false;
+  memcpy(buf->data + buf->len, src_text + offset, len);
   buf->len += len;
   return true;
 }
@@ -293,9 +296,10 @@ static bool ifstack_pop(struct IfStack* stack) {
 }
 
 // Strip comments while preserving strings and character literals.
-// prog is a NUL-terminated source buffer; filename identifies the source.
+// prog is a NUL-terminated source buffer of prog_len bytes; filename identifies
+// the source. Comment removal cannot exceed prog_len, so output is reserved once.
 // Returns true on success and fills out with comment-stripped text and mappings.
-static bool strip_comments(const char* prog, const char* filename,
+static bool strip_comments(const char* prog, size_t prog_len, const char* filename,
                            struct FileTable* files, struct Buffer* out) {
   const char* interned = file_table_intern(files, filename);
   if (interned == NULL) {
@@ -309,6 +313,10 @@ static bool strip_comments(const char* prog, const char* filename,
   bool in_string = false;
   bool in_char = false;
   bool escape = false;
+
+  // Comment removal never enlarges the input. Reserve its maximum output size
+  // once so the hot byte-copy loop can write the text and source map directly.
+  if (!buffer_reserve(out, prog_len)) goto fail;
 
   while (prog[prog_index] != 0) {
     char c = prog[prog_index];
@@ -376,7 +384,9 @@ static bool strip_comments(const char* prog, const char* filename,
       }
     }
 
-    if (!buffer_append_char(out, c, loc)) goto fail;
+    if (!source_mapping_append(&out->map, loc, 1, true)) goto fail;
+    out->data[out->len] = c;
+    out->len++;
     prog_index++;
     if (c == '\n') {
       line++;
@@ -612,64 +622,23 @@ static bool try_expand_builtin_macro(const char* name, size_t len,
   return true;
 }
 
-// Expand macros in a single line, skipping strings and char literals.
-// Returns true on success and appends expanded content to out.
+// Expand macros in a single line while copying strings, character literals,
+// punctuation, and whitespace in mapped spans. Returns true on success and
+// appends expanded content to out.
 static bool expand_macros_in_line(const char* line, size_t len,
-                                  const struct SourceMappingEntry* line_map,
+                                  const char* src_text,
+                                  const struct SourceMapping* src_map,
                                   struct Macro* macros, struct Buffer* out) {
-  bool in_string = false;
-  bool in_char = false;
-  bool escape = false;
-
+  // line points into src_text; mapping offsets are relative to src_text.
+  size_t line_offset = (size_t)(line - src_text);
   for (size_t i = 0; i < len; ) {
-    char c = line[i];
-    struct SourceMappingEntry loc = line_map[i];
-
-    if (in_string) {
-      if (!buffer_append_char(out, c, loc)) return false;
-      if (escape) {
-        escape = false;
-      } else if (c == '\\') {
-        escape = true;
-      } else if (c == '"') {
-        in_string = false;
-      }
-      i++;
-      continue;
-    }
-
-    if (in_char) {
-      if (!buffer_append_char(out, c, loc)) return false;
-      if (escape) {
-        escape = false;
-      } else if (c == '\\') {
-        escape = true;
-      } else if (c == '\'') {
-        in_char = false;
-      }
-      i++;
-      continue;
-    }
-
-    if (c == '"') {
-      in_string = true;
-      if (!buffer_append_char(out, c, loc)) return false;
-      i++;
-      continue;
-    }
-    if (c == '\'') {
-      in_char = true;
-      if (!buffer_append_char(out, c, loc)) return false;
-      i++;
-      continue;
-    }
-
-    if (is_ident_start(c)) {
+    if (is_ident_start(line[i])) {
       size_t start = i;
       i++;
       while (i < len && is_ident_char(line[i])) i++;
       bool matched = false;
-      struct SourceMappingEntry macro_loc = line_map[start];
+      struct SourceMappingEntry macro_loc =
+          source_mapping_lookup(src_map, line_offset + start);
       if (!try_expand_builtin_macro(line + start, i - start, &macro_loc, out, &matched)) {
         return false;
       }
@@ -678,13 +647,37 @@ static bool expand_macros_in_line(const char* line, size_t len,
       if (macro != NULL) {
         if (!buffer_append_str_with_loc(out, macro->value, macro->value_len, macro_loc)) return false;
       } else {
-        if (!buffer_append_str_with_map(out, line + start, i - start, line_map + start)) return false;
+        if (!buffer_append_range(out, src_text, src_map, line_offset + start, i - start)) return false;
       }
       continue;
     }
 
-    if (!buffer_append_char(out, c, loc)) return false;
-    i++;
+    // Copy punctuation, whitespace, and quoted literals as one mapped span.
+    // Identifiers inside literals are deliberately skipped by scanning to the
+    // matching unescaped quote before resuming identifier recognition.
+    size_t start = i;
+    while (i < len && !is_ident_start(line[i])) {
+      if (line[i] != '"' && line[i] != '\'') {
+        i++;
+        continue;
+      }
+
+      char quote = line[i++];
+      bool escape = false;
+      while (i < len) {
+        char literal_char = line[i++];
+        if (escape) {
+          escape = false;
+        } else if (literal_char == '\\') {
+          escape = true;
+        } else if (literal_char == quote) {
+          break;
+        }
+      }
+    }
+    if (!buffer_append_range(out, src_text, src_map, line_offset + start, i - start)) {
+      return false;
+    }
   }
 
   return true;
@@ -786,12 +779,12 @@ static bool handle_include_line(const char* line, const char* line_end, const ch
   free(include_source);
   free(include_path);
   size_t include_len = include_output.map.length;
-  bool ok = buffer_append_str_with_map(out, include_output.text, include_len, include_output.map.entries);
+  bool ok = buffer_append_range(out, include_output.text, &include_output.map, 0, include_len);
   if (ok && add_newline && (include_len == 0 || include_output.text[include_len - 1] != '\n')) {
     ok = buffer_append_char(out, '\n', newline_loc);
   }
   free(include_output.text);
-  free(include_output.map.entries);
+  source_mapping_free(&include_output.map);
   return ok;
 }
 
@@ -1025,15 +1018,15 @@ static bool preprocess_buffer(const char* prog, const char* filename,
                               struct Macro** macros, struct FileTable* files,
                               struct PreprocessOutput* out) {
   struct Buffer no_comments;
-  size_t initial_cap = strlen(prog) + 1;
+  size_t prog_len = strlen(prog);
+  size_t initial_cap = prog_len + 1;
   if (initial_cap < 64) initial_cap = 64;
   if (!buffer_init(&no_comments, initial_cap)) {
     fprintf(stderr, "Preprocessor memory error\n");
     return false;
   }
-  if (!strip_comments(prog, filename, files, &no_comments)) {
-    free(no_comments.data);
-    free(no_comments.map);
+  if (!strip_comments(prog, prog_len, filename, files, &no_comments)) {
+    buffer_free(&no_comments);
     return false;
   }
 
@@ -1042,8 +1035,7 @@ static bool preprocess_buffer(const char* prog, const char* filename,
   if (output_cap < 64) output_cap = 64;
   if (!buffer_init(&output, output_cap)) {
     fprintf(stderr, "Preprocessor memory error\n");
-    free(no_comments.data);
-    free(no_comments.map);
+    buffer_free(&no_comments);
     return false;
   }
 
@@ -1064,10 +1056,9 @@ static bool preprocess_buffer(const char* prog, const char* filename,
     if (has_newline) cursor++;
     size_t line_len = (size_t)(line_end - line_start);
     size_t line_offset = (size_t)(line_start - no_comments.data);
-    const struct SourceMappingEntry* line_map = no_comments.map + line_offset;
     struct SourceMappingEntry newline_loc = {NULL, 0, 0};
     if (has_newline) {
-      newline_loc = no_comments.map[line_offset + line_len];
+      newline_loc = source_mapping_lookup(&no_comments.map, line_offset + line_len);
     }
 
     const char* p = line_start;
@@ -1076,10 +1067,8 @@ static bool preprocess_buffer(const char* prog, const char* filename,
     if (p < line_end && *p == '#') {
       if (!preprocess_directive(p + 1, line_end, newline_loc, has_newline, line_no,
                                 filename, macros, files, &output, &if_stack)) {
-        free(no_comments.data);
-        free(no_comments.map);
-        free(output.data);
-        free(output.map);
+        buffer_free(&no_comments);
+        buffer_free(&output);
         free(if_stack.items);
         return false;
       }
@@ -1089,21 +1078,18 @@ static bool preprocess_buffer(const char* prog, const char* filename,
 
     // Only emit non-directive lines from active regions.
     if (if_stack.current_active) {
-      if (!expand_macros_in_line(line_start, line_len, line_map, *macros, &output)) {
+      if (!expand_macros_in_line(line_start, line_len, no_comments.data, &no_comments.map,
+                                 *macros, &output)) {
         fprintf(stderr, "Preprocessor memory error\n");
-        free(no_comments.data);
-        free(no_comments.map);
-        free(output.data);
-        free(output.map);
+        buffer_free(&no_comments);
+        buffer_free(&output);
         free(if_stack.items);
         return false;
       }
       if (has_newline && !buffer_append_char(&output, '\n', newline_loc)) {
         fprintf(stderr, "Preprocessor memory error\n");
-        free(no_comments.data);
-        free(no_comments.map);
-        free(output.data);
-        free(output.map);
+        buffer_free(&no_comments);
+        buffer_free(&output);
         free(if_stack.items);
         return false;
       }
@@ -1115,26 +1101,25 @@ static bool preprocess_buffer(const char* prog, const char* filename,
   if (if_stack.count != 0) {
     preprocessor_error_at(filename, line_no,
                           "unterminated #ifdef/#ifndef block (reached end of file)");
-    free(no_comments.data);
-    free(no_comments.map);
-    free(output.data);
-    free(output.map);
+    buffer_free(&no_comments);
+    buffer_free(&output);
     free(if_stack.items);
     return false;
   }
 
-  free(no_comments.data);
-  free(no_comments.map);
+  buffer_free(&no_comments);
   free(if_stack.items);
   if (!buffer_finish(&output)) {
     fprintf(stderr, "Preprocessor memory error\n");
-    free(output.data);
-    free(output.map);
+    buffer_free(&output);
     return false;
   }
+  // Trim growth slack: the text and map live for the rest of compilation.
+  char* trimmed = realloc(output.data, output.len + 1);
+  if (trimmed != NULL) output.data = trimmed;
+  source_mapping_shrink(&output.map);
   out->text = output.data;
-  out->map.entries = output.map;
-  out->map.length = output.len;
+  out->map = output.map;
   return true;
 }
 
@@ -1145,7 +1130,9 @@ bool preprocess(char const* prog, const char* filename, int num_defines,
                 const char* const* defines, struct PreprocessResult* result) {
   if (result == NULL) return false;
   result->text = NULL;
-  result->map.entries = NULL;
+  result->map.runs = NULL;
+  result->map.run_count = 0;
+  result->map.run_cap = 0;
   result->map.length = 0;
   file_table_init(&result->file_table);
 
@@ -1174,9 +1161,7 @@ bool preprocess(char const* prog, const char* filename, int num_defines,
 void destroy_preprocess_result(struct PreprocessResult* result) {
   if (result == NULL) return;
   free(result->text);
-  free(result->map.entries);
   result->text = NULL;
-  result->map.entries = NULL;
-  result->map.length = 0;
+  source_mapping_free(&result->map);
   file_table_destroy(&result->file_table);
 }

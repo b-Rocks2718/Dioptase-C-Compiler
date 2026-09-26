@@ -1,0 +1,43 @@
+Program(
+    
+    StructDclr(name=P, members=[
+        MemberDclr(name=x, type=int), 
+        MemberDclr(name=y, type=int), 
+    ]);
+    VarDclr(none, int, g1, SingleInit(LitExpr(int, 1):untyped));
+    VarDclr(none, int*, g2);
+    VarDclr(none, int[2], g3, CompoundInit(SingleInit(LitExpr(int, 3):untyped), SingleInit(LitExpr(int, 4):untyped)));
+    FunDclr(
+        f,
+        storage=none
+        params=[VarDclr(none, int, x), ]
+        type=func(ret_type=int, param_types=[int, ]),
+        body=null
+    );
+    FunDclr(
+        h,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=null
+    );
+    VarDclr(none, struct P, p1);
+    VarDclr(none, struct P, p2);
+    FunDclr(
+        main,
+        storage=none
+        params=[]
+        type=func(ret_type=int, param_types=[]),
+        body=
+            VarDclr(none, int, a, SingleInit(LitExpr(int, 2):untyped));
+            VarDclr(none, int, b, SingleInit(AddOp(Var(a):untyped, LitExpr(int, 1):untyped):untyped));
+            VarDclr(none, int*, c, SingleInit(AddrOf(Var(b):untyped):untyped));
+            ForStmt(
+                VarDclr(none, int, i, SingleInit(LitExpr(int, 0):untyped)), VarDclr(none, int, j, SingleInit(LitExpr(int, 10):untyped)),
+                BoolLe(Var(i):untyped, Var(j):untyped):untyped,
+                PostAssign(Inc, Var(i):untyped):untyped,
+                ExprStmt(PlusEqOp(Var(a):untyped, Var(i):untyped):untyped);
+            );
+            Return(AddOp(AddOp(Var(a):untyped, Var(b):untyped):untyped, Dereference(Var(c):untyped):untyped):untyped);
+    );
+)

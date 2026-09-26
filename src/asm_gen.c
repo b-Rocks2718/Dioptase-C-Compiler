@@ -1254,8 +1254,8 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
     }
 
     // convert body instructions
-    frame_address_taken = body_takes_frame_address(func->body);
-    for (struct TACInstr* tac_instr = func->body; tac_instr != NULL; tac_instr = tac_instr->next) {
+    frame_address_taken = body_takes_frame_address(func->body.head);
+    for (struct TACInstr* tac_instr = func->body.head; tac_instr != NULL; tac_instr = tac_instr->next) {
       struct AsmInstr* asm_instr = instr_to_asm(func->name, tac_instr);
       append_asm_instrs(&asm_body, &asm_body_tail, asm_instr);
     }

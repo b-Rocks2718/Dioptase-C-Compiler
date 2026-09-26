@@ -883,7 +883,10 @@ struct Expr* parse_unary(){
     const char* op_loc = (current - 1)->start;
     struct Expr* inner = parse_factor();
     if (inner == NULL) {
-      current = old_current - 1;
+      // old_current was saved before the operator, so this un-consumes
+      // exactly the operator. Backing up further would re-expose an earlier
+      // token (e.g. the '(' in "(-)3"), letting the caller re-parse it forever.
+      current = old_current;
       return NULL;
     }
     struct UnaryExpr expr = {op, inner};
@@ -1473,23 +1476,50 @@ struct Statement* parse_goto_stmt(){
   }
 }
 
+// Allocate a single-node block list holding one item.
+static struct Block* alloc_block_node(struct BlockItem* item){
+  struct Block* block = arena_alloc(sizeof(struct Block));
+  block->item = item;
+  block->idents = NULL;
+  block->next = NULL;
+  return block;
+}
+
+// Convert a declaration list into a chain of DCLR_ITEM block nodes, one per
+// declaration. The last node is returned through *tail_out.
+static struct Block* dclr_list_to_block_items(struct DeclarationList* dclrs,
+                                              struct Block** tail_out){
+  struct Block* head = NULL;
+  struct Block** link = &head;
+  struct Block* tail = NULL;
+  for (struct DeclarationList* node = dclrs; node != NULL; node = node->next){
+    struct BlockItem* item = arena_alloc(sizeof(struct BlockItem));
+    item->type = DCLR_ITEM;
+    item->item.dclr = &node->dclr;
+    tail = alloc_block_node(item);
+    *link = tail;
+    link = &tail->next;
+  }
+  *tail_out = tail;
+  return head;
+}
+
 // Block items are either a statement or a declaration.
-// Parse one block item (declaration or statement).
-// Returns a BlockItem or NULL when parsing fails.
-struct BlockItem* parse_block_item(){
+// A declaration with several declarators (`int a, b;`) expands into one
+// DCLR_ITEM per declarator, so the result is a chain of Block nodes.
+// Returns the chain head (its last node through *tail_out) or NULL on failure.
+static struct Block* parse_block_item(struct Block** tail_out){
   struct Statement* stmt = parse_statement();
   if (stmt != NULL){
     struct BlockItem* item = arena_alloc(sizeof(struct BlockItem));
     item->type = STMT_ITEM;
     item->item.stmt = stmt;
-    return item;
+    *tail_out = alloc_block_node(item);
+    return *tail_out;
   }
-  struct Declaration* dclr = parse_declaration();
-  if (dclr != NULL){
-    struct BlockItem* item = arena_alloc(sizeof(struct BlockItem));
-    item->type = DCLR_ITEM;
-    item->item.dclr = dclr;
-    return item;
+  struct DeclarationList* dclrs = parse_declaration();
+  if (dclrs != NULL){
+    return dclr_list_to_block_items(dclrs, tail_out);
   }
   return NULL; 
 }
@@ -1507,22 +1537,12 @@ struct Block* parse_block(bool* success){
   }
 
   struct Block* block = NULL;
-
-  struct BlockItem* item = parse_block_item();
-
-  if (item != NULL){
-    block = arena_alloc(sizeof(struct Block));
-    block->item = item;
-    block->next = NULL;
-    struct Block* prev_block = block;
-    struct Block* cur_block;
-    while ((item = parse_block_item()) != NULL){
-      cur_block = arena_alloc(sizeof(struct Block));
-      cur_block->item = item;
-      cur_block->next = NULL;
-      prev_block->next = cur_block;
-      prev_block = cur_block;
-    }
+  struct Block** link = &block;
+  struct Block* items;
+  struct Block* items_tail;
+  while ((items = parse_block_item(&items_tail)) != NULL){
+    *link = items;
+    link = &items_tail->next;
   }
 
   if (!consume(CLOSE_B)){
@@ -1671,9 +1691,18 @@ bool is_type_specifier(enum TokenType type){
   }
 }
 
-// Parse the declaration form of a for-loop initializer.
-// Returns a VariableDclr or NULL if no declaration is found.
-struct VariableDclr* parse_for_dclr(){
+static bool merge_cleanup_attrs(struct VarAttributes** attrs,
+                                struct VarAttributes* new_attrs);
+static struct DeclarationList* parse_init_declarator_list(
+    struct Type* base_type, enum StorageClass storage,
+    struct VarAttributes* spec_attrs, bool allow_functions,
+    const char* context, struct Token* old_current);
+
+// Parse the declaration form of a for-loop initializer, including its ';'.
+// Returns one VAR_DCLR per declarator, or NULL (cursor restored) if the
+// initializer is not a variable declaration. Storage classes are accepted
+// here and rejected by typechecking.
+static struct DeclarationList* parse_for_dclr(){
   struct Token* old_current = current;
   if ((size_t)(current - program) >= prog_size) {
     return NULL;
@@ -1697,60 +1726,31 @@ struct VariableDclr* parse_for_dclr(){
 
   struct VarAttributes* new_attrs = NULL;
   if ((new_attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 2
-  if (attrs->cleanup_func != NULL && new_attrs->cleanup_func != NULL){
-    parse_error_at(parser_error_ptr(), "cleanup specified multiple times");
-    return NULL;
-  }
-  if (new_attrs->cleanup_func != NULL){
-    attrs = new_attrs;
-  }
+  if (!merge_cleanup_attrs(&attrs, new_attrs)) return NULL;
 
-  struct Declarator* declarator = parse_declarator();
-  if (declarator == NULL) {
-    parse_error_at(parser_error_ptr(), "invalid declarator in for-loop initializer");
-    return NULL;
-  }
-
-  if ((new_attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 3
-  if (attrs->cleanup_func != NULL && new_attrs->cleanup_func != NULL){
-    parse_error_at(parser_error_ptr(), "cleanup specified multiple times");
-    return NULL;
-  }
-  if (new_attrs->cleanup_func != NULL){
-    attrs = new_attrs;
-  }
-
-  struct Slice* name = NULL;
-  struct Type* decl_type = NULL;
-  struct ParamList* params = NULL;
-  if (!process_declarator(declarator, base_type, &name, &decl_type, &params)) {
-    current = old_current;
-    return NULL;
-  }
-  if (decl_type->type == FUN_TYPE) {
-    current = old_current;
-    return NULL;
-  }
-
-  struct VariableDclr* var_dclr = parse_var_dclr(decl_type, storage, name);
-  if (var_dclr == NULL || !consume(SEMI)) {
-    current = old_current;
-    return NULL;
-  }
-  var_dclr->attributes = *attrs;
-  return var_dclr;
+  return parse_init_declarator_list(base_type, storage, attrs, false,
+                                    "for-loop initializer", old_current);
 }
 
 // Parse for-loop initializer, preferring a declaration when possible.
-// Parse the initializer portion of a for-loop.
 // Returns a ForInit node or NULL on failure.
-struct ForInit* parse_for_init(){
+static struct ForInit* parse_for_init(){
   struct Token* old_current = current;
-  struct VariableDclr* var_dclr = parse_for_dclr();
-  if (var_dclr != NULL){
+  struct DeclarationList* dclrs = parse_for_dclr();
+  if (dclrs != NULL){
+    // parse_for_dclr only yields VAR_DCLRs.
+    struct VarDclrList* vars = NULL;
+    struct VarDclrList** link = &vars;
+    for (struct DeclarationList* node = dclrs; node != NULL; node = node->next){
+      struct VarDclrList* var = arena_alloc(sizeof(struct VarDclrList));
+      var->dclr = node->dclr.dclr.var_dclr;
+      var->next = NULL;
+      *link = var;
+      link = &var->next;
+    }
     struct ForInit* init = arena_alloc(sizeof(struct ForInit));
     init->type = DCLR_INIT;
-    init->init.dclr_init = var_dclr;
+    init->init.dclr_init = vars;
     return init;
   } else {
     struct Expr* expr_init = parse_expr();
@@ -2007,6 +2007,7 @@ struct VariableDclr* parse_var_dclr(struct Type* type, enum StorageClass storage
   struct VariableDclr* var_dclr = arena_alloc(sizeof(struct VariableDclr));
   var_dclr->init = init;
   var_dclr->name = name;
+  var_dclr->source_name = name;
   var_dclr->type = type;
   var_dclr->storage = storage;
   var_dclr->attributes.cleanup_func = NULL;
@@ -2339,6 +2340,7 @@ bool process_params_info(struct ParamInfoList* params, struct ParamList** params
     }
     struct ParamList* node = arena_alloc(sizeof(struct ParamList));
     node->param.name = name;
+    node->param.source_name = name;
     node->param.type = type_;
     node->param.init = NULL;
     node->param.storage = NONE;
@@ -2449,10 +2451,9 @@ struct Block* parse_end_of_func(bool* success){
   return NULL;
 }
 
-// Parse a function declaration or definition.
-// Returns a FunctionDclr node or NULL on failure.
-struct FunctionDclr* parse_function(struct Type* ret_type, enum StorageClass storage, 
-                                    struct Slice* name, struct ParamList* params){
+// Build a function prototype node (body NULL) from processed declarator parts.
+static struct FunctionDclr* build_function_dclr(struct Type* ret_type, enum StorageClass storage,
+                                                struct Slice* name, struct ParamList* params){
   struct Type* fun_type = alloc_type(FUN_TYPE);
   fun_type->type_data.fun_type.return_type = ret_type;
   fun_type->type_data.fun_type.param_types = params_to_types(params);
@@ -2461,6 +2462,15 @@ struct FunctionDclr* parse_function(struct Type* ret_type, enum StorageClass sto
   result->params = params;
   result->storage = storage;
   result->type = fun_type;
+  result->body = NULL;
+  return result;
+}
+
+// Parse a function declaration or definition.
+// Returns a FunctionDclr node or NULL on failure.
+struct FunctionDclr* parse_function(struct Type* ret_type, enum StorageClass storage, 
+                                    struct Slice* name, struct ParamList* params){
+  struct FunctionDclr* result = build_function_dclr(ret_type, storage, name, params);
   bool success;
   result->body = parse_end_of_func(&success);
   if (!success){
@@ -2590,13 +2600,137 @@ struct EnumMemberDclr* parse_enumerator_list(){
   return head;
 }
 
-// Parse a full declaration (function or variable).
-// Parse a declaration (function or variable) at any scope.
-// Returns a Declaration node or NULL on failure.
-struct Declaration* parse_declaration(){
+// Combine cleanup attributes from another attribute position into *attrs.
+// Returns false (after reporting) if both specify a cleanup function.
+static bool merge_cleanup_attrs(struct VarAttributes** attrs,
+                                struct VarAttributes* new_attrs){
+  if ((*attrs)->cleanup_func != NULL && new_attrs->cleanup_func != NULL){
+    parse_error_at(parser_error_ptr(), "cleanup specified multiple times");
+    return false;
+  }
+  if (new_attrs->cleanup_func != NULL){
+    *attrs = new_attrs;
+  }
+  return true;
+}
+
+// Give each declarator its own base type node. Later passes mutate types in
+// place (e.g. identifier resolution renames struct tags), so declarators of one
+// declaration must not share nodes. Specifier-derived base types are always
+// leaf nodes, so a shallow copy is a full copy.
+static struct Type* copy_base_type(struct Type* base_type){
+  struct Type* copy = alloc_type(base_type->type);
+  *copy = *base_type;
+  return copy;
+}
+
+// Parse the comma-separated declarators that follow a declaration's
+// specifiers, through the terminating ';' (or a function body).
+//
+// Each declarator becomes its own Declaration, so `int a, *b = &a;` yields the
+// same AST as `int a; int *b = &a;` and later passes need no changes. The
+// storage class and spec_attrs (attributes before the declarator) apply to
+// every declarator; an attribute after a declarator applies only to it.
+//
+// With allow_functions, function declarators become prototypes, and the
+// first declarator may instead be a function definition, which must then be
+// the only declarator. Without it, a function declarator makes the parse fail.
+//
+// context names the construct in diagnostics. On failure returns NULL with the
+// cursor reset to old_current.
+static struct DeclarationList* parse_init_declarator_list(
+    struct Type* base_type, enum StorageClass storage,
+    struct VarAttributes* spec_attrs, bool allow_functions,
+    const char* context, struct Token* old_current){
+  struct DeclarationList* head = NULL;
+  struct DeclarationList** link = &head;
+  bool first = true;
+  while (true){
+    struct Declarator* declarator = parse_declarator();
+    if (declarator == NULL){
+      if (first){
+        parse_error_at(parser_error_ptr(), "expected declarator after type specifiers");
+      } else {
+        parse_error_at(parser_error_ptr(), "expected declarator after ',' in %s", context);
+      }
+      current = old_current;
+      return NULL;
+    }
+
+    struct VarAttributes* attrs = spec_attrs;
+    struct VarAttributes* new_attrs = NULL;
+    if ((new_attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 3
+    if (!merge_cleanup_attrs(&attrs, new_attrs)) return NULL;
+
+    struct Slice* name = NULL;
+    struct Type* decl_type = NULL;
+    struct ParamList* params = NULL;
+    struct Type* declarator_base = first ? base_type : copy_base_type(base_type);
+    if (!process_declarator(declarator, declarator_base, &name, &decl_type, &params)){
+      current = old_current;
+      return NULL;
+    }
+
+    struct DeclarationList* node = arena_alloc(sizeof(struct DeclarationList));
+    node->next = NULL;
+    if (decl_type->type == FUN_TYPE){
+      if (!allow_functions){
+        current = old_current;
+        return NULL;
+      }
+      struct Type* ret_type = decl_type->type_data.fun_type.return_type;
+      if (first && (size_t)(current - program) < prog_size && current->type == OPEN_B){
+        struct FunctionDclr* fun_dclr = parse_function(ret_type, storage, name, params);
+        if (fun_dclr == NULL){
+          current = old_current;
+          return NULL;
+        }
+        if ((size_t)(current - program) < prog_size && current->type == COMMA){
+          parse_error_at(parser_error_ptr(),
+                         "function definition of '%.*s' must be the only declarator in its declaration",
+                         (int)name->len, name->start);
+          current = old_current;
+          return NULL;
+        }
+        node->dclr.type = FUN_DCLR;
+        node->dclr.dclr.fun_dclr = *fun_dclr;
+        return node;
+      }
+      node->dclr.type = FUN_DCLR;
+      node->dclr.dclr.fun_dclr = *build_function_dclr(ret_type, storage, name, params);
+    } else {
+      struct VariableDclr* var_dclr = parse_var_dclr(decl_type, storage, name);
+      if (var_dclr == NULL){
+        current = old_current;
+        return NULL;
+      }
+      var_dclr->attributes = *attrs;
+      node->dclr.type = VAR_DCLR;
+      node->dclr.dclr.var_dclr = *var_dclr;
+    }
+    *link = node;
+    link = &node->next;
+    first = false;
+
+    if (consume(COMMA)) continue;
+    if (!consume(SEMI)){
+      current = old_current;
+      return NULL;
+    }
+    return head;
+  }
+}
+
+// Parse a declaration (function, variable, or struct/union/enum tag) at any
+// scope. A declaration with several declarators (`int a, b;`) yields one
+// Declaration per declarator, linked in source order.
+// Returns the list or NULL on failure.
+struct DeclarationList* parse_declaration(){
   struct Token* old_current = current;
 
-  struct Declaration* result = arena_alloc(sizeof(struct Declaration));
+  struct DeclarationList* result_node = arena_alloc(sizeof(struct DeclarationList));
+  result_node->next = NULL;
+  struct Declaration* result = &result_node->dclr;
 
   // check for struct, union, or enum type declaration
   if (consume(STRUCT_TOK)) {
@@ -2630,7 +2764,7 @@ struct Declaration* parse_declaration(){
       current = old_current;
     } else {
       // type declaration successfully parsed
-      return result;
+      return result_node;
     }
   } else if (consume(UNION_TOK)) {
     union TokenVariant* data = consume_with_data(IDENT);
@@ -2662,7 +2796,7 @@ struct Declaration* parse_declaration(){
       current = old_current;
     } else {
       // type declaration successfully parsed
-      return result;
+      return result_node;
     }
   } else if (consume(ENUM_TOK)) {
     union TokenVariant* data = consume_with_data(IDENT);
@@ -2695,7 +2829,7 @@ struct Declaration* parse_declaration(){
         current = old_current;
       } else {
         // type declaration successfully parsed
-        return result;
+        return result_node;
       } 
     } else {
       current = old_current;
@@ -2716,59 +2850,10 @@ struct Declaration* parse_declaration(){
   }
   struct VarAttributes* new_attrs = NULL;
   if ((new_attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 2
-  if (attrs->cleanup_func != NULL && new_attrs->cleanup_func != NULL){
-    parse_error_at(parser_error_ptr(), "cleanup specified multiple times");
-    return NULL;
-  }
-  if (new_attrs->cleanup_func != NULL){
-    attrs = new_attrs;
-  }
+  if (!merge_cleanup_attrs(&attrs, new_attrs)) return NULL;
 
-  struct Declarator* declarator = parse_declarator();
-  if (declarator == NULL){
-    parse_error_at(parser_error_ptr(), "expected declarator after type specifiers");
-    return NULL;
-  }
-  if ((new_attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 3
-  if (attrs->cleanup_func != NULL && new_attrs->cleanup_func != NULL){
-    parse_error_at(parser_error_ptr(), "cleanup specified multiple times");
-    return NULL;
-  }
-  if (new_attrs->cleanup_func != NULL){
-    attrs = new_attrs;
-  }
-
-  struct Slice* name = NULL;
-  struct Type* decl_type = NULL;
-  struct ParamList* params = NULL;
-  if (!process_declarator(declarator, base_type, &name, &decl_type, &params)){
-    current = old_current;
-    return NULL;
-  }
-
-  if (decl_type->type == FUN_TYPE){
-    // function declaration
-    struct Type* ret_type = decl_type->type_data.fun_type.return_type;
-    struct FunctionDclr* fun_dclr = parse_function(ret_type, storage, name, params);
-    if (fun_dclr == NULL){
-      current = old_current;
-      return NULL;
-    }
-    result->type = FUN_DCLR;
-    result->dclr.fun_dclr = *fun_dclr;
-    return result;
-  }
-
-  // variable declaration
-  struct VariableDclr* var_dclr = parse_var_dclr(decl_type, storage, name);
-  if (var_dclr == NULL || !consume(SEMI)){
-    current = old_current;
-    return NULL;
-  }
-  result->type = VAR_DCLR;
-  result->dclr.var_dclr = *var_dclr;
-  result->dclr.var_dclr.attributes = *attrs;
-  return result;
+  return parse_init_declarator_list(base_type, storage, attrs, true,
+                                    "declaration", old_current);
 }
 
 // Top-level parser entry; consumes all declarations in the token stream.
@@ -2788,30 +2873,14 @@ struct Program* parse_prog(struct TokenArray* arr){
   max_consumed_index = 0;
 
   struct Program* prog = arena_alloc(sizeof(struct Program));
-  struct Declaration* dclr = parse_declaration();
+  prog->dclrs = NULL;
 
-  if (dclr == NULL) {
-    if ((size_t)(current - program) < prog_size) {
-      print_error();
-      return NULL;
-    }
-    // there were 0 declarations
-    prog->dclrs = NULL;
-    return prog;
-  }
-
-  struct DeclarationList* head = arena_alloc(sizeof(struct DeclarationList));
-  head->dclr = *dclr;
-  head->next = NULL;
-  prog->dclrs = head;
-
-  struct DeclarationList* tail = head;
-  while ((dclr = parse_declaration()) != NULL){
-    struct DeclarationList* next_dclr = arena_alloc(sizeof(struct DeclarationList));
-    next_dclr->dclr = *dclr;
-    next_dclr->next = NULL;
-    tail->next = next_dclr;
-    tail = next_dclr;
+  // Each parsed declaration may expand to several nodes (`int a, b;`).
+  struct DeclarationList** link = &prog->dclrs;
+  struct DeclarationList* dclrs;
+  while ((dclrs = parse_declaration()) != NULL){
+    *link = dclrs;
+    while (*link != NULL) link = &(*link)->next;
   }
 
   // ensure the entire token array has been consumed

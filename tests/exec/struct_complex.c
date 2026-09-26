@@ -1,12 +1,4 @@
-// Define named constants for struct/array/pointer test data.
 #define kDataLen 4
-#define kSeed 10
-#define kIndexMid 2
-#define kIndexPick 1
-#define kGlobal0 1
-#define kGlobal1 2
-#define kGlobal2 3
-#define kGlobal3 4
 
 // Hold packet data for struct/array/pointer behavior.
 struct Packet {
@@ -15,16 +7,16 @@ struct Packet {
 };
 
 // Provide global storage to exercise static struct initialization.
-struct Packet g_packet = { {kGlobal0, kGlobal1, kGlobal2, kGlobal3}, 0 };
+struct Packet g_packet = { {1, 2, 3, 4}, 0 };
 
 // Fill a packet with a sequence and set its cursor.
-// Returns the value at kIndexMid after filling.
+// Returns the value at index 2 after filling.
 int fill_packet(struct Packet* pkt, int seed) {
   int i = 0;
   for (i = 0; i < kDataLen; i = i + 1) {
     pkt->data[i] = seed + i;
   }
-  pkt->cursor = &pkt->data[kIndexMid];
+  pkt->cursor = &pkt->data[2];
   return *pkt->cursor;
 }
 
@@ -42,8 +34,8 @@ int sum_packet(struct Packet* pkt) {
 // Drive struct initialization, pointer fields, and array access.
 int main(void) {
   struct Packet local = { {0, 0, 0, 0}, 0 };
-  int mid = fill_packet(&local, kSeed);
+  int mid = fill_packet(&local, 10);
   int total = sum_packet(&g_packet);
-  g_packet.cursor = &g_packet.data[kIndexPick];
+  g_packet.cursor = &g_packet.data[1];
   return mid + total + *g_packet.cursor;
 }

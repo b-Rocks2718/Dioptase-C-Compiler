@@ -47,8 +47,8 @@ static const char* declaration_loc(const struct Declaration* dclr) {
     if (var_dclr->init != NULL && var_dclr->init->loc != NULL) {
       return var_dclr->init->loc;
     }
-    if (var_dclr->name != NULL && var_dclr->name->start != NULL) {
-      return var_dclr->name->start;
+    if (var_dclr->source_name != NULL && var_dclr->source_name->start != NULL) {
+      return var_dclr->source_name->start;
     }
   }
   return NULL;
@@ -79,10 +79,6 @@ static void tac_error_at(const char* loc, const char* fmt, ...) {
 static struct TACInstr* tac_instr_create(enum TACInstrType type) {
   struct TACInstr* instr = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
   instr->type = type;
-  instr->reaching_copies.head = NULL;
-  instr->reaching_copies.last = NULL;
-  instr->live_vars.head = NULL;
-  instr->live_vars.last = NULL;
   instr->next = NULL;
   return instr;
 }
@@ -677,7 +673,7 @@ struct TopLevel* func_to_TAC(struct FunctionDclr* declaration) {
   ret_instr->instr.tac_return.src = tac_make_const(0, tac_builtin_type(INT_TYPE)); // default return 0
 
   concat_TAC_instrs(&body, tac_instr_list(ret_instr));
-  top_level->top.tac_func.body = body.head;
+  top_level->top.tac_func.body = body;
 
   return top_level;
 }
@@ -900,7 +896,7 @@ struct TACInstrList var_dclr_to_TAC(struct Slice* func_name, struct Declaration*
                          0);
     }
     default:
-      tac_error_at(var_dclr->name ? var_dclr->name->start : NULL,
+      tac_error_at(var_dclr->source_name ? var_dclr->source_name->start : NULL,
                    "invalid storage class for local variable declaration");
       return tac_instr_list(NULL);
   }
@@ -1316,10 +1312,14 @@ struct TACInstrList for_init_to_TAC(struct Slice* func_name, struct ForInit* ini
         tac_error_at(NULL, "for-init declaration is missing");
         return tac_instr_list(NULL);
       }
-      struct Declaration tmp;
-      tmp.type = VAR_DCLR;
-      tmp.dclr.var_dclr = *init_->init.dclr_init;
-      return var_dclr_to_TAC(func_name, &tmp);
+      struct TACInstrList instrs = tac_instr_list(NULL);
+      for (struct VarDclrList* var = init_->init.dclr_init; var != NULL; var = var->next) {
+        struct Declaration tmp;
+        tmp.type = VAR_DCLR;
+        tmp.dclr.var_dclr = var->dclr;
+        concat_TAC_instrs(&instrs, var_dclr_to_TAC(func_name, &tmp));
+      }
+      return instrs;
     }
     case EXPR_INIT: {
       if (init_->init.expr_init == NULL) {
@@ -1466,7 +1466,9 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
   size_t enclosing_cleanup_count = active_cleanup_count;
   struct TACInstrList init_instrs = for_init_to_TAC(func_name, init_);
   if (init_ != NULL && init_->type == DCLR_INIT) {
-    note_cleanup_declaration(init_->init.dclr_init);
+    for (struct VarDclrList* var = init_->init.dclr_init; var != NULL; var = var->next) {
+      note_cleanup_declaration(&var->dclr);
+    }
   }
   struct TACInstrList body_instrs = stmt_to_TAC(func_name, body);
 

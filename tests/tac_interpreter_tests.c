@@ -69,10 +69,6 @@ static struct Val tac_val_var(struct Slice* name, struct Type* type) {
 static void tac_init_instr(struct TACInstr* instr, enum TACInstrType type) {
   memset(instr, 0, sizeof(*instr));
   instr->type = type;
-  instr->reaching_copies.head = NULL;
-  instr->reaching_copies.last = NULL;
-  instr->live_vars.head = NULL;
-  instr->live_vars.last = NULL;
   instr->next = NULL;
 }
 
@@ -80,14 +76,16 @@ static void tac_init_instr(struct TACInstr* instr, enum TACInstrType type) {
 // Clears the node and fills the function variant.
 static void tac_init_func(struct TopLevel* top,
                           struct Slice* name,
-                          struct TACInstr* body,
+                          struct TACInstr* body_head,
+                          struct TACInstr* body_last,
                           struct Slice** params,
                           size_t num_params) {
   memset(top, 0, sizeof(*top));
   top->type = FUNC;
   top->top.tac_func.name = name;
   top->top.tac_func.global = true;
-  top->top.tac_func.body = body;
+  top->top.tac_func.body.head = body_head;
+  top->top.tac_func.body.last = body_last;
   top->top.tac_func.params = params;
   top->top.tac_func.num_params = num_params;
   top->next = NULL;
@@ -125,7 +123,7 @@ static bool tac_test_return_const(void) {
   ret_instr.instr.tac_return.src = &ret_val;
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &ret_instr, NULL, 0);
+  tac_init_func(&main_func, &main_name, &ret_instr, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -199,7 +197,7 @@ static bool tac_test_arithmetic(void) {
   tac_link_instr(&mul_instr, &ret_instr);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &copy_a, NULL, 0);
+  tac_init_func(&main_func, &main_name, &copy_a, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -254,7 +252,7 @@ static bool tac_test_cond_jump(void) {
   tac_link_instr(&label, &ret_true);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &cond_jump, NULL, 0);
+  tac_init_func(&main_func, &main_name, &cond_jump, &ret_true, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -305,7 +303,7 @@ static bool tac_test_call(void) {
 
   struct Slice* add_params[kArgCount] = { &p_name, &q_name };
   struct TopLevel add_func;
-  tac_init_func(&add_func, &add_name, &add_bin, add_params, kArgCount);
+  tac_init_func(&add_func, &add_name, &add_bin, &add_ret, add_params, kArgCount);
 
   struct Val call_args[kArgCount];
   call_args[0] = tac_val_const(kArg0, &kTestIntType);
@@ -323,7 +321,7 @@ static bool tac_test_call(void) {
   tac_link_instr(&call_instr, &main_ret);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &call_instr, NULL, 0);
+  tac_init_func(&main_func, &main_name, &call_instr, &main_ret, NULL, 0);
 
   add_func.next = &main_func;
 
@@ -388,7 +386,7 @@ static bool tac_test_memory_ops(void) {
   tac_link_instr(&load, &ret_instr);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &copy_x, NULL, 0);
+  tac_init_func(&main_func, &main_name, &copy_x, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -480,7 +478,7 @@ static bool tac_test_unary_ops(void) {
   tac_link_instr(&add_1, &ret_instr);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &copy_a, NULL, 0);
+  tac_init_func(&main_func, &main_name, &copy_a, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -529,7 +527,7 @@ static bool tac_test_jump(void) {
   tac_link_instr(&label_instr, &ret_true);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &jump_instr, NULL, 0);
+  tac_init_func(&main_func, &main_name, &jump_instr, &ret_true, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -605,7 +603,7 @@ static bool tac_test_copy_to_offset(void) {
   tac_link_instr(&load, &ret_instr);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &copy_arr0, NULL, 0);
+  tac_init_func(&main_func, &main_name, &copy_arr0, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -623,7 +621,7 @@ static bool tac_expect_folded_constant(const char* name,
                                        struct Val* expected_dst,
                                        struct Type* expected_type,
                                        uint64_t expected_value) {
-  struct TACInstr* folded = constant_fold(instr);
+  struct TACInstr* folded = constant_fold(tac_instr_list(instr)).head;
   if (folded != NULL && folded != instr && folded->type == TACCOPY &&
       folded->instr.tac_copy.dst == expected_dst &&
       folded->instr.tac_copy.src != NULL &&
@@ -680,7 +678,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_binary.dst = &int_dst;
   instr.instr.tac_binary.src1 = &one;
   instr.instr.tac_binary.src2 = &variable_right;
-  struct TACInstr* folded_move = constant_fold(&instr);
+  struct TACInstr* folded_move = constant_fold(tac_instr_list(&instr)).head;
   if (folded_move == NULL || folded_move == &instr ||
       folded_move->type != TACCOPY ||
       folded_move->instr.tac_copy.dst != &int_dst ||
@@ -735,7 +733,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_binary.src1 = &one;
   struct Val zero = tac_val_const(0, &kTestIntType);
   instr.instr.tac_binary.src2 = &zero;
-  if (constant_fold(&instr) != &instr) {
+  if (constant_fold(tac_instr_list(&instr)).head != &instr) {
     printf("constant-folding test division by zero failed: undefined "
            "operation must remain unfolded\n");
     ok = false;
@@ -746,7 +744,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_binary.dst = &int_dst;
   instr.instr.tac_binary.src1 = &int_min_bits;
   instr.instr.tac_binary.src2 = &minus_one_bits;
-  if (constant_fold(&instr) != &instr) {
+  if (constant_fold(tac_instr_list(&instr)).head != &instr) {
     printf("constant-folding test signed division overflow failed: undefined "
            "operation must remain unfolded\n");
     ok = false;
@@ -757,7 +755,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_cond_jump.src2 = &zero;
   instr.instr.tac_cond_jump.condition = CondL;
   instr.instr.tac_cond_jump.label = &target_name;
-  struct TACInstr* folded_jump = constant_fold(&instr);
+  struct TACInstr* folded_jump = constant_fold(tac_instr_list(&instr)).head;
   if (folded_jump == NULL || folded_jump == &instr ||
       folded_jump->type != TACJUMP ||
       folded_jump->instr.tac_jump.label != &target_name) {
@@ -775,10 +773,13 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_cond_jump.label = &target_name;
   return_after_jump.instr.tac_return.src = &one;
   tac_link_instr(&instr, &return_after_jump);
-  struct TACInstr* folded_fallthrough = constant_fold(&instr);
-  if (folded_fallthrough != &return_after_jump) {
+  struct TACInstrList fallthrough_body = {&instr, &return_after_jump};
+  struct TACInstrList folded_fallthrough = constant_fold(fallthrough_body);
+  if (folded_fallthrough.head != &return_after_jump ||
+      folded_fallthrough.last != &return_after_jump) {
     printf("constant-folding test unsigned conditional jump failed: expected "
-           "the never-taken jump to be removed\n");
+           "the never-taken jump to be removed, leaving the return as both "
+           "head and tail\n");
     ok = false;
   }
 
@@ -1038,8 +1039,9 @@ static bool tac_test_cfg_rebuild(void) {
     return false;
   }
 
-  struct TACInstr* first = rebuild_body(cfg);
-  struct TACInstr* second = rebuild_body(cfg);
+  struct TACInstrList first_list = rebuild_body(cfg);
+  struct TACInstr* first = first_list.head;
+  struct TACInstr* second = rebuild_body(cfg).head;
   if (!compare_bodies(&copy, first) || !compare_bodies(first, second)) {
     printf("CFG rebuild test failed: repeated rebuilds changed TAC instruction order\n");
     ok = false;
@@ -1050,7 +1052,7 @@ static bool tac_test_cfg_rebuild(void) {
   }
 
   struct CFG* second_cfg = build_cfg(first);
-  struct TACInstr* second_round_trip = rebuild_body(second_cfg);
+  struct TACInstr* second_round_trip = rebuild_body(second_cfg).head;
   if (!compare_bodies(first, second_round_trip)) {
     printf("CFG rebuild test failed: a second TAC-to-CFG-to-TAC round trip "
            "changed the body\n");
@@ -1068,7 +1070,8 @@ static bool tac_test_cfg_rebuild(void) {
     instr_count++;
   }
   if (instr_count != kExpectedInstrCount || first == NULL ||
-      rebuilt_tail == NULL || rebuilt_tail->next != NULL) {
+      rebuilt_tail == NULL || rebuilt_tail->next != NULL ||
+      first_list.last != rebuilt_tail) {
     printf("CFG rebuild test failed: expected %u instructions in a well-formed list\n",
            kExpectedInstrCount);
     ok = false;
@@ -1277,7 +1280,7 @@ static bool tac_test_get_aliased_vars(void) {
   tac_link_instr(&get_local, &get_local_again);
   tac_link_instr(&get_local_again, &get_static);
 
-  struct SliceList aliased = get_aliased_vars(&get_local);
+  struct SliceList aliased = get_aliased_vars(&get_local, get_static_vars());
   unsigned count = 0;
   for (struct SliceListNode* node = aliased.head; node != NULL; node = node->next) {
     count++;
@@ -1305,12 +1308,90 @@ static bool tac_test_get_aliased_vars(void) {
   return ok;
 }
 
+/*
+Copy propagation must rewrite call arguments copy-on-write.
+
+CFG instructions are shallow copies, so a call's argument array is shared
+with the body the CFG was built from. The optimizer's fixed-point check
+compares argument arrays by pointer, so rewriting the shared array in place
+both corrupts the earlier body and hides the change from that check.
+
+TAC:
+  x = a
+  r = f(x)
+  return r
+After copy propagation the CFG call must read f(a) through a new array while
+the original array still holds x.
+*/
+static bool tac_test_copy_prop_args_copy_on_write(void) {
+  struct Slice a_name = tac_slice_literal("a");
+  struct Slice x_name = tac_slice_literal("x");
+  struct Slice r_name = tac_slice_literal("r");
+  struct Slice f_name = tac_slice_literal("f");
+  struct Val a_val = tac_val_var(&a_name, &kTestIntType);
+  struct Val x_val = tac_val_var(&x_name, &kTestIntType);
+  struct Val r_val = tac_val_var(&r_name, &kTestIntType);
+  struct Val args[1];
+  args[0] = x_val;
+  struct TACInstr copy_instr;
+  struct TACInstr call_instr;
+  struct TACInstr ret_instr;
+  struct SliceList no_aliased = {NULL, NULL};
+  bool ok = true;
+
+  arena_init(1024);
+  tac_init_instr(&copy_instr, TACCOPY);
+  copy_instr.instr.tac_copy.dst = &x_val;
+  copy_instr.instr.tac_copy.src = &a_val;
+  tac_init_instr(&call_instr, TACCALL);
+  call_instr.instr.tac_call.func_name = &f_name;
+  call_instr.instr.tac_call.dst = &r_val;
+  call_instr.instr.tac_call.args = args;
+  call_instr.instr.tac_call.num_args = 1;
+  tac_init_instr(&ret_instr, TACRETURN);
+  ret_instr.instr.tac_return.src = &r_val;
+  tac_link_instr(&copy_instr, &call_instr);
+  tac_link_instr(&call_instr, &ret_instr);
+
+  struct CFG* cfg = copy_prop(build_cfg(&copy_instr), no_aliased);
+  struct TACInstr* rewritten = NULL;
+  for (unsigned i = 0; i < cfg->num_nodes; i++) {
+    for (struct TACInstr* instr = cfg->nodes[i]->body.head; instr != NULL; instr = instr->next) {
+      if (instr->type == TACCALL) {
+        rewritten = instr;
+      }
+    }
+  }
+
+  if (!compare_slice_to_slice(args[0].val.var_name, &x_name)) {
+    printf("copy_prop args test failed: the shared argument array was modified in place; "
+           "earlier bodies and the fixed-point check would see the rewrite\n");
+    ok = false;
+  }
+  if (rewritten == NULL) {
+    printf("copy_prop args test failed: the call instruction disappeared from the CFG\n");
+    ok = false;
+  } else if (rewritten->instr.tac_call.args == args) {
+    printf("copy_prop args test failed: a rewritten call must use a new argument array "
+           "so compare_instrs detects the change\n");
+    ok = false;
+  } else if (!compare_slice_to_slice(rewritten->instr.tac_call.args[0].val.var_name, &a_name)) {
+    printf("copy_prop args test failed: x = a reaches the call, so f(x) should become f(a)\n");
+    ok = false;
+  }
+
+  arena_destroy();
+  return ok;
+}
+
 // Run all TAC interpreter tests.
 // Returns 0 on success and non-zero on failure.
 int main(void) {
   bool ok = true;
   printf("- tac_test_copy_is_type_safe\n");
   ok = tac_test_copy_is_type_safe() && ok;
+  printf("- tac_test_copy_prop_args_copy_on_write\n");
+  ok = tac_test_copy_prop_args_copy_on_write() && ok;
   printf("- tac_test_get_aliased_vars\n");
   ok = tac_test_get_aliased_vars() && ok;
   printf("- tac_test_slice_list\n");

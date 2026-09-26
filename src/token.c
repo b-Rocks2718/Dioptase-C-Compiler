@@ -5,12 +5,6 @@
 #include "slice.h"
 #include "token.h"
 
-// Free a token and any owned token payload.
-void free_token(struct Token* token){
-  if (token->type == IDENT) free(token->data.ident_name);
-  free(token);
-}
-
 // Print one token in lexer-debug format.
 void print_token(struct Token token){
   switch (token.type){

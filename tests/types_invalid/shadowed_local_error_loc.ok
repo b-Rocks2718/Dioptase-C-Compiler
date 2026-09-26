@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/shadowed_local_error_loc.c:3:8: incomplete type for variable x
