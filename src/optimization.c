@@ -1,6 +1,8 @@
 #include "optimization.h"
 #include "arena.h"
 #include "TAC.h"
+#include "cfg.h"
+#include "call_graph.h"
 #include "constant_fold.h"
 #include "dead_code_elim.h"
 #include "copy_prop.h"
@@ -185,6 +187,8 @@ void optimize(struct TACProg* prog, struct OptimizationOptions options) {
   arena_free(arenas.function);
   arena_free(arenas.iteration[0]);
   arena_free(arenas.iteration[1]);
+
+  build_callgraph(prog);
 }
 
 // Copy body into the compilation arena. Operand pointers are shared with the

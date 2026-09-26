@@ -42,7 +42,9 @@ Accepted flags:
 -DNAME[=value]        define a preprocessor macro (repeatable)
 ```
 
-Flags can be combined to dump multiple stages. `-preprocess` exits early unless `-tokens` or `-ast` is also specified.
+Flags can be combined to dump multiple stages. Without `-s`, the compiler exits
+after the latest requested diagnostic stage. With `-s`, it prints the requested
+diagnostics and also writes the assembly file.
 
 ### Optimization flags
 
