@@ -76,7 +76,7 @@ static void tac_error_at(const char* loc, const char* fmt, ...) {
 // Allocate and initialize a single TAC instruction node.
 // Returns a node with next == NULL and an empty reaching-copy list.
 // Callers must fill the variant fields.
-static struct TACInstr* tac_instr_create(enum TACInstrType type) {
+struct TACInstr* tac_instr_create(enum TACInstrType type) {
   struct TACInstr* instr = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
   instr->type = type;
   instr->next = NULL;
@@ -149,7 +149,7 @@ static struct Type* tac_builtin_type(enum TypeType kind) {
 
 // Allocate a constant TAC value.
 // Returns a Val tagged as CONSTANT.
-static struct Val* tac_make_const(uint64_t value, struct Type* type) {
+struct Val* tac_make_const(uint64_t value, struct Type* type) {
   struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
   val->val_type = CONSTANT;
   val->val.const_value = value;
@@ -200,7 +200,7 @@ static bool val_is_volatile_var(const struct Val* val) {
 // name is a Slice that must outlive the TAC; type is the variable type.
 // Returns a Val tagged as VARIABLE.
 // The Slice points to stable memory (arena or source).
-static struct Val* tac_make_var(struct Slice* name, struct Type* type) {
+struct Val* tac_make_var(struct Slice* name, struct Type* type) {
   struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
   val->val_type = VARIABLE;
   val->val.var_name = name;
@@ -211,11 +211,22 @@ static struct Val* tac_make_var(struct Slice* name, struct Type* type) {
 // Copy a Val payload into a pre-allocated destination.
 // dst must be non-NULL; src must be non-NULL.
 // dst receives a shallow copy of src.
-static void tac_copy_val(struct Val* dst, const struct Val* src) {
+void tac_copy_val(struct Val* dst, const struct Val* src) {
   if (dst == NULL || src == NULL) {
     return;
   }
   *dst = *src;
+}
+
+// Allocate a shallow copy of a TAC value in the active arena.
+// The type and variable-name pointers remain shared with src.
+struct Val* copy_val(const struct Val* src) {
+  if (src == NULL) {
+    return NULL;
+  }
+  struct Val* copy = (struct Val*)arena_alloc(sizeof(struct Val));
+  tac_copy_val(copy, src);
+  return copy;
 }
 
 // Build a unique TAC label under the current function name.

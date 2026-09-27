@@ -1148,6 +1148,31 @@ static bool tac_test_copy_instr_list(void) {
 }
 
 /*
+Verify that copying a TAC value allocates a distinct value while retaining the
+shared type and variable-name pointers of a shallow copy.
+*/
+static bool tac_test_copy_val(void) {
+  const size_t kArenaBlockSize = 1024;
+  struct Slice name = tac_slice_literal("source");
+  struct Val source = tac_val_var(&name, &kTestIntType);
+  bool ok = true;
+
+  arena_init(kArenaBlockSize);
+  struct Val* copy = copy_val(&source);
+  if (copy == NULL || copy == &source || copy->val_type != VARIABLE ||
+      copy->val.var_name != source.val.var_name || copy->type != source.type) {
+    printf("TAC value copy test failed: expected an allocated shallow copy\n");
+    ok = false;
+  }
+  if (copy_val(NULL) != NULL) {
+    printf("TAC value copy test failed: expected NULL input to return NULL\n");
+    ok = false;
+  }
+  arena_destroy();
+  return ok;
+}
+
+/*
 Classify names by symbol-table storage: static vars are true,
 locals, static consts, functions, and missing names are false.
 */
@@ -1611,6 +1636,8 @@ int main(void) {
   ok = tac_test_cfg_rebuild() && ok;
   printf("- tac_test_copy_instr_list\n");
   ok = tac_test_copy_instr_list() && ok;
+  printf("- tac_test_copy_val\n");
+  ok = tac_test_copy_val() && ok;
 
   if (ok) {
     printf("TAC interpreter tests passed. ");

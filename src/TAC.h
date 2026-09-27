@@ -444,32 +444,25 @@ void print_tac_prog(struct TACProg* prog);
 // Uses a monotonically increasing counter.
 struct Slice* tac_make_label(struct Slice* func_name, const char* suffix);
 
+// Copy the value from src to dst.
+// Both dst and src must be valid pointers to struct Val.
+void tac_copy_val(struct Val* dst, const struct Val* src);
+
+// Allocate a shallow copy of src in the active arena, or return NULL for NULL.
+// The returned value shares its type and variable-name pointers with src.
+struct Val* copy_val(const struct Val* src);
+
+// Allocate a variable TAC value referencing an existing name.
+struct Val* tac_make_var(struct Slice* name, struct Type* type);
+
+struct TACInstr* tac_instr_create(enum TACInstrType type);
+
+struct Val* tac_make_const(uint64_t value, struct Type* type);
+
 
 // ----- TAC interpreter -----
 
 // Execute a TAC program and return the integer result of main().
 int tac_interpret_prog(const struct TACProg* prog);
-
-#ifdef TAC_INTERNAL
-static void tac_error_at(const char* loc, const char* fmt, ...);
-
-static struct TACInstr* tac_instr_create(enum TACInstrType type);
-
-static struct Val* tac_make_const(uint64_t value, struct Type* type);
-
-static struct Val* tac_make_var(struct Slice* name, struct Type* type);
-
-static void tac_copy_val(struct Val* dst, const struct Val* src);
-
-static struct Slice* tac_make_label(struct Slice* func_name, const char* suffix);
-
-static bool is_relational_op(enum BinOp op);
-
-static bool is_compound_op(enum BinOp op);
-
-static enum BinOp compound_to_binop(enum BinOp op);
-
-static enum TACCondition relation_to_cond(enum BinOp op, struct Type* type);
-#endif
 
 #endif // TAC_H
