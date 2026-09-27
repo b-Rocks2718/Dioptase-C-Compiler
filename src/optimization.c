@@ -7,6 +7,7 @@
 #include "dead_code_elim.h"
 #include "copy_prop.h"
 #include "dead_store_elim.h"
+#include "inlining.h"
 #include "slice.h"
 
 #include <limits.h>
@@ -184,11 +185,30 @@ void optimize(struct TACProg* prog, struct OptimizationOptions options) {
           optimize_body(top->top.tac_func.body, options, static_vars, &arenas);
     }
   }
+
+  if (!options.inline_opt) {
+    arena_free(arenas.function);
+    arena_free(arenas.iteration[0]);
+    arena_free(arenas.iteration[1]);
+    return;
+  }
+
+  // do inlining optimizations
+  struct CallGraph call_graph = build_call_graph(prog);
+
+  perform_inlining(&call_graph);
+
+  // after inlining, re-run the optimization passes
+  for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
+    if (top->type == FUNC) {
+      top->top.tac_func.body =
+          optimize_body(top->top.tac_func.body, options, static_vars, &arenas);
+    }
+  }
+
   arena_free(arenas.function);
   arena_free(arenas.iteration[0]);
   arena_free(arenas.iteration[1]);
-
-  build_call_graph(prog);
 }
 
 // Copy body into the compilation arena. Operand pointers are shared with the

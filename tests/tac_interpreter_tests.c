@@ -1094,6 +1094,60 @@ static bool tac_test_cfg_rebuild(void) {
 }
 
 /*
+Verify that TAC instruction-copy helpers allocate independent instruction and
+list links while preserving the shared operand pointers of a shallow copy.
+*/
+static bool tac_test_copy_instr_list(void) {
+  const size_t kArenaBlockSize = 1024;
+  struct Val zero = tac_val_const(0, &kTestIntType);
+  struct Val one = tac_val_const(1, &kTestIntType);
+  struct TACInstr first;
+  struct TACInstr second;
+  bool ok = true;
+
+  tac_init_instr(&first, TACCOPY);
+  first.instr.tac_copy.dst = &zero;
+  first.instr.tac_copy.src = &one;
+  tac_init_instr(&second, TACRETURN);
+  second.instr.tac_return.src = &zero;
+  tac_link_instr(&first, &second);
+
+  arena_init(kArenaBlockSize);
+
+  struct TACInstr* first_copy = copy_instr(&first);
+  if (first_copy == &first || first_copy->next != NULL ||
+      first_copy->type != first.type ||
+      first_copy->instr.tac_copy.dst != first.instr.tac_copy.dst ||
+      first_copy->instr.tac_copy.src != first.instr.tac_copy.src) {
+    printf("TAC instruction copy test failed: expected a detached shallow copy\n");
+    ok = false;
+  }
+
+  struct TACInstrList source = {&first, &second};
+  struct TACInstrList list_copy = copy_instr_list(source);
+  if (list_copy.head == NULL || list_copy.last == NULL ||
+      list_copy.head == &first || list_copy.last == &second ||
+      list_copy.head->next != list_copy.last || list_copy.last->next != NULL ||
+      list_copy.head->instr.tac_copy.dst != &zero ||
+      list_copy.head->instr.tac_copy.src != &one ||
+      list_copy.last->instr.tac_return.src != &zero ||
+      first.next != &second || second.next != NULL) {
+    printf("TAC instruction-list copy test failed: expected independent links "
+           "and shared operands\n");
+    ok = false;
+  }
+
+  struct TACInstrList empty_copy = copy_instr_list(tac_instr_list(NULL));
+  if (empty_copy.head != NULL || empty_copy.last != NULL) {
+    printf("TAC instruction-list copy test failed: expected an empty copy\n");
+    ok = false;
+  }
+
+  arena_destroy();
+  return ok;
+}
+
+/*
 Classify names by symbol-table storage: static vars are true,
 locals, static consts, functions, and missing names are false.
 */
@@ -1394,7 +1448,7 @@ static struct CallGraphNode* tac_test_find_call_graph_node(
   for (struct CallGraphEntry* entry = call_graph->nodes.head;
        entry != NULL;
        entry = entry->next) {
-    if (compare_slice_to_slice(entry->node->func_name, name)) {
+    if (compare_slice_to_slice(entry->node->func->name, name)) {
       return entry->node;
     }
   }
@@ -1555,6 +1609,8 @@ int main(void) {
   ok = tac_test_compare_bodies() && ok;
   printf("- tac_test_cfg_rebuild\n");
   ok = tac_test_cfg_rebuild() && ok;
+  printf("- tac_test_copy_instr_list\n");
+  ok = tac_test_copy_instr_list() && ok;
 
   if (ok) {
     printf("TAC interpreter tests passed. ");

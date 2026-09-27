@@ -3,20 +3,24 @@ Call graph (4 functions)
 ========================
 [leaf]
     can recurse: false
+    consider inlining: true
     calls: none
 
 [recursive]
     can recurse: true
+    consider inlining: false
     calls:
       +-- direct --> [recursive]
 
 [dispatch]
     can recurse: false
+    consider inlining: true
     calls:
       +-- indirect --> [UNKNOWN]
 
 [main]
     can recurse: false
+    consider inlining: true
     calls:
       |-- direct --> [leaf]
       |-- direct --> [recursive]

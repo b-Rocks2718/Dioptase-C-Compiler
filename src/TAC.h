@@ -401,6 +401,14 @@ struct TACInstrList call_to_TAC(struct Slice* func_name, struct Expr* expr, stru
 // Build a one-element list, or an empty list if instr is NULL.
 struct TACInstrList tac_instr_list(struct TACInstr* instr);
 
+// Allocate a shallow copy of instr with a detached next link.
+// Operand and other payload pointers remain shared with instr.
+struct TACInstr* copy_instr(const struct TACInstr* instr);
+
+// Allocate a shallow copy of every instruction in instrs.
+// The returned list has independent links but shares instruction payload pointers.
+struct TACInstrList copy_instr_list(struct TACInstrList instrs);
+
 // Append src onto dst. Empty src is a no-op; empty dst becomes src.
 void concat_TAC_instrs(struct TACInstrList* dst, struct TACInstrList src);
 
@@ -430,6 +438,12 @@ void print_tac_instr(const struct TACInstr* instr, unsigned tabs);
 void print_tac_instrs(const struct TACInstr* instrs, unsigned tabs);
 
 void print_tac_prog(struct TACProg* prog);
+
+// Build a unique TAC label under the current function name.
+// Returns a new Slice for the label name.
+// Uses a monotonically increasing counter.
+struct Slice* tac_make_label(struct Slice* func_name, const char* suffix);
+
 
 // ----- TAC interpreter -----
 

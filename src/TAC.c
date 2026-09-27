@@ -91,6 +91,27 @@ struct TACInstrList tac_instr_list(struct TACInstr* instr) {
   return list;
 }
 
+// Allocate a shallow copy of an instruction without retaining its list link.
+// Operand and other payload pointers remain shared with the source instruction.
+struct TACInstr* copy_instr(const struct TACInstr* instr) {
+  struct TACInstr* copy = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
+  *copy = *instr;
+  copy->next = NULL;
+  return copy;
+}
+
+// Copy a TAC instruction list while giving the result independent list links.
+// Instruction payload pointers remain shared with the source list.
+struct TACInstrList copy_instr_list(struct TACInstrList instrs) {
+  struct TACInstrList copy = tac_instr_list(NULL);
+  for (const struct TACInstr* instr = instrs.head;
+       instr != NULL;
+       instr = instr->next) {
+    concat_TAC_instrs(&copy, tac_instr_list(copy_instr(instr)));
+  }
+  return copy;
+}
+
 // Provide canonical scalar types for TAC constants.
 // Returns a stable Type pointer for the requested kind.
 static struct Type* tac_builtin_type(enum TypeType kind) {
@@ -200,7 +221,7 @@ static void tac_copy_val(struct Val* dst, const struct Val* src) {
 // Build a unique TAC label under the current function name.
 // Returns a new Slice for the label name.
 // Uses a monotonically increasing counter.
-static struct Slice* tac_make_label(struct Slice* func_name, const char* suffix) {
+struct Slice* tac_make_label(struct Slice* func_name, const char* suffix) {
   size_t suffix_len = 0;
   while (suffix[suffix_len] != '\0') {
     suffix_len++;

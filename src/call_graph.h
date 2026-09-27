@@ -27,9 +27,8 @@ struct CallGraphNode {
   struct CallGraphNodeList callers;
   struct CallGraphNodeList callees;
 
-  struct TACInstrList body;
-
-  struct Slice* func_name;
+  struct TACFunc* func;
+  
   bool contains_indirect_calls;
 
   // Number of instructions in the function body
@@ -37,6 +36,7 @@ struct CallGraphNode {
   unsigned num_instrs;
 
   bool can_recurse; 
+  bool consider_inlining;
 
   // unique index of the node within the call graph
   // useful for graph algorithms like Tarjan's SCC detection.
@@ -46,6 +46,11 @@ struct CallGraphNode {
 // Build direct caller-to-callee relationships between function definitions.
 // Direct calls outside this translation unit are intentionally not represented.
 struct CallGraph build_call_graph(struct TACProg* program);
+
+// Find a call graph node by its function name in the given call graph.
+// Returns NULL if not found.
+struct CallGraphNode* find_call_graph_node(const struct CallGraph* call_graph,
+                                                  const struct Slice* func_name);
 
 // Print a stable adjacency-list visualization of direct and indirect calls.
 void print_call_graph(const struct CallGraph* call_graph);

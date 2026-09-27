@@ -48,16 +48,6 @@ static struct CFGNode* make_basic_block_node(void) {
   return node;
 }
 
-// Copy an instruction without retaining links owned by another TAC list.
-static struct TACInstr* copy_instr(const struct TACInstr* instr) {
-  // Operand pointers continue to refer to the original TAC values, but list
-  // links belong exclusively to the new instruction list.
-  struct TACInstr* instr_copy = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
-  *instr_copy = *instr;
-  instr_copy->next = NULL;
-  return instr_copy;
-}
-
 // Add a detached copy of an instruction to a basic block node.
 static void append_instr(struct CFGNode* block, const struct TACInstr* instr) {
   if (block->type != CFG_BASIC_BLOCK) {

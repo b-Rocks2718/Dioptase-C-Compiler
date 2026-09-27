@@ -2,18 +2,19 @@
 #include "arena.h"
 #include "stack.h"
 #include "math.h"
+#include "inlining.h"
 
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 // Create a new call graph node for a given TAC function.
-static struct CallGraphNode* call_graph_node_create(const struct TACFunc* func, unsigned node_index) {
+static struct CallGraphNode* call_graph_node_create(struct TACFunc* func, unsigned node_index) {
   struct CallGraphNode* node = arena_alloc(sizeof(struct CallGraphNode));
-  node->body = func->body;
-  node->func_name = func->name;
+  node->func = func;
   node->contains_indirect_calls = false;
   node->can_recurse = false;
+  node->consider_inlining = false;
   node->num_instrs = 0;
   for (struct TACInstr* instr = func->body.head; 
       instr != NULL; 
@@ -74,12 +75,12 @@ static void link_call_graph_nodes(struct CallGraphNode* caller,
 
 // Find a call graph node by its function name in the given call graph.
 // Returns NULL if not found.
-static struct CallGraphNode* find_call_graph_node(const struct CallGraph* call_graph,
+struct CallGraphNode* find_call_graph_node(const struct CallGraph* call_graph,
                                                   const struct Slice* func_name) {
   for (const struct CallGraphEntry* entry = call_graph->nodes.head;
        entry != NULL;
        entry = entry->next) {
-    if (compare_slice_to_slice(entry->node->func_name, func_name)) {
+    if (compare_slice_to_slice(entry->node->func->name, func_name)) {
       return entry->node;
     }
   }
@@ -94,7 +95,7 @@ static void link_call_graph(struct CallGraph* call_graph) {
        entry = entry->next) {
     struct CallGraphNode* caller = entry->node;
     // iterate over all instructions in the function body
-    for (struct TACInstr* instr = caller->body.head; instr != NULL; instr = instr->next) {
+    for (struct TACInstr* instr = caller->func->body.head; instr != NULL; instr = instr->next) {
       // if the instruction is a function call,
       // find the callee node and link it to the caller
       switch (instr->type) {
@@ -233,6 +234,8 @@ static void find_sccs(struct CallGraph* call_graph) {
         }
       }
     }
+
+    node->consider_inlining = !node->can_recurse && (node->num_instrs < MAX_INLINE_CALLEE_INSTRS);
   }
 
   free(indices);
@@ -276,12 +279,12 @@ static unsigned call_graph_node_count(const struct CallGraphNodeList* nodes) {
 
 // Print one function name as a graph node.
 static void print_call_graph_node_name(const struct CallGraphNode* node) {
-  if (node == NULL || node->func_name == NULL) {
+  if (node == NULL || node->func->name == NULL) {
     printf("[UNKNOWN]");
     return;
   }
   printf("[");
-  print_slice(node->func_name);
+  print_slice(node->func->name);
   printf("]");
 }
 
@@ -312,6 +315,8 @@ void print_call_graph(const struct CallGraph* call_graph) {
     printf("\n");
     printf("    can recurse: %s\n",
            node != NULL && node->can_recurse ? "true" : "false");
+    printf("    consider inlining: %s\n",
+           node != NULL && node->consider_inlining ? "true" : "false");
 
     bool has_direct_calls = node != NULL && node->callees.head != NULL;
     bool has_indirect_calls = node != NULL && node->contains_indirect_calls;
