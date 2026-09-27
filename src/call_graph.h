@@ -18,6 +18,7 @@ struct CallGraphNodeList {
 // Call graph for the function definitions in the current translation unit.
 struct CallGraph {
   struct CallGraphNodeList nodes;
+  unsigned num_nodes;
 };
 
 // Represent one function definition and its bidirectional call relationships.
@@ -30,6 +31,16 @@ struct CallGraphNode {
 
   struct Slice* func_name;
   bool contains_indirect_calls;
+
+  // Number of instructions in the function body
+  // used for inlining decisions
+  unsigned num_instrs;
+
+  bool can_recurse; 
+
+  // unique index of the node within the call graph
+  // useful for graph algorithms like Tarjan's SCC detection.
+  unsigned node_index;
 };
 
 // Build direct caller-to-callee relationships between function definitions.

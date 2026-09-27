@@ -1,14 +1,25 @@
 #include "call_graph.h"
 #include "arena.h"
+#include "stack.h"
+#include "math.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 
 // Create a new call graph node for a given TAC function.
-static struct CallGraphNode* call_graph_node_create(const struct TACFunc* func) {
+static struct CallGraphNode* call_graph_node_create(const struct TACFunc* func, unsigned node_index) {
   struct CallGraphNode* node = arena_alloc(sizeof(struct CallGraphNode));
   node->body = func->body;
   node->func_name = func->name;
   node->contains_indirect_calls = false;
+  node->can_recurse = false;
+  node->num_instrs = 0;
+  for (struct TACInstr* instr = func->body.head; 
+      instr != NULL; 
+      instr = instr->next) {
+    node->num_instrs++;
+  }
+  node->node_index = node_index;
   node->callers.head = NULL;
   node->callers.tail = NULL;
   node->callees.head = NULL;
@@ -116,8 +127,112 @@ static void link_call_graph(struct CallGraph* call_graph) {
   }
 }
 
+// implement Tarjan's algorithm for finding strongly connected components (SCCs)
+static void tarjan_dfs(
+    struct CallGraph* call_graph, struct CallGraphNode* node, int* dfs_index,
+    int* indices, int* lowlinks, bool* on_stack, struct Stack* stack,
+    int* scc_sizes) {
+  
+  int node_index = node->node_index;
+  stack_push(stack, node_index);
+  on_stack[node_index] = true;
+  indices[node_index] = *dfs_index;
+  lowlinks[node_index] = *dfs_index;
+  
+  // iterate over all callee nodes of the current caller node
+  for (struct CallGraphEntry* callee_entry = node->callees.head; 
+       callee_entry != NULL; 
+       callee_entry = callee_entry->next) {
+    struct CallGraphNode* callee = callee_entry->node;
+
+    if (indices[callee->node_index] == -1) {
+      // recursively visit the callee node if it has not been visited yet
+      (*dfs_index)++;
+      tarjan_dfs(call_graph, callee, dfs_index, indices, lowlinks, on_stack, stack, scc_sizes);
+    }
+    if (on_stack[callee->node_index]) {
+      // update the lowlink of the current node based on the callee's index if the callee is on the stack
+      // not on stack => callee is in a different SCC
+      lowlinks[node_index] = min(lowlinks[node_index], lowlinks[callee->node_index]);
+    }
+  }
+
+  // if we are the root of an SCC, pop all nodes in this SCC from the stack
+  if (lowlinks[node_index] == indices[node_index]) {
+    int w;
+    int scc_size = 0;
+    do {
+      // always pop at least the current node
+      w = stack_pop(stack);
+      lowlinks[w] = lowlinks[node_index];
+      on_stack[w] = false;
+      scc_size++;
+    } while (w != node_index);
+
+    // store the size of this SCC for all its nodes
+    for (int i = 0; i < call_graph->num_nodes; i++) {
+      if (lowlinks[i] == lowlinks[node_index]) {
+        scc_sizes[i] = scc_size;
+      }
+    }
+  }
+}
+
+// Find strongly connected components (SCCs) in the call graph
+// and mark nodes that can recurse
+static void find_sccs(struct CallGraph* call_graph) {
+  // initialize Tarjan's algorithm data structures
+  int* indices = malloc(call_graph->num_nodes * sizeof(int));
+  int* lowlinks = malloc(call_graph->num_nodes * sizeof(int));
+  int* scc_sizes = malloc(call_graph->num_nodes * sizeof(int));
+  struct Stack* stack = create_stack(call_graph->num_nodes); // stack will never need to be larger than the number of nodes
+  bool* on_stack = malloc(call_graph->num_nodes * sizeof(bool));
+
+  // -1 => unvisited
+  for (int i = 0; i < call_graph->num_nodes; i++) {
+    indices[i] = -1;
+    lowlinks[i] = -1;
+    scc_sizes[i] = -1;
+    on_stack[i] = false;
+  }
+
+  // compute lowlinks for all nodes using Tarjan's algorithm
+  int dfs_index = 0;
+  for (struct CallGraphEntry* entry = call_graph->nodes.head; entry != NULL; entry = entry->next) {
+    int node_index = entry->node->node_index;
+    if (indices[node_index] == -1) { /* if node has not been visited */
+      tarjan_dfs(call_graph, entry->node, &dfs_index, indices, lowlinks, on_stack, stack, scc_sizes);
+    }
+  }
+
+  // a function can recurse iff it is part of an SCC with more than one node
+  // or it calls itself directly
+  // we ignore indirect calls for this analysis, we will never inline indirect calls
+  for (struct CallGraphEntry* entry = call_graph->nodes.head; entry != NULL; entry = entry->next) {
+    struct CallGraphNode* node = entry->node;
+    if (scc_sizes[node->node_index] > 1) {
+      // is part of nontrivial SCC
+      node->can_recurse = true;
+    } else {
+      for (const struct CallGraphEntry* e = node->callees.head; e != NULL; e = e->next) {
+        if (e->node == node) {
+          // function calls itself directly
+          node->can_recurse = true;
+          break;
+        }
+      }
+    }
+  }
+
+  free(indices);
+  free(lowlinks);
+  free_stack(stack);
+  free(on_stack);
+  free(scc_sizes);
+}
+
 struct CallGraph build_call_graph(struct TACProg* program) {
-  struct CallGraph call_graph = {{NULL, NULL}};
+  struct CallGraph call_graph = {{NULL, NULL}, 0}; // initialize an empty call graph with zero nodes
   
   // iterate over all functions and add them to call graph
   for (struct TopLevel* top = program->head; top != NULL; top = top->next) {
@@ -125,11 +240,13 @@ struct CallGraph build_call_graph(struct TACProg* program) {
       continue;
     }
 
-    struct CallGraphNode* node = call_graph_node_create(&top->top.tac_func);
+    struct CallGraphNode* node = call_graph_node_create(&top->top.tac_func, call_graph.num_nodes);
     call_graph_node_list_add(&call_graph.nodes, node);
+    call_graph.num_nodes++;
   }
 
   link_call_graph(&call_graph);
+  find_sccs(&call_graph);
 
   return call_graph;
 }
