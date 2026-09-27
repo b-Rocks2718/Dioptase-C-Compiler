@@ -310,6 +310,8 @@ void print_call_graph(const struct CallGraph* call_graph) {
     const struct CallGraphNode* node = function->node;
     print_call_graph_node_name(node);
     printf("\n");
+    printf("    can recurse: %s\n",
+           node != NULL && node->can_recurse ? "true" : "false");
 
     bool has_direct_calls = node != NULL && node->callees.head != NULL;
     bool has_indirect_calls = node != NULL && node->contains_indirect_calls;

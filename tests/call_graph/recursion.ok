@@ -1,0 +1,34 @@
+
+Call graph (6 functions)
+========================
+[direct]
+    can recurse: true
+    calls:
+      +-- direct --> [direct]
+
+[chain_a]
+    can recurse: true
+    calls:
+      +-- direct --> [chain_b]
+
+[chain_b]
+    can recurse: true
+    calls:
+      +-- direct --> [chain_c]
+
+[chain_c]
+    can recurse: true
+    calls:
+      +-- direct --> [chain_a]
+
+[nonrecursive]
+    can recurse: false
+    calls: none
+
+[main]
+    can recurse: false
+    calls:
+      |-- direct --> [direct]
+      |-- direct --> [chain_a]
+      +-- direct --> [nonrecursive]
+

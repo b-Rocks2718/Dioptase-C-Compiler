@@ -2,17 +2,21 @@
 Call graph (4 functions)
 ========================
 [leaf]
+    can recurse: false
     calls: none
 
 [recursive]
+    can recurse: true
     calls:
       +-- direct --> [recursive]
 
 [dispatch]
+    can recurse: false
     calls:
       +-- indirect --> [UNKNOWN]
 
 [main]
+    can recurse: false
     calls:
       |-- direct --> [leaf]
       |-- direct --> [recursive]
