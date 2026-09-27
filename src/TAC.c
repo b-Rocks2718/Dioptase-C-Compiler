@@ -530,7 +530,7 @@ struct Val* make_temp(struct Slice* func_name, struct Type* type) {
 // Create a unique label for string-literal data emitted by the current function.
 struct Val* make_str_label(struct StringExpr* str_expr){
   struct Slice name_slice = {"string.label", 12};
-  struct Slice* string_label = make_unique(&name_slice);
+  struct Slice* string_label = make_unique(&name_slice, NULL);
 
   struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
   val->val_type = VARIABLE;

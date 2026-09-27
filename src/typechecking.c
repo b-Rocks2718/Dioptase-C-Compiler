@@ -3167,7 +3167,7 @@ struct InitList* is_init_const(struct Type* type, struct Initializer* init) {
           // pointer to char
 
           struct Slice name_slice = {"string.label", 12};
-          struct Slice* string_label = make_unique(&name_slice);
+          struct Slice* string_label = make_unique(&name_slice, NULL);
 
           struct Type* arr_type = alloc_type(ARRAY_TYPE);
           arr_type->type_data.array_type.size = str_expr->string->len + 1; // include null terminator

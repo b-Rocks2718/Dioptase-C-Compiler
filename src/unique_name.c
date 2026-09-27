@@ -23,15 +23,31 @@ unsigned counter_len(int counter) {
 
 // Create a unique identifier by appending ".<id>".
 // Returns a newly allocated Slice with the suffix applied.
-struct Slice* make_unique(struct Slice* original_name) {
+struct Slice* make_unique(struct Slice* original_name, const char* suffix) {
   unsigned id_len = counter_len(unique_id_counter);
-  size_t new_len = original_name->len + 1 + id_len; // +1 for period
 
-  char* new_str = (char*)arena_alloc(new_len);
-  for (size_t i = 0; i < original_name->len; i++) {
+  int suffix_len = 0;
+  if (suffix != NULL) {
+    while (suffix[suffix_len] != '\0') {
+      suffix_len++;
+    }
+  } else {
+    suffix_len = -1;
+  }
+  int new_len = original_name->len + 1 + suffix_len + 1 + id_len; // +1 for period
+
+  char* new_str = (char*)arena_alloc((size_t)new_len);
+  for (int i = 0; i < original_name->len; i++) {
     new_str[i] = original_name->start[i];
   }
   new_str[original_name->len] = '.';
+
+  if (suffix != NULL){
+    for (int i = 0; i < suffix_len; i++) {
+      new_str[original_name->len + 1 + i] = suffix[i];
+    }
+    new_str[original_name->len + 1 + suffix_len] = '.';
+  }
 
   // append unique id
   int id = unique_id_counter;

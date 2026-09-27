@@ -1,7 +1,9 @@
 #include "inlining.h"
 #include "TAC.h"
+#include "unique_name.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 
 // Inline a single callsite within the caller function.
 static void inline_callsite(
@@ -16,12 +18,22 @@ static void inline_callsite(
   // generate a copy of the func, but replace the original vars with
   // unique variable names, and replacing returns with jumps to the end label
   struct TACFunc* unique_copy = malloc(sizeof(struct TACFunc));
+  unique_copy->name = callee->name;
+  unique_copy->global = callee->global;
+  unique_copy->num_params = callee->num_params;
+  unique_copy->params = malloc(sizeof(struct TACVar*) * callee->num_params);
+  for (int i = 0; i < callee->num_params; i++) {
+    unique_copy->params[i] = make_unique(callee->params[i], "inline");
+  }
 
 
   // generate TAC copying args into params
-
+  
   
   /* caller node num instrs += callee->num_instrs */
+
+
+  free(unique_copy); // done with TACFunc wrapper
 }
 
 // Perform inlining for a single call graph node.

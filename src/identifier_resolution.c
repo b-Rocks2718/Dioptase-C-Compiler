@@ -256,7 +256,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
       return false;
     } else {
       // Declared in an outer scope; create a new unique local.
-      struct Slice* unique_name = make_unique(var_dclr->name);
+      struct Slice* unique_name = make_unique(var_dclr->name, NULL);
       ident_stack_insert(global_ident_stack, var_dclr->name,
           unique_name, false, -1, false, 0);
       var_dclr->name = unique_name;
@@ -268,7 +268,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
   }
 
   // First declaration in this scope: insert and optionally resolve initializer.
-  struct Slice* unique_name = make_unique(var_dclr->name);
+  struct Slice* unique_name = make_unique(var_dclr->name, NULL);
   ident_stack_insert(global_ident_stack, var_dclr->name,
       unique_name, false, -1, false, 0);
   var_dclr->name = unique_name;
@@ -594,7 +594,7 @@ bool resolve_struct(struct StructDclr* struct_dclr){
   struct IdentMapEntry* entry = ident_stack_get(global_type_stack, struct_dclr->name, &from_current_scope);
   if (entry == NULL || !from_current_scope){
     // new type declaration
-    struct Slice* unique_name = make_unique(struct_dclr->name);
+    struct Slice* unique_name = make_unique(struct_dclr->name, NULL);
     ident_stack_insert(global_type_stack, struct_dclr->name, unique_name, false, STRUCT_TYPE, false, 0);
     struct_dclr->name = unique_name;
   } else {
@@ -625,7 +625,7 @@ bool resolve_union(struct UnionDclr* union_dclr){
   struct IdentMapEntry* entry = ident_stack_get(global_type_stack, union_dclr->name, &from_current_scope);
   if (entry == NULL || !from_current_scope){
     // new type declaration
-    struct Slice* unique_name = make_unique(union_dclr->name);
+    struct Slice* unique_name = make_unique(union_dclr->name, NULL);
     ident_stack_insert(global_type_stack, union_dclr->name, unique_name, false, UNION_TYPE, false, 0);
     union_dclr->name = unique_name;
   } else {
@@ -656,7 +656,7 @@ bool resolve_enum(struct EnumDclr* enum_dclr){
   struct IdentMapEntry* entry = ident_stack_get(global_type_stack, enum_dclr->name, &from_current_scope);
   if (entry == NULL || !from_current_scope){
     // new type declaration
-    struct Slice* unique_name = make_unique(enum_dclr->name);
+    struct Slice* unique_name = make_unique(enum_dclr->name, NULL);
     ident_stack_insert(global_type_stack, enum_dclr->name, unique_name, false, ENUM_TYPE, false, 0);
     enum_dclr->name = unique_name;
   } else {
@@ -677,7 +677,7 @@ bool resolve_enum(struct EnumDclr* enum_dclr){
     struct IdentMapEntry* member_entry = ident_stack_get(global_ident_stack, member->name, &from_current_scope);
     if (member_entry == NULL || !from_current_scope){
       // new enum member
-      struct Slice* unique_member_name = make_unique(member->name);
+      struct Slice* unique_member_name = make_unique(member->name, NULL);
       ident_stack_insert(global_ident_stack, member->name, unique_member_name, false, -1, true, member->value);
       member->name = unique_member_name;
     } else {
