@@ -1,5 +1,6 @@
 #include "TAC.h"
 #include "arena.h"
+#include "call_graph.h"
 #include "cfg.h"
 #include "optimization.h"
 #include "slice.h"
@@ -9,7 +10,10 @@
 #include <stdio.h>
 #include <string.h>
 
-// Construct TAC programs directly to verify interpreter and optimization behavior.
+/*
+Construct TAC programs directly to verify interpreter, graph-analysis, and
+optimization behavior.
+*/
 
 static struct Type kTestIntType = { .type = INT_TYPE };
 static struct Type kTestUintType = { .type = UINT_TYPE };
@@ -1384,6 +1388,135 @@ static bool tac_test_copy_prop_args_copy_on_write(void) {
   return ok;
 }
 
+// Find a node in a call graph built by a test.
+static struct CallGraphNode* tac_test_find_call_graph_node(
+    const struct CallGraph* call_graph, const struct Slice* name) {
+  for (struct CallGraphEntry* entry = call_graph->nodes.head;
+       entry != NULL;
+       entry = entry->next) {
+    if (compare_slice_to_slice(entry->node->func_name, name)) {
+      return entry->node;
+    }
+  }
+  return NULL;
+}
+
+/*
+Verify SCC-based recursion classification across a DFS forest.
+
+The isolated function deliberately precedes every cycle: it catches discovery
+indices being reused for disconnected roots. cycle_a also has a one-way edge to
+an acyclic chain, which must not pull that chain into its SCC. other_a/other_b
+form a second disconnected SCC, and self verifies the single-node self-edge
+case.
+*/
+static bool tac_test_call_graph_sccs(void) {
+  struct Slice isolated_name = tac_slice_literal("isolated");
+  struct Slice cycle_a_name = tac_slice_literal("cycle_a");
+  struct Slice cycle_b_name = tac_slice_literal("cycle_b");
+  struct Slice other_a_name = tac_slice_literal("other_a");
+  struct Slice other_b_name = tac_slice_literal("other_b");
+  struct Slice self_name = tac_slice_literal("self");
+  struct Slice dag_root_name = tac_slice_literal("dag_root");
+  struct Slice dag_leaf_name = tac_slice_literal("dag_leaf");
+
+  struct TACInstr cycle_a_to_b;
+  struct TACInstr cycle_a_to_dag;
+  struct TACInstr cycle_b_to_a;
+  struct TACInstr other_a_to_b;
+  struct TACInstr other_b_to_a;
+  struct TACInstr self_to_self;
+  struct TACInstr dag_root_to_leaf;
+  tac_init_instr(&cycle_a_to_b, TACCALL);
+  cycle_a_to_b.instr.tac_call.func_name = &cycle_b_name;
+  tac_init_instr(&cycle_a_to_dag, TACCALL);
+  cycle_a_to_dag.instr.tac_call.func_name = &dag_root_name;
+  tac_link_instr(&cycle_a_to_b, &cycle_a_to_dag);
+  tac_init_instr(&cycle_b_to_a, TACCALL);
+  cycle_b_to_a.instr.tac_call.func_name = &cycle_a_name;
+  tac_init_instr(&other_a_to_b, TACCALL);
+  other_a_to_b.instr.tac_call.func_name = &other_b_name;
+  tac_init_instr(&other_b_to_a, TACCALL);
+  other_b_to_a.instr.tac_call.func_name = &other_a_name;
+  tac_init_instr(&self_to_self, TACCALL);
+  self_to_self.instr.tac_call.func_name = &self_name;
+  tac_init_instr(&dag_root_to_leaf, TACCALL);
+  dag_root_to_leaf.instr.tac_call.func_name = &dag_leaf_name;
+
+  struct TopLevel isolated;
+  struct TopLevel cycle_a;
+  struct TopLevel cycle_b;
+  struct TopLevel other_a;
+  struct TopLevel other_b;
+  struct TopLevel self;
+  struct TopLevel dag_root;
+  struct TopLevel dag_leaf;
+  tac_init_func(&isolated, &isolated_name, NULL, NULL, NULL, 0);
+  tac_init_func(&cycle_a, &cycle_a_name, &cycle_a_to_b, &cycle_a_to_dag,
+                NULL, 0);
+  tac_init_func(&cycle_b, &cycle_b_name, &cycle_b_to_a, &cycle_b_to_a,
+                NULL, 0);
+  tac_init_func(&other_a, &other_a_name, &other_a_to_b, &other_a_to_b,
+                NULL, 0);
+  tac_init_func(&other_b, &other_b_name, &other_b_to_a, &other_b_to_a,
+                NULL, 0);
+  tac_init_func(&self, &self_name, &self_to_self, &self_to_self, NULL, 0);
+  tac_init_func(&dag_root, &dag_root_name, &dag_root_to_leaf,
+                &dag_root_to_leaf, NULL, 0);
+  tac_init_func(&dag_leaf, &dag_leaf_name, NULL, NULL, NULL, 0);
+
+  isolated.next = &cycle_a;
+  cycle_a.next = &cycle_b;
+  cycle_b.next = &other_a;
+  other_a.next = &other_b;
+  other_b.next = &self;
+  self.next = &dag_root;
+  dag_root.next = &dag_leaf;
+
+  struct TACProg prog = {0};
+  prog.head = &isolated;
+  prog.tail = &dag_leaf;
+
+  struct {
+    struct Slice* name;
+    bool can_recurse;
+    const char* reason;
+  } expectations[] = {
+    {&isolated_name, false, "an isolated function cannot recurse"},
+    {&cycle_a_name, true, "both members of a mutual cycle can recurse"},
+    {&cycle_b_name, true, "both members of a mutual cycle can recurse"},
+    {&other_a_name, true, "a disconnected mutual cycle must be detected"},
+    {&other_b_name, true, "a disconnected mutual cycle must be detected"},
+    {&self_name, true, "a direct self-call is recursive"},
+    {&dag_root_name, false, "an acyclic caller cannot recurse"},
+    {&dag_leaf_name, false, "an acyclic leaf cannot recurse"},
+  };
+
+  arena_init(1024);
+  struct CallGraph call_graph = build_call_graph(&prog);
+  bool ok = true;
+  for (size_t i = 0; i < sizeof(expectations) / sizeof(expectations[0]); i++) {
+    struct CallGraphNode* node =
+        tac_test_find_call_graph_node(&call_graph, expectations[i].name);
+    if (node == NULL) {
+      printf("call graph SCC test failed: function ");
+      print_slice(expectations[i].name);
+      printf(" is missing from the graph\n");
+      ok = false;
+    } else if (node->can_recurse != expectations[i].can_recurse) {
+      printf("call graph SCC test failed for ");
+      print_slice(expectations[i].name);
+      printf(": %s; expected can_recurse=%s, got %s\n",
+             expectations[i].reason,
+             expectations[i].can_recurse ? "true" : "false",
+             node->can_recurse ? "true" : "false");
+      ok = false;
+    }
+  }
+  arena_destroy();
+  return ok;
+}
+
 // Run all TAC interpreter tests.
 // Returns 0 on success and non-zero on failure.
 int main(void) {
@@ -1392,6 +1525,8 @@ int main(void) {
   ok = tac_test_copy_is_type_safe() && ok;
   printf("- tac_test_copy_prop_args_copy_on_write\n");
   ok = tac_test_copy_prop_args_copy_on_write() && ok;
+  printf("- tac_test_call_graph_sccs\n");
+  ok = tac_test_call_graph_sccs() && ok;
   printf("- tac_test_get_aliased_vars\n");
   ok = tac_test_get_aliased_vars() && ok;
   printf("- tac_test_slice_list\n");
