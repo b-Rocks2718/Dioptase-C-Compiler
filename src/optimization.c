@@ -167,7 +167,7 @@ static struct TACInstrList optimize_body(
 // reaches a fixed point. Translation-unit static names are collected once and
 // reused, while address-taken names are invariant for each function.
 void optimize(struct TACProg* prog, struct OptimizationOptions options) {
-  if (prog == NULL || !has_body_optimization(options)) {
+  if (prog == NULL || !(has_body_optimization(options) || options.inline_opt)) {
     return;
   }
 

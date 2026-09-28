@@ -13,6 +13,7 @@ static struct CallGraphNode* call_graph_node_create(struct TACFunc* func, unsign
   struct CallGraphNode* node = arena_alloc(sizeof(struct CallGraphNode));
   node->func = func;
   node->contains_indirect_calls = false;
+  node->contains_tail_calls = false;
   node->can_recurse = false;
   node->consider_inlining = false;
   node->num_instrs = 0;
@@ -114,12 +115,18 @@ static void link_call_graph(struct CallGraph* call_graph) {
           if (callee) {
             link_call_graph_nodes(caller, callee);
           }
+          caller->contains_tail_calls = true;
           break;
         }
-        case TACCALL_INDIRECT:
+        case TACCALL_INDIRECT: {
+          // The target cannot be resolved statically from this TAC instruction.
+          caller->contains_indirect_calls = true;
+          break;
+        }
         case TACTAIL_CALL_INDIRECT: {
           // The target cannot be resolved statically from this TAC instruction.
           caller->contains_indirect_calls = true;
+          caller->contains_tail_calls = true;
           break;
         }
         default:
@@ -235,7 +242,10 @@ static void find_sccs(struct CallGraph* call_graph) {
       }
     }
 
-    node->consider_inlining = !node->can_recurse && (node->num_instrs < MAX_INLINE_CALLEE_INSTRS);
+    node->consider_inlining = 
+        !node->can_recurse && 
+        (node->num_instrs < MAX_INLINE_CALLEE_INSTRS) &&
+        !node->contains_tail_calls;
   }
 
   free(indices);

@@ -30,6 +30,7 @@ struct CallGraphNode {
   struct TACFunc* func;
   
   bool contains_indirect_calls;
+  bool contains_tail_calls;
 
   // Number of instructions in the function body
   // used for inlining decisions
