@@ -541,7 +541,21 @@ static void build_variable_masks(struct CopyPropState* s) {
   if (masks == 0) {
     return;
   }
-  s->mask_storage = cp_calloc(masks * s->words, sizeof(uint64_t),
+  if (s->words == 0) {
+    fprintf(stderr,
+            "Copy propagation error: cannot build %zu variable masks with "
+            "zero words per mask\n",
+            masks);
+    exit(1);
+  }
+  if (masks > SIZE_MAX / s->words) {
+    fprintf(stderr,
+            "Copy propagation error: allocation size overflow while indexing "
+            "heavily copied variables\n");
+    exit(1);
+  }
+  size_t mask_words = masks * s->words;
+  s->mask_storage = cp_calloc(mask_words, sizeof(uint64_t),
                               "indexing heavily copied variables");
   uint64_t* next = s->mask_storage;
   for (uint32_t v = 0; v < vars; ++v) {
