@@ -11,8 +11,8 @@
 /*
   Current inlining policy:
   - Only inline functions that do not recurse.
-  - Only inline functions with fewer than MAX_INLINE_CALLEE_INSTRS instructions.
-  - Only inline call sites where the caller has fewer than MAX_INLINE_CALLER_INSTRS instructions.
+  - Only inline functions with at most MAX_INLINE_CALLEE_INSTRS instructions.
+  - Only inline call sites where the caller has at most MAX_INLINE_CALLER_INSTRS instructions.
   - Do not inline functions that contain tail calls.
 */
 

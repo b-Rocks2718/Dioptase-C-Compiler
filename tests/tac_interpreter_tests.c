@@ -5,6 +5,7 @@
 #include "optimization.h"
 #include "slice.h"
 #include "constant_fold.h"
+#include "inlining.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -1467,6 +1468,124 @@ static bool tac_test_copy_prop_args_copy_on_write(void) {
   return ok;
 }
 
+/*
+Inlining must remap operands without changing the retained callee body.
+
+copy_instr is intentionally shallow, so this covers both pointer operands and
+the separately allocated argument array embedded in a copied call. The callee
+contains a nested external call to ensure its argument and result operands are
+also copied before renaming.
+*/
+static bool tac_test_inlining_operands_copy_on_write(void) {
+  struct Slice helper_name = tac_slice_literal("helper");
+  struct Slice external_name = tac_slice_literal("external");
+  struct Slice main_name = tac_slice_literal("main");
+  struct Slice param_name = tac_slice_literal("param");
+  struct Slice sum_name = tac_slice_literal("sum");
+  struct Slice nested_result_name = tac_slice_literal("nested_result");
+  struct Slice main_result_name = tac_slice_literal("main_result");
+  struct Slice* helper_params[] = {&param_name};
+  struct Val param = tac_val_var(&param_name, &kTestIntType);
+  struct Val sum = tac_val_var(&sum_name, &kTestIntType);
+  struct Val nested_result = tac_val_var(&nested_result_name, &kTestIntType);
+  struct Val main_result = tac_val_var(&main_result_name, &kTestIntType);
+  struct Val one = tac_val_const(1, &kTestIntType);
+  struct Val three = tac_val_const(3, &kTestIntType);
+  struct Val external_args[] = {sum};
+  struct Val helper_args[] = {three};
+  struct TACInstr add;
+  struct TACInstr external_call;
+  struct TACInstr helper_return;
+  struct TACInstr helper_call;
+  struct TACInstr main_return;
+  struct TopLevel helper;
+  struct TopLevel main_func;
+  bool ok = true;
+
+  tac_init_instr(&add, TACBINARY);
+  add.instr.tac_binary.alu_op = ALU_ADD;
+  add.instr.tac_binary.dst = &sum;
+  add.instr.tac_binary.src1 = &param;
+  add.instr.tac_binary.src2 = &one;
+  tac_init_instr(&external_call, TACCALL);
+  external_call.instr.tac_call.func_name = &external_name;
+  external_call.instr.tac_call.dst = &nested_result;
+  external_call.instr.tac_call.args = external_args;
+  external_call.instr.tac_call.num_args = 1;
+  tac_init_instr(&helper_return, TACRETURN);
+  helper_return.instr.tac_return.src = &nested_result;
+  tac_link_instr(&add, &external_call);
+  tac_link_instr(&external_call, &helper_return);
+
+  tac_init_instr(&helper_call, TACCALL);
+  helper_call.instr.tac_call.func_name = &helper_name;
+  helper_call.instr.tac_call.dst = &main_result;
+  helper_call.instr.tac_call.args = helper_args;
+  helper_call.instr.tac_call.num_args = 1;
+  tac_init_instr(&main_return, TACRETURN);
+  main_return.instr.tac_return.src = &main_result;
+  tac_link_instr(&helper_call, &main_return);
+
+  tac_init_func(&helper, &helper_name, &add, &helper_return,
+                helper_params, 1);
+  tac_init_func(&main_func, &main_name, &helper_call, &main_return, NULL, 0);
+  helper.next = &main_func;
+
+  struct TACProg prog = {0};
+  prog.head = &helper;
+  prog.tail = &main_func;
+
+  arena_init(1024);
+  struct CallGraph call_graph = build_call_graph(&prog);
+  perform_inlining(&call_graph);
+
+  if (add.instr.tac_binary.dst != &sum ||
+      !compare_slice_to_slice(sum.val.var_name, &sum_name) ||
+      add.instr.tac_binary.src1 != &param ||
+      !compare_slice_to_slice(param.val.var_name, &param_name)) {
+    printf("inlining copy test failed: remapping the copied binary instruction "
+           "changed the retained callee operands\n");
+    ok = false;
+  }
+  if (external_call.instr.tac_call.dst != &nested_result ||
+      !compare_slice_to_slice(nested_result.val.var_name, &nested_result_name) ||
+      external_call.instr.tac_call.args != external_args ||
+      !compare_slice_to_slice(external_args[0].val.var_name, &sum_name)) {
+    printf("inlining copy test failed: remapping the copied call changed the "
+           "retained callee call operands\n");
+    ok = false;
+  }
+
+  struct TACInstr* copied_call = NULL;
+  for (struct TACInstr* instr = main_func.top.tac_func.body.head;
+       instr != NULL; instr = instr->next) {
+    if (instr->type == TACCALL &&
+        compare_slice_to_slice(instr->instr.tac_call.func_name,
+                               &external_name)) {
+      copied_call = instr;
+      break;
+    }
+  }
+  if (copied_call == NULL) {
+    printf("inlining copy test failed: copied external call is missing\n");
+    ok = false;
+  } else if (copied_call->instr.tac_call.dst == &nested_result ||
+             copied_call->instr.tac_call.args == external_args ||
+             compare_slice_to_slice(
+                 copied_call->instr.tac_call.dst->val.var_name,
+                 &nested_result_name) ||
+             compare_slice_to_slice(
+                 copied_call->instr.tac_call.args[0].val.var_name,
+                 &sum_name)) {
+    printf("inlining copy test failed: inlined call operands were not detached "
+           "and renamed independently\n");
+    ok = false;
+  }
+
+  arena_destroy();
+  return ok;
+}
+
 // Find a node in a call graph built by a test.
 static struct CallGraphNode* tac_test_find_call_graph_node(
     const struct CallGraph* call_graph, const struct Slice* name) {
@@ -1604,6 +1723,8 @@ int main(void) {
   ok = tac_test_copy_is_type_safe() && ok;
   printf("- tac_test_copy_prop_args_copy_on_write\n");
   ok = tac_test_copy_prop_args_copy_on_write() && ok;
+  printf("- tac_test_inlining_operands_copy_on_write\n");
+  ok = tac_test_inlining_operands_copy_on_write() && ok;
   printf("- tac_test_call_graph_sccs\n");
   ok = tac_test_call_graph_sccs() && ok;
   printf("- tac_test_get_aliased_vars\n");
