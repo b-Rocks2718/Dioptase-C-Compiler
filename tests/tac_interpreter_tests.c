@@ -1,15 +1,20 @@
 #include "TAC.h"
 #include "arena.h"
+#include "call_graph.h"
 #include "cfg.h"
 #include "optimization.h"
 #include "slice.h"
 #include "constant_fold.h"
+#include "inlining.h"
 
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
-// Construct TAC programs directly to verify interpreter and optimization behavior.
+/*
+Construct TAC programs directly to verify interpreter, graph-analysis, and
+optimization behavior.
+*/
 
 static struct Type kTestIntType = { .type = INT_TYPE };
 static struct Type kTestUintType = { .type = UINT_TYPE };
@@ -69,10 +74,6 @@ static struct Val tac_val_var(struct Slice* name, struct Type* type) {
 static void tac_init_instr(struct TACInstr* instr, enum TACInstrType type) {
   memset(instr, 0, sizeof(*instr));
   instr->type = type;
-  instr->reaching_copies.head = NULL;
-  instr->reaching_copies.last = NULL;
-  instr->live_vars.head = NULL;
-  instr->live_vars.last = NULL;
   instr->next = NULL;
 }
 
@@ -80,14 +81,16 @@ static void tac_init_instr(struct TACInstr* instr, enum TACInstrType type) {
 // Clears the node and fills the function variant.
 static void tac_init_func(struct TopLevel* top,
                           struct Slice* name,
-                          struct TACInstr* body,
+                          struct TACInstr* body_head,
+                          struct TACInstr* body_last,
                           struct Slice** params,
                           size_t num_params) {
   memset(top, 0, sizeof(*top));
   top->type = FUNC;
   top->top.tac_func.name = name;
   top->top.tac_func.global = true;
-  top->top.tac_func.body = body;
+  top->top.tac_func.body.head = body_head;
+  top->top.tac_func.body.last = body_last;
   top->top.tac_func.params = params;
   top->top.tac_func.num_params = num_params;
   top->next = NULL;
@@ -125,7 +128,7 @@ static bool tac_test_return_const(void) {
   ret_instr.instr.tac_return.src = &ret_val;
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &ret_instr, NULL, 0);
+  tac_init_func(&main_func, &main_name, &ret_instr, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -199,7 +202,7 @@ static bool tac_test_arithmetic(void) {
   tac_link_instr(&mul_instr, &ret_instr);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &copy_a, NULL, 0);
+  tac_init_func(&main_func, &main_name, &copy_a, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -254,7 +257,7 @@ static bool tac_test_cond_jump(void) {
   tac_link_instr(&label, &ret_true);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &cond_jump, NULL, 0);
+  tac_init_func(&main_func, &main_name, &cond_jump, &ret_true, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -305,7 +308,7 @@ static bool tac_test_call(void) {
 
   struct Slice* add_params[kArgCount] = { &p_name, &q_name };
   struct TopLevel add_func;
-  tac_init_func(&add_func, &add_name, &add_bin, add_params, kArgCount);
+  tac_init_func(&add_func, &add_name, &add_bin, &add_ret, add_params, kArgCount);
 
   struct Val call_args[kArgCount];
   call_args[0] = tac_val_const(kArg0, &kTestIntType);
@@ -323,7 +326,7 @@ static bool tac_test_call(void) {
   tac_link_instr(&call_instr, &main_ret);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &call_instr, NULL, 0);
+  tac_init_func(&main_func, &main_name, &call_instr, &main_ret, NULL, 0);
 
   add_func.next = &main_func;
 
@@ -388,7 +391,7 @@ static bool tac_test_memory_ops(void) {
   tac_link_instr(&load, &ret_instr);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &copy_x, NULL, 0);
+  tac_init_func(&main_func, &main_name, &copy_x, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -480,7 +483,7 @@ static bool tac_test_unary_ops(void) {
   tac_link_instr(&add_1, &ret_instr);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &copy_a, NULL, 0);
+  tac_init_func(&main_func, &main_name, &copy_a, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -529,7 +532,7 @@ static bool tac_test_jump(void) {
   tac_link_instr(&label_instr, &ret_true);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &jump_instr, NULL, 0);
+  tac_init_func(&main_func, &main_name, &jump_instr, &ret_true, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -605,7 +608,7 @@ static bool tac_test_copy_to_offset(void) {
   tac_link_instr(&load, &ret_instr);
 
   struct TopLevel main_func;
-  tac_init_func(&main_func, &main_name, &copy_arr0, NULL, 0);
+  tac_init_func(&main_func, &main_name, &copy_arr0, &ret_instr, NULL, 0);
 
   struct TACProg prog = {0};
   prog.head = &main_func;
@@ -623,7 +626,7 @@ static bool tac_expect_folded_constant(const char* name,
                                        struct Val* expected_dst,
                                        struct Type* expected_type,
                                        uint64_t expected_value) {
-  struct TACInstr* folded = constant_fold(instr);
+  struct TACInstr* folded = constant_fold(tac_instr_list(instr)).head;
   if (folded != NULL && folded != instr && folded->type == TACCOPY &&
       folded->instr.tac_copy.dst == expected_dst &&
       folded->instr.tac_copy.src != NULL &&
@@ -680,7 +683,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_binary.dst = &int_dst;
   instr.instr.tac_binary.src1 = &one;
   instr.instr.tac_binary.src2 = &variable_right;
-  struct TACInstr* folded_move = constant_fold(&instr);
+  struct TACInstr* folded_move = constant_fold(tac_instr_list(&instr)).head;
   if (folded_move == NULL || folded_move == &instr ||
       folded_move->type != TACCOPY ||
       folded_move->instr.tac_copy.dst != &int_dst ||
@@ -735,7 +738,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_binary.src1 = &one;
   struct Val zero = tac_val_const(0, &kTestIntType);
   instr.instr.tac_binary.src2 = &zero;
-  if (constant_fold(&instr) != &instr) {
+  if (constant_fold(tac_instr_list(&instr)).head != &instr) {
     printf("constant-folding test division by zero failed: undefined "
            "operation must remain unfolded\n");
     ok = false;
@@ -746,7 +749,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_binary.dst = &int_dst;
   instr.instr.tac_binary.src1 = &int_min_bits;
   instr.instr.tac_binary.src2 = &minus_one_bits;
-  if (constant_fold(&instr) != &instr) {
+  if (constant_fold(tac_instr_list(&instr)).head != &instr) {
     printf("constant-folding test signed division overflow failed: undefined "
            "operation must remain unfolded\n");
     ok = false;
@@ -757,7 +760,7 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_cond_jump.src2 = &zero;
   instr.instr.tac_cond_jump.condition = CondL;
   instr.instr.tac_cond_jump.label = &target_name;
-  struct TACInstr* folded_jump = constant_fold(&instr);
+  struct TACInstr* folded_jump = constant_fold(tac_instr_list(&instr)).head;
   if (folded_jump == NULL || folded_jump == &instr ||
       folded_jump->type != TACJUMP ||
       folded_jump->instr.tac_jump.label != &target_name) {
@@ -775,10 +778,13 @@ static bool tac_test_constant_folding(void) {
   instr.instr.tac_cond_jump.label = &target_name;
   return_after_jump.instr.tac_return.src = &one;
   tac_link_instr(&instr, &return_after_jump);
-  struct TACInstr* folded_fallthrough = constant_fold(&instr);
-  if (folded_fallthrough != &return_after_jump) {
+  struct TACInstrList fallthrough_body = {&instr, &return_after_jump};
+  struct TACInstrList folded_fallthrough = constant_fold(fallthrough_body);
+  if (folded_fallthrough.head != &return_after_jump ||
+      folded_fallthrough.last != &return_after_jump) {
     printf("constant-folding test unsigned conditional jump failed: expected "
-           "the never-taken jump to be removed\n");
+           "the never-taken jump to be removed, leaving the return as both "
+           "head and tail\n");
     ok = false;
   }
 
@@ -1038,8 +1044,9 @@ static bool tac_test_cfg_rebuild(void) {
     return false;
   }
 
-  struct TACInstr* first = rebuild_body(cfg);
-  struct TACInstr* second = rebuild_body(cfg);
+  struct TACInstrList first_list = rebuild_body(cfg);
+  struct TACInstr* first = first_list.head;
+  struct TACInstr* second = rebuild_body(cfg).head;
   if (!compare_bodies(&copy, first) || !compare_bodies(first, second)) {
     printf("CFG rebuild test failed: repeated rebuilds changed TAC instruction order\n");
     ok = false;
@@ -1050,7 +1057,7 @@ static bool tac_test_cfg_rebuild(void) {
   }
 
   struct CFG* second_cfg = build_cfg(first);
-  struct TACInstr* second_round_trip = rebuild_body(second_cfg);
+  struct TACInstr* second_round_trip = rebuild_body(second_cfg).head;
   if (!compare_bodies(first, second_round_trip)) {
     printf("CFG rebuild test failed: a second TAC-to-CFG-to-TAC round trip "
            "changed the body\n");
@@ -1068,7 +1075,8 @@ static bool tac_test_cfg_rebuild(void) {
     instr_count++;
   }
   if (instr_count != kExpectedInstrCount || first == NULL ||
-      rebuilt_tail == NULL || rebuilt_tail->next != NULL) {
+      rebuilt_tail == NULL || rebuilt_tail->next != NULL ||
+      first_list.last != rebuilt_tail) {
     printf("CFG rebuild test failed: expected %u instructions in a well-formed list\n",
            kExpectedInstrCount);
     ok = false;
@@ -1082,6 +1090,85 @@ static bool tac_test_cfg_rebuild(void) {
     }
   }
 
+  arena_destroy();
+  return ok;
+}
+
+/*
+Verify that TAC instruction-copy helpers allocate independent instruction and
+list links while preserving the shared operand pointers of a shallow copy.
+*/
+static bool tac_test_copy_instr_list(void) {
+  const size_t kArenaBlockSize = 1024;
+  struct Val zero = tac_val_const(0, &kTestIntType);
+  struct Val one = tac_val_const(1, &kTestIntType);
+  struct TACInstr first;
+  struct TACInstr second;
+  bool ok = true;
+
+  tac_init_instr(&first, TACCOPY);
+  first.instr.tac_copy.dst = &zero;
+  first.instr.tac_copy.src = &one;
+  tac_init_instr(&second, TACRETURN);
+  second.instr.tac_return.src = &zero;
+  tac_link_instr(&first, &second);
+
+  arena_init(kArenaBlockSize);
+
+  struct TACInstr* first_copy = copy_instr(&first);
+  if (first_copy == &first || first_copy->next != NULL ||
+      first_copy->type != first.type ||
+      first_copy->instr.tac_copy.dst != first.instr.tac_copy.dst ||
+      first_copy->instr.tac_copy.src != first.instr.tac_copy.src) {
+    printf("TAC instruction copy test failed: expected a detached shallow copy\n");
+    ok = false;
+  }
+
+  struct TACInstrList source = {&first, &second};
+  struct TACInstrList list_copy = copy_instr_list(source);
+  if (list_copy.head == NULL || list_copy.last == NULL ||
+      list_copy.head == &first || list_copy.last == &second ||
+      list_copy.head->next != list_copy.last || list_copy.last->next != NULL ||
+      list_copy.head->instr.tac_copy.dst != &zero ||
+      list_copy.head->instr.tac_copy.src != &one ||
+      list_copy.last->instr.tac_return.src != &zero ||
+      first.next != &second || second.next != NULL) {
+    printf("TAC instruction-list copy test failed: expected independent links "
+           "and shared operands\n");
+    ok = false;
+  }
+
+  struct TACInstrList empty_copy = copy_instr_list(tac_instr_list(NULL));
+  if (empty_copy.head != NULL || empty_copy.last != NULL) {
+    printf("TAC instruction-list copy test failed: expected an empty copy\n");
+    ok = false;
+  }
+
+  arena_destroy();
+  return ok;
+}
+
+/*
+Verify that copying a TAC value allocates a distinct value while retaining the
+shared type and variable-name pointers of a shallow copy.
+*/
+static bool tac_test_copy_val(void) {
+  const size_t kArenaBlockSize = 1024;
+  struct Slice name = tac_slice_literal("source");
+  struct Val source = tac_val_var(&name, &kTestIntType);
+  bool ok = true;
+
+  arena_init(kArenaBlockSize);
+  struct Val* copy = copy_val(&source);
+  if (copy == NULL || copy == &source || copy->val_type != VARIABLE ||
+      copy->val.var_name != source.val.var_name || copy->type != source.type) {
+    printf("TAC value copy test failed: expected an allocated shallow copy\n");
+    ok = false;
+  }
+  if (copy_val(NULL) != NULL) {
+    printf("TAC value copy test failed: expected NULL input to return NULL\n");
+    ok = false;
+  }
   arena_destroy();
   return ok;
 }
@@ -1277,7 +1364,7 @@ static bool tac_test_get_aliased_vars(void) {
   tac_link_instr(&get_local, &get_local_again);
   tac_link_instr(&get_local_again, &get_static);
 
-  struct SliceList aliased = get_aliased_vars(&get_local);
+  struct SliceList aliased = get_aliased_vars(&get_local, get_static_vars());
   unsigned count = 0;
   for (struct SliceListNode* node = aliased.head; node != NULL; node = node->next) {
     count++;
@@ -1305,12 +1392,416 @@ static bool tac_test_get_aliased_vars(void) {
   return ok;
 }
 
+/*
+Copy propagation must rewrite call arguments copy-on-write.
+
+CFG instructions are shallow copies, so a call's argument array is shared
+with the body the CFG was built from. The optimizer's fixed-point check
+compares argument arrays by pointer, so rewriting the shared array in place
+both corrupts the earlier body and hides the change from that check.
+
+TAC:
+  x = a
+  r = f(x)
+  return r
+After copy propagation the CFG call must read f(a) through a new array while
+the original array still holds x.
+*/
+static bool tac_test_copy_prop_args_copy_on_write(void) {
+  struct Slice a_name = tac_slice_literal("a");
+  struct Slice x_name = tac_slice_literal("x");
+  struct Slice r_name = tac_slice_literal("r");
+  struct Slice f_name = tac_slice_literal("f");
+  struct Val a_val = tac_val_var(&a_name, &kTestIntType);
+  struct Val x_val = tac_val_var(&x_name, &kTestIntType);
+  struct Val r_val = tac_val_var(&r_name, &kTestIntType);
+  struct Val args[1];
+  args[0] = x_val;
+  struct TACInstr copy_instr;
+  struct TACInstr call_instr;
+  struct TACInstr ret_instr;
+  struct SliceList no_aliased = {NULL, NULL};
+  bool ok = true;
+
+  arena_init(1024);
+  tac_init_instr(&copy_instr, TACCOPY);
+  copy_instr.instr.tac_copy.dst = &x_val;
+  copy_instr.instr.tac_copy.src = &a_val;
+  tac_init_instr(&call_instr, TACCALL);
+  call_instr.instr.tac_call.func_name = &f_name;
+  call_instr.instr.tac_call.dst = &r_val;
+  call_instr.instr.tac_call.args = args;
+  call_instr.instr.tac_call.num_args = 1;
+  tac_init_instr(&ret_instr, TACRETURN);
+  ret_instr.instr.tac_return.src = &r_val;
+  tac_link_instr(&copy_instr, &call_instr);
+  tac_link_instr(&call_instr, &ret_instr);
+
+  struct CFG* cfg = copy_prop(build_cfg(&copy_instr), no_aliased);
+  struct TACInstr* rewritten = NULL;
+  for (unsigned i = 0; i < cfg->num_nodes; i++) {
+    for (struct TACInstr* instr = cfg->nodes[i]->body.head; instr != NULL; instr = instr->next) {
+      if (instr->type == TACCALL) {
+        rewritten = instr;
+      }
+    }
+  }
+
+  if (!compare_slice_to_slice(args[0].val.var_name, &x_name)) {
+    printf("copy_prop args test failed: the shared argument array was modified in place; "
+           "earlier bodies and the fixed-point check would see the rewrite\n");
+    ok = false;
+  }
+  if (rewritten == NULL) {
+    printf("copy_prop args test failed: the call instruction disappeared from the CFG\n");
+    ok = false;
+  } else if (rewritten->instr.tac_call.args == args) {
+    printf("copy_prop args test failed: a rewritten call must use a new argument array "
+           "so compare_instrs detects the change\n");
+    ok = false;
+  } else if (!compare_slice_to_slice(rewritten->instr.tac_call.args[0].val.var_name, &a_name)) {
+    printf("copy_prop args test failed: x = a reaches the call, so f(x) should become f(a)\n");
+    ok = false;
+  }
+
+  arena_destroy();
+  return ok;
+}
+
+/*
+Inlining must remap operands without changing the retained callee body.
+
+copy_instr is intentionally shallow, so this covers both pointer operands and
+the separately allocated argument array embedded in a copied call. The callee
+contains a nested external call to ensure its argument and result operands are
+also copied before renaming.
+*/
+static bool tac_test_inlining_operands_copy_on_write(void) {
+  const size_t kSymbolBuckets = 8;
+  struct Slice helper_name = tac_slice_literal("helper");
+  struct Slice external_name = tac_slice_literal("external");
+  struct Slice main_name = tac_slice_literal("main");
+  struct Slice param_name = tac_slice_literal("param");
+  struct Slice sum_name = tac_slice_literal("sum");
+  struct Slice nested_result_name = tac_slice_literal("nested_result");
+  struct Slice main_result_name = tac_slice_literal("main_result");
+  struct Slice* helper_params[] = {&param_name};
+  struct Val param = tac_val_var(&param_name, &kTestIntType);
+  struct Val sum = tac_val_var(&sum_name, &kTestIntType);
+  struct Val nested_result = tac_val_var(&nested_result_name, &kTestIntType);
+  struct Val main_result = tac_val_var(&main_result_name, &kTestIntType);
+  struct Val one = tac_val_const(1, &kTestIntType);
+  struct Val three = tac_val_const(3, &kTestIntType);
+  struct Val external_args[] = {sum};
+  struct Val helper_args[] = {three};
+  struct TACInstr add;
+  struct TACInstr external_call;
+  struct TACInstr helper_return;
+  struct TACInstr helper_call;
+  struct TACInstr main_return;
+  struct TopLevel helper;
+  struct TopLevel main_func;
+  struct IdentAttr local_attrs =
+      {LOCAL_ATTR, true, NONE, {NO_INIT, NULL}, NULL};
+  struct SymbolTable* saved_table = global_symbol_table;
+  bool ok = true;
+
+  tac_init_instr(&add, TACBINARY);
+  add.instr.tac_binary.alu_op = ALU_ADD;
+  add.instr.tac_binary.dst = &sum;
+  add.instr.tac_binary.src1 = &param;
+  add.instr.tac_binary.src2 = &one;
+  tac_init_instr(&external_call, TACCALL);
+  external_call.instr.tac_call.func_name = &external_name;
+  external_call.instr.tac_call.dst = &nested_result;
+  external_call.instr.tac_call.args = external_args;
+  external_call.instr.tac_call.num_args = 1;
+  tac_init_instr(&helper_return, TACRETURN);
+  helper_return.instr.tac_return.src = &nested_result;
+  tac_link_instr(&add, &external_call);
+  tac_link_instr(&external_call, &helper_return);
+
+  tac_init_instr(&helper_call, TACCALL);
+  helper_call.instr.tac_call.func_name = &helper_name;
+  helper_call.instr.tac_call.dst = &main_result;
+  helper_call.instr.tac_call.args = helper_args;
+  helper_call.instr.tac_call.num_args = 1;
+  tac_init_instr(&main_return, TACRETURN);
+  main_return.instr.tac_return.src = &main_result;
+  tac_link_instr(&helper_call, &main_return);
+
+  tac_init_func(&helper, &helper_name, &add, &helper_return,
+                helper_params, 1);
+  tac_init_func(&main_func, &main_name, &helper_call, &main_return, NULL, 0);
+  helper.next = &main_func;
+
+  struct TACProg prog = {0};
+  prog.head = &helper;
+  prog.tail = &main_func;
+
+  arena_init(1024);
+  global_symbol_table = create_symbol_table(kSymbolBuckets);
+  symbol_table_insert(global_symbol_table, &param_name, &kTestIntType,
+                      &local_attrs);
+  symbol_table_insert(global_symbol_table, &sum_name, &kTestIntType,
+                      &local_attrs);
+  symbol_table_insert(global_symbol_table, &nested_result_name,
+                      &kTestIntType, &local_attrs);
+  struct CallGraph call_graph = build_call_graph(&prog);
+  perform_inlining(&call_graph);
+
+  if (add.instr.tac_binary.dst != &sum ||
+      !compare_slice_to_slice(sum.val.var_name, &sum_name) ||
+      add.instr.tac_binary.src1 != &param ||
+      !compare_slice_to_slice(param.val.var_name, &param_name)) {
+    printf("inlining copy test failed: remapping the copied binary instruction "
+           "changed the retained callee operands\n");
+    ok = false;
+  }
+  if (external_call.instr.tac_call.dst != &nested_result ||
+      !compare_slice_to_slice(nested_result.val.var_name, &nested_result_name) ||
+      external_call.instr.tac_call.args != external_args ||
+      !compare_slice_to_slice(external_args[0].val.var_name, &sum_name)) {
+    printf("inlining copy test failed: remapping the copied call changed the "
+           "retained callee call operands\n");
+    ok = false;
+  }
+
+  struct TACInstr* copied_call = NULL;
+  for (struct TACInstr* instr = main_func.top.tac_func.body.head;
+       instr != NULL; instr = instr->next) {
+    if (instr->type == TACCALL &&
+        compare_slice_to_slice(instr->instr.tac_call.func_name,
+                               &external_name)) {
+      copied_call = instr;
+      break;
+    }
+  }
+  if (copied_call == NULL) {
+    printf("inlining copy test failed: copied external call is missing\n");
+    ok = false;
+  } else if (copied_call->instr.tac_call.dst == &nested_result ||
+             copied_call->instr.tac_call.args == external_args ||
+             compare_slice_to_slice(
+                 copied_call->instr.tac_call.dst->val.var_name,
+                 &nested_result_name) ||
+             compare_slice_to_slice(
+                 copied_call->instr.tac_call.args[0].val.var_name,
+                 &sum_name)) {
+    printf("inlining copy test failed: inlined call operands were not detached "
+           "and renamed independently\n");
+    ok = false;
+  }
+
+  global_symbol_table = saved_table;
+  arena_destroy();
+  return ok;
+}
+
+// Find a node in a call graph built by a test.
+static struct CallGraphNode* tac_test_find_call_graph_node(
+    const struct CallGraph* call_graph, const struct Slice* name) {
+  for (struct CallGraphEntry* entry = call_graph->nodes.head;
+       entry != NULL;
+       entry = entry->next) {
+    if (compare_slice_to_slice(entry->node->func->name, name)) {
+      return entry->node;
+    }
+  }
+  return NULL;
+}
+
+/*
+The documented callee limit is inclusive: a function with exactly
+MAX_INLINE_CALLEE_INSTRS instructions is eligible, while one additional
+instruction makes it ineligible.
+*/
+static bool tac_test_call_graph_inline_size_limit(void) {
+  struct Slice at_limit_name = tac_slice_literal("at_limit");
+  struct Slice over_limit_name = tac_slice_literal("over_limit");
+  struct TACInstr at_limit_body[MAX_INLINE_CALLEE_INSTRS];
+  struct TACInstr over_limit_body[MAX_INLINE_CALLEE_INSTRS + 1];
+  struct TopLevel at_limit;
+  struct TopLevel over_limit;
+  bool ok = true;
+
+  for (size_t i = 0; i < MAX_INLINE_CALLEE_INSTRS; i++) {
+    tac_init_instr(&at_limit_body[i], TACBOUNDARY);
+    if (i + 1 < MAX_INLINE_CALLEE_INSTRS) {
+      tac_link_instr(&at_limit_body[i], &at_limit_body[i + 1]);
+    }
+  }
+  for (size_t i = 0; i < MAX_INLINE_CALLEE_INSTRS + 1; i++) {
+    tac_init_instr(&over_limit_body[i], TACBOUNDARY);
+    if (i + 1 < MAX_INLINE_CALLEE_INSTRS + 1) {
+      tac_link_instr(&over_limit_body[i], &over_limit_body[i + 1]);
+    }
+  }
+
+  tac_init_func(&at_limit, &at_limit_name, &at_limit_body[0],
+                &at_limit_body[MAX_INLINE_CALLEE_INSTRS - 1], NULL, 0);
+  tac_init_func(&over_limit, &over_limit_name, &over_limit_body[0],
+                &over_limit_body[MAX_INLINE_CALLEE_INSTRS], NULL, 0);
+  at_limit.next = &over_limit;
+
+  struct TACProg prog = {0};
+  prog.head = &at_limit;
+  prog.tail = &over_limit;
+
+  arena_init(1024);
+  struct CallGraph call_graph = build_call_graph(&prog);
+  struct CallGraphNode* at_limit_node =
+      tac_test_find_call_graph_node(&call_graph, &at_limit_name);
+  struct CallGraphNode* over_limit_node =
+      tac_test_find_call_graph_node(&call_graph, &over_limit_name);
+
+  if (at_limit_node == NULL || !at_limit_node->consider_inlining) {
+    printf("call graph inline-limit test failed: a %d-instruction callee "
+           "should be eligible\n",
+           MAX_INLINE_CALLEE_INSTRS);
+    ok = false;
+  }
+  if (over_limit_node == NULL || over_limit_node->consider_inlining) {
+    printf("call graph inline-limit test failed: a %d-instruction callee "
+           "should be ineligible\n",
+           MAX_INLINE_CALLEE_INSTRS + 1);
+    ok = false;
+  }
+
+  arena_destroy();
+  return ok;
+}
+
+/*
+Verify SCC-based recursion classification across a DFS forest.
+
+The isolated function deliberately precedes every cycle: it catches discovery
+indices being reused for disconnected roots. cycle_a also has a one-way edge to
+an acyclic chain, which must not pull that chain into its SCC. other_a/other_b
+form a second disconnected SCC, and self verifies the single-node self-edge
+case.
+*/
+static bool tac_test_call_graph_sccs(void) {
+  struct Slice isolated_name = tac_slice_literal("isolated");
+  struct Slice cycle_a_name = tac_slice_literal("cycle_a");
+  struct Slice cycle_b_name = tac_slice_literal("cycle_b");
+  struct Slice other_a_name = tac_slice_literal("other_a");
+  struct Slice other_b_name = tac_slice_literal("other_b");
+  struct Slice self_name = tac_slice_literal("self");
+  struct Slice dag_root_name = tac_slice_literal("dag_root");
+  struct Slice dag_leaf_name = tac_slice_literal("dag_leaf");
+
+  struct TACInstr cycle_a_to_b;
+  struct TACInstr cycle_a_to_dag;
+  struct TACInstr cycle_b_to_a;
+  struct TACInstr other_a_to_b;
+  struct TACInstr other_b_to_a;
+  struct TACInstr self_to_self;
+  struct TACInstr dag_root_to_leaf;
+  tac_init_instr(&cycle_a_to_b, TACCALL);
+  cycle_a_to_b.instr.tac_call.func_name = &cycle_b_name;
+  tac_init_instr(&cycle_a_to_dag, TACCALL);
+  cycle_a_to_dag.instr.tac_call.func_name = &dag_root_name;
+  tac_link_instr(&cycle_a_to_b, &cycle_a_to_dag);
+  tac_init_instr(&cycle_b_to_a, TACCALL);
+  cycle_b_to_a.instr.tac_call.func_name = &cycle_a_name;
+  tac_init_instr(&other_a_to_b, TACCALL);
+  other_a_to_b.instr.tac_call.func_name = &other_b_name;
+  tac_init_instr(&other_b_to_a, TACCALL);
+  other_b_to_a.instr.tac_call.func_name = &other_a_name;
+  tac_init_instr(&self_to_self, TACCALL);
+  self_to_self.instr.tac_call.func_name = &self_name;
+  tac_init_instr(&dag_root_to_leaf, TACCALL);
+  dag_root_to_leaf.instr.tac_call.func_name = &dag_leaf_name;
+
+  struct TopLevel isolated;
+  struct TopLevel cycle_a;
+  struct TopLevel cycle_b;
+  struct TopLevel other_a;
+  struct TopLevel other_b;
+  struct TopLevel self;
+  struct TopLevel dag_root;
+  struct TopLevel dag_leaf;
+  tac_init_func(&isolated, &isolated_name, NULL, NULL, NULL, 0);
+  tac_init_func(&cycle_a, &cycle_a_name, &cycle_a_to_b, &cycle_a_to_dag,
+                NULL, 0);
+  tac_init_func(&cycle_b, &cycle_b_name, &cycle_b_to_a, &cycle_b_to_a,
+                NULL, 0);
+  tac_init_func(&other_a, &other_a_name, &other_a_to_b, &other_a_to_b,
+                NULL, 0);
+  tac_init_func(&other_b, &other_b_name, &other_b_to_a, &other_b_to_a,
+                NULL, 0);
+  tac_init_func(&self, &self_name, &self_to_self, &self_to_self, NULL, 0);
+  tac_init_func(&dag_root, &dag_root_name, &dag_root_to_leaf,
+                &dag_root_to_leaf, NULL, 0);
+  tac_init_func(&dag_leaf, &dag_leaf_name, NULL, NULL, NULL, 0);
+
+  isolated.next = &cycle_a;
+  cycle_a.next = &cycle_b;
+  cycle_b.next = &other_a;
+  other_a.next = &other_b;
+  other_b.next = &self;
+  self.next = &dag_root;
+  dag_root.next = &dag_leaf;
+
+  struct TACProg prog = {0};
+  prog.head = &isolated;
+  prog.tail = &dag_leaf;
+
+  struct {
+    struct Slice* name;
+    bool can_recurse;
+    const char* reason;
+  } expectations[] = {
+    {&isolated_name, false, "an isolated function cannot recurse"},
+    {&cycle_a_name, true, "both members of a mutual cycle can recurse"},
+    {&cycle_b_name, true, "both members of a mutual cycle can recurse"},
+    {&other_a_name, true, "a disconnected mutual cycle must be detected"},
+    {&other_b_name, true, "a disconnected mutual cycle must be detected"},
+    {&self_name, true, "a direct self-call is recursive"},
+    {&dag_root_name, false, "an acyclic caller cannot recurse"},
+    {&dag_leaf_name, false, "an acyclic leaf cannot recurse"},
+  };
+
+  arena_init(1024);
+  struct CallGraph call_graph = build_call_graph(&prog);
+  bool ok = true;
+  for (size_t i = 0; i < sizeof(expectations) / sizeof(expectations[0]); i++) {
+    struct CallGraphNode* node =
+        tac_test_find_call_graph_node(&call_graph, expectations[i].name);
+    if (node == NULL) {
+      printf("call graph SCC test failed: function ");
+      print_slice(expectations[i].name);
+      printf(" is missing from the graph\n");
+      ok = false;
+    } else if (node->can_recurse != expectations[i].can_recurse) {
+      printf("call graph SCC test failed for ");
+      print_slice(expectations[i].name);
+      printf(": %s; expected can_recurse=%s, got %s\n",
+             expectations[i].reason,
+             expectations[i].can_recurse ? "true" : "false",
+             node->can_recurse ? "true" : "false");
+      ok = false;
+    }
+  }
+  arena_destroy();
+  return ok;
+}
+
 // Run all TAC interpreter tests.
 // Returns 0 on success and non-zero on failure.
 int main(void) {
   bool ok = true;
   printf("- tac_test_copy_is_type_safe\n");
   ok = tac_test_copy_is_type_safe() && ok;
+  printf("- tac_test_copy_prop_args_copy_on_write\n");
+  ok = tac_test_copy_prop_args_copy_on_write() && ok;
+  printf("- tac_test_inlining_operands_copy_on_write\n");
+  ok = tac_test_inlining_operands_copy_on_write() && ok;
+  printf("- tac_test_call_graph_inline_size_limit\n");
+  ok = tac_test_call_graph_inline_size_limit() && ok;
+  printf("- tac_test_call_graph_sccs\n");
+  ok = tac_test_call_graph_sccs() && ok;
   printf("- tac_test_get_aliased_vars\n");
   ok = tac_test_get_aliased_vars() && ok;
   printf("- tac_test_slice_list\n");
@@ -1339,6 +1830,10 @@ int main(void) {
   ok = tac_test_compare_bodies() && ok;
   printf("- tac_test_cfg_rebuild\n");
   ok = tac_test_cfg_rebuild() && ok;
+  printf("- tac_test_copy_instr_list\n");
+  ok = tac_test_copy_instr_list() && ok;
+  printf("- tac_test_copy_val\n");
+  ok = tac_test_copy_val() && ok;
 
   if (ok) {
     printf("TAC interpreter tests passed. ");

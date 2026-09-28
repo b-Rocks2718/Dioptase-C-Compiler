@@ -1,0 +1,40 @@
+
+Call graph (6 functions)
+========================
+[direct]
+    can recurse: true
+    consider inlining: false
+    calls:
+      +-- direct --> [direct]
+
+[chain_a]
+    can recurse: true
+    consider inlining: false
+    calls:
+      +-- direct --> [chain_b]
+
+[chain_b]
+    can recurse: true
+    consider inlining: false
+    calls:
+      +-- direct --> [chain_c]
+
+[chain_c]
+    can recurse: true
+    consider inlining: false
+    calls:
+      +-- direct --> [chain_a]
+
+[nonrecursive]
+    can recurse: false
+    consider inlining: true
+    calls: none
+
+[main]
+    can recurse: false
+    consider inlining: true
+    calls:
+      |-- direct --> [direct]
+      |-- direct --> [chain_a]
+      +-- direct --> [nonrecursive]
+

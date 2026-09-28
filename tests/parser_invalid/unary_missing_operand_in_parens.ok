@@ -1,0 +1,1 @@
+Parse error at tests/parser_invalid/unary_missing_operand_in_parens.c:5:11: unexpected token

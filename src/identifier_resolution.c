@@ -212,12 +212,12 @@ bool resolve_type(struct Type* type){
 bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
   // extern and static declarations don't support cleanup attributes
   if (var_dclr->storage != NONE && var_dclr->attributes.cleanup_func != NULL) {
-    ident_error_at(var_dclr->name->start, "extern/static variables cannot have cleanup attributes");
+    ident_error_at(var_dclr->source_name->start, "extern/static variables cannot have cleanup attributes");
     return false;
   }
 
   if (!resolve_type(var_dclr->type)) {
-    ident_error_at(var_dclr->name->start, "failed to resolve variable type");
+    ident_error_at(var_dclr->source_name->start, "failed to resolve variable type");
     return false;
   }
 
@@ -238,7 +238,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
         // redeclaration with extern linkage in the same block
         return true;
       }
-      ident_error_at(var_dclr->name->start, "multiple declarations for variable");
+      ident_error_at(var_dclr->source_name->start, "multiple declarations for variable");
       return false;
     }
 
@@ -252,11 +252,11 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
   if (entry != NULL) {
     if (from_current_scope) {
       // already declared in this scope
-      ident_error_at(var_dclr->name->start, "multiple declarations for variable");
+      ident_error_at(var_dclr->source_name->start, "multiple declarations for variable");
       return false;
     } else {
       // Declared in an outer scope; create a new unique local.
-      struct Slice* unique_name = make_unique(var_dclr->name);
+      struct Slice* unique_name = make_unique(var_dclr->name, NULL);
       ident_stack_insert(global_ident_stack, var_dclr->name,
           unique_name, false, -1, false, 0);
       var_dclr->name = unique_name;
@@ -268,7 +268,7 @@ bool resolve_local_var_dclr(struct VariableDclr* var_dclr) {
   }
 
   // First declaration in this scope: insert and optionally resolve initializer.
-  struct Slice* unique_name = make_unique(var_dclr->name);
+  struct Slice* unique_name = make_unique(var_dclr->name, NULL);
   ident_stack_insert(global_ident_stack, var_dclr->name,
       unique_name, false, -1, false, 0);
   var_dclr->name = unique_name;
@@ -303,7 +303,11 @@ bool resolve_local_dclr(struct Declaration* dclr) {
 bool resolve_for_init(struct ForInit* init) {
   switch (init->type) {
     case DCLR_INIT:
-      return resolve_local_var_dclr(init->init.dclr_init);
+      // In order, so later initializers can see earlier variables.
+      for (struct VarDclrList* var = init->init.dclr_init; var != NULL; var = var->next) {
+        if (!resolve_local_var_dclr(&var->dclr)) return false;
+      }
+      return true;
     case EXPR_INIT:
       if (init->init.expr_init != NULL) {
         return resolve_expr(init->init.expr_init);
@@ -459,7 +463,7 @@ bool resolve_params(struct ParamList* params){
       return false;
     }
     if (!resolve_local_var_dclr(&param->param)) {
-      ident_error_at(param->param.name->start, "failed to resolve parameter");
+      ident_error_at(param->param.source_name->start, "failed to resolve parameter");
       return false;
     }
   }
@@ -496,17 +500,17 @@ bool resolve_block(struct Block* block){
 bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
   // file scope vars don't support cleanup attributes
   if (var_dclr->attributes.cleanup_func != NULL) {
-    ident_error_at(var_dclr->name->start, "file-scope variables cannot have cleanup attributes");
+    ident_error_at(var_dclr->source_name->start, "file-scope variables cannot have cleanup attributes");
     return false;
   }
 
   if (!resolve_type(var_dclr->type)) {
-    ident_error_at(var_dclr->name->start, "failed to resolve variable type");
+    ident_error_at(var_dclr->source_name->start, "failed to resolve variable type");
     return false;
   }
 
   if (var_dclr->init != NULL && !resolve_var_init(var_dclr->init)) {
-    ident_error_at(var_dclr->name->start, "failed to resolve variable initializer");
+    ident_error_at(var_dclr->source_name->start, "failed to resolve variable initializer");
     return false;
   }
 
@@ -515,7 +519,7 @@ bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
   if (entry != NULL) {
     if (!from_current_scope) {
       // this should never happen, as file scope declarations are global
-      ident_error_at(var_dclr->name->start, "declaration is outside file scope");
+      ident_error_at(var_dclr->source_name->start, "declaration is outside file scope");
       return false;
     }
     
@@ -590,7 +594,7 @@ bool resolve_struct(struct StructDclr* struct_dclr){
   struct IdentMapEntry* entry = ident_stack_get(global_type_stack, struct_dclr->name, &from_current_scope);
   if (entry == NULL || !from_current_scope){
     // new type declaration
-    struct Slice* unique_name = make_unique(struct_dclr->name);
+    struct Slice* unique_name = make_unique(struct_dclr->name, NULL);
     ident_stack_insert(global_type_stack, struct_dclr->name, unique_name, false, STRUCT_TYPE, false, 0);
     struct_dclr->name = unique_name;
   } else {
@@ -621,7 +625,7 @@ bool resolve_union(struct UnionDclr* union_dclr){
   struct IdentMapEntry* entry = ident_stack_get(global_type_stack, union_dclr->name, &from_current_scope);
   if (entry == NULL || !from_current_scope){
     // new type declaration
-    struct Slice* unique_name = make_unique(union_dclr->name);
+    struct Slice* unique_name = make_unique(union_dclr->name, NULL);
     ident_stack_insert(global_type_stack, union_dclr->name, unique_name, false, UNION_TYPE, false, 0);
     union_dclr->name = unique_name;
   } else {
@@ -652,7 +656,7 @@ bool resolve_enum(struct EnumDclr* enum_dclr){
   struct IdentMapEntry* entry = ident_stack_get(global_type_stack, enum_dclr->name, &from_current_scope);
   if (entry == NULL || !from_current_scope){
     // new type declaration
-    struct Slice* unique_name = make_unique(enum_dclr->name);
+    struct Slice* unique_name = make_unique(enum_dclr->name, NULL);
     ident_stack_insert(global_type_stack, enum_dclr->name, unique_name, false, ENUM_TYPE, false, 0);
     enum_dclr->name = unique_name;
   } else {
@@ -673,7 +677,7 @@ bool resolve_enum(struct EnumDclr* enum_dclr){
     struct IdentMapEntry* member_entry = ident_stack_get(global_ident_stack, member->name, &from_current_scope);
     if (member_entry == NULL || !from_current_scope){
       // new enum member
-      struct Slice* unique_member_name = make_unique(member->name);
+      struct Slice* unique_member_name = make_unique(member->name, NULL);
       ident_stack_insert(global_ident_stack, member->name, unique_member_name, false, -1, true, member->value);
       member->name = unique_member_name;
     } else {

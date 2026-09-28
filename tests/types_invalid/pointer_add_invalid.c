@@ -1,7 +1,5 @@
-#define TEST_ZERO 0
-
 int main(void) { /* Exercise pointer add invalid behavior. */
-  int x = TEST_ZERO;
+  int x = 0;
   int *p = &x;
   int *q = &x;
   return p + q;

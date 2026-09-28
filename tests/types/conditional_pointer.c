@@ -1,12 +1,8 @@
-#define TEST_ZERO 0
-#define TEST_ONE 1
-#define TEST_TWO 2
-
 int main(void) { /* Exercise conditional pointer behavior. */
-  int x = TEST_ONE;
-  int y = TEST_TWO;
+  int x = 1;
+  int y = 2;
   int *p = &x;
   int *q = &y;
-  int *r = x ? p : TEST_ZERO;
+  int *r = x ? p : 0;
   return *r;
 }

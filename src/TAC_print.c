@@ -470,7 +470,7 @@ static void print_tac_top_level(const struct TopLevel* top, unsigned tabs) {
 
       print_tabs(tabs + 1);
       printf("Body:\n");
-      print_tac_instrs(top->top.tac_func.body, tabs + 2);
+      print_tac_instrs(top->top.tac_func.body.head, tabs + 2);
       break;
     }
     case STATIC_VAR:

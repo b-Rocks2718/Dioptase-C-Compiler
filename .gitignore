@@ -2,6 +2,7 @@ build/*
 *.out
 *.hex
 *.s
+debugging/*
 
 !tests/kernel/*
 !crt/*

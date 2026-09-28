@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/for_init_multi_storage.c:2:19: storage class not allowed in for-loop initializer for variable i

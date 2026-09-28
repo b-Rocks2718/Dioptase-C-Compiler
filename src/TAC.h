@@ -21,11 +21,19 @@ enum TopLevelType {
   STATIC_CONST,
 };
 
+// Own a TAC instruction list with O(1) append via an explicit tail pointer.
+// Empty lists have head == last == NULL. Non-empty lists have last as the
+// final node of the head-linked chain (last->next == NULL).
+struct TACInstrList {
+  struct TACInstr* head;
+  struct TACInstr* last;
+};
+
 // Store function name, linkage, parameters, and TAC body.
 struct TACFunc {
   struct Slice* name;
   bool global;
-  struct TACInstr* body;
+  struct TACInstrList body;
   struct Slice** params;
   size_t num_params;
 };
@@ -296,21 +304,12 @@ union TACInstrVariant {
 };
 
 // Link one TAC instruction with the next instruction in its list.
-// reaching_copies is empty until copy-propagation analysis fills it.
+// Optimizer analyses keep their per-instruction facts in pass-local arrays,
+// so an instruction carries no analysis annotations.
 struct TACInstr {
   enum TACInstrType type;
   union TACInstrVariant instr;
-  struct ReachingCopyList reaching_copies;
-  struct SliceList live_vars; // live variables at this instruction
   struct TACInstr* next;
-};
-
-// Own a TAC instruction list with O(1) append via an explicit tail pointer.
-// Empty lists have head == last == NULL. Non-empty lists have last as the
-// final node of the head-linked chain (last->next == NULL).
-struct TACInstrList {
-  struct TACInstr* head;
-  struct TACInstr* last;
 };
 
 // Classify whether an expression result is a value or aggregate location.
@@ -402,6 +401,14 @@ struct TACInstrList call_to_TAC(struct Slice* func_name, struct Expr* expr, stru
 // Build a one-element list, or an empty list if instr is NULL.
 struct TACInstrList tac_instr_list(struct TACInstr* instr);
 
+// Allocate a shallow copy of instr with a detached next link.
+// Operand and other payload pointers remain shared with instr.
+struct TACInstr* copy_instr(const struct TACInstr* instr);
+
+// Allocate a shallow copy of every instruction in instrs.
+// The returned list has independent links but shares instruction payload pointers.
+struct TACInstrList copy_instr_list(struct TACInstrList instrs);
+
 // Append src onto dst. Empty src is a no-op; empty dst becomes src.
 void concat_TAC_instrs(struct TACInstrList* dst, struct TACInstrList src);
 
@@ -432,31 +439,30 @@ void print_tac_instrs(const struct TACInstr* instrs, unsigned tabs);
 
 void print_tac_prog(struct TACProg* prog);
 
+// Build a unique TAC label under the current function name.
+// Returns a new Slice for the label name.
+// Uses a monotonically increasing counter.
+struct Slice* tac_make_label(struct Slice* func_name, const char* suffix);
+
+// Copy the value from src to dst.
+// Both dst and src must be valid pointers to struct Val.
+void tac_copy_val(struct Val* dst, const struct Val* src);
+
+// Allocate a shallow copy of src in the active arena, or return NULL for NULL.
+// The returned value shares its type and variable-name pointers with src.
+struct Val* copy_val(const struct Val* src);
+
+// Allocate a variable TAC value referencing an existing name.
+struct Val* tac_make_var(struct Slice* name, struct Type* type);
+
+struct TACInstr* tac_instr_create(enum TACInstrType type);
+
+struct Val* tac_make_const(uint64_t value, struct Type* type);
+
+
 // ----- TAC interpreter -----
 
 // Execute a TAC program and return the integer result of main().
 int tac_interpret_prog(const struct TACProg* prog);
-
-#ifdef TAC_INTERNAL
-static void tac_error_at(const char* loc, const char* fmt, ...);
-
-static struct TACInstr* tac_instr_create(enum TACInstrType type);
-
-static struct Val* tac_make_const(uint64_t value, struct Type* type);
-
-static struct Val* tac_make_var(struct Slice* name, struct Type* type);
-
-static void tac_copy_val(struct Val* dst, const struct Val* src);
-
-static struct Slice* tac_make_label(struct Slice* func_name, const char* suffix);
-
-static bool is_relational_op(enum BinOp op);
-
-static bool is_compound_op(enum BinOp op);
-
-static enum BinOp compound_to_binop(enum BinOp op);
-
-static enum TACCondition relation_to_cond(enum BinOp op, struct Type* type);
-#endif
 
 #endif // TAC_H

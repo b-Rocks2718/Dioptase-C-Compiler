@@ -1,12 +1,9 @@
-#define TEST_ONE 1
-#define TEST_TWO 2
-
 int main(void) { /* Exercise pointer arith behavior. */
-  int x = TEST_ONE;
-  int y = TEST_TWO;
+  int x = 1;
+  int y = 2;
   int *p = &x;
   int *q = &y;
-  p = p + TEST_ONE;
-  q = p - TEST_ONE;
+  p = p + 1;
+  q = p - 1;
   return *q;
 }

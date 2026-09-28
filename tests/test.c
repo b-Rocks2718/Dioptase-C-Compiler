@@ -1,9 +1,10 @@
 // scratchpad for random tests and experiments
 
-int fun() {
-  return 1;
+int add(int x, int y) {
+  return x + y;
 }
 
 int main() {
-  return fun();
+  int result = add(3, 4);
+  return result;
 }

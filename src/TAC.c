@@ -47,8 +47,8 @@ static const char* declaration_loc(const struct Declaration* dclr) {
     if (var_dclr->init != NULL && var_dclr->init->loc != NULL) {
       return var_dclr->init->loc;
     }
-    if (var_dclr->name != NULL && var_dclr->name->start != NULL) {
-      return var_dclr->name->start;
+    if (var_dclr->source_name != NULL && var_dclr->source_name->start != NULL) {
+      return var_dclr->source_name->start;
     }
   }
   return NULL;
@@ -76,13 +76,9 @@ static void tac_error_at(const char* loc, const char* fmt, ...) {
 // Allocate and initialize a single TAC instruction node.
 // Returns a node with next == NULL and an empty reaching-copy list.
 // Callers must fill the variant fields.
-static struct TACInstr* tac_instr_create(enum TACInstrType type) {
+struct TACInstr* tac_instr_create(enum TACInstrType type) {
   struct TACInstr* instr = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
   instr->type = type;
-  instr->reaching_copies.head = NULL;
-  instr->reaching_copies.last = NULL;
-  instr->live_vars.head = NULL;
-  instr->live_vars.last = NULL;
   instr->next = NULL;
   return instr;
 }
@@ -93,6 +89,27 @@ struct TACInstrList tac_instr_list(struct TACInstr* instr) {
   list.head = instr;
   list.last = instr;
   return list;
+}
+
+// Allocate a shallow copy of an instruction without retaining its list link.
+// Operand and other payload pointers remain shared with the source instruction.
+struct TACInstr* copy_instr(const struct TACInstr* instr) {
+  struct TACInstr* copy = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
+  *copy = *instr;
+  copy->next = NULL;
+  return copy;
+}
+
+// Copy a TAC instruction list while giving the result independent list links.
+// Instruction payload pointers remain shared with the source list.
+struct TACInstrList copy_instr_list(struct TACInstrList instrs) {
+  struct TACInstrList copy = tac_instr_list(NULL);
+  for (const struct TACInstr* instr = instrs.head;
+       instr != NULL;
+       instr = instr->next) {
+    concat_TAC_instrs(&copy, tac_instr_list(copy_instr(instr)));
+  }
+  return copy;
 }
 
 // Provide canonical scalar types for TAC constants.
@@ -132,7 +149,7 @@ static struct Type* tac_builtin_type(enum TypeType kind) {
 
 // Allocate a constant TAC value.
 // Returns a Val tagged as CONSTANT.
-static struct Val* tac_make_const(uint64_t value, struct Type* type) {
+struct Val* tac_make_const(uint64_t value, struct Type* type) {
   struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
   val->val_type = CONSTANT;
   val->val.const_value = value;
@@ -183,7 +200,7 @@ static bool val_is_volatile_var(const struct Val* val) {
 // name is a Slice that must outlive the TAC; type is the variable type.
 // Returns a Val tagged as VARIABLE.
 // The Slice points to stable memory (arena or source).
-static struct Val* tac_make_var(struct Slice* name, struct Type* type) {
+struct Val* tac_make_var(struct Slice* name, struct Type* type) {
   struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
   val->val_type = VARIABLE;
   val->val.var_name = name;
@@ -194,17 +211,28 @@ static struct Val* tac_make_var(struct Slice* name, struct Type* type) {
 // Copy a Val payload into a pre-allocated destination.
 // dst must be non-NULL; src must be non-NULL.
 // dst receives a shallow copy of src.
-static void tac_copy_val(struct Val* dst, const struct Val* src) {
+void tac_copy_val(struct Val* dst, const struct Val* src) {
   if (dst == NULL || src == NULL) {
     return;
   }
   *dst = *src;
 }
 
+// Allocate a shallow copy of a TAC value in the active arena.
+// The type and variable-name pointers remain shared with src.
+struct Val* copy_val(const struct Val* src) {
+  if (src == NULL) {
+    return NULL;
+  }
+  struct Val* copy = (struct Val*)arena_alloc(sizeof(struct Val));
+  tac_copy_val(copy, src);
+  return copy;
+}
+
 // Build a unique TAC label under the current function name.
 // Returns a new Slice for the label name.
 // Uses a monotonically increasing counter.
-static struct Slice* tac_make_label(struct Slice* func_name, const char* suffix) {
+struct Slice* tac_make_label(struct Slice* func_name, const char* suffix) {
   size_t suffix_len = 0;
   while (suffix[suffix_len] != '\0') {
     suffix_len++;
@@ -513,7 +541,7 @@ struct Val* make_temp(struct Slice* func_name, struct Type* type) {
 // Create a unique label for string-literal data emitted by the current function.
 struct Val* make_str_label(struct StringExpr* str_expr){
   struct Slice name_slice = {"string.label", 12};
-  struct Slice* string_label = make_unique(&name_slice);
+  struct Slice* string_label = make_unique(&name_slice, NULL);
 
   struct Val* val = (struct Val*)arena_alloc(sizeof(struct Val));
   val->val_type = VARIABLE;
@@ -677,7 +705,7 @@ struct TopLevel* func_to_TAC(struct FunctionDclr* declaration) {
   ret_instr->instr.tac_return.src = tac_make_const(0, tac_builtin_type(INT_TYPE)); // default return 0
 
   concat_TAC_instrs(&body, tac_instr_list(ret_instr));
-  top_level->top.tac_func.body = body.head;
+  top_level->top.tac_func.body = body;
 
   return top_level;
 }
@@ -900,7 +928,7 @@ struct TACInstrList var_dclr_to_TAC(struct Slice* func_name, struct Declaration*
                          0);
     }
     default:
-      tac_error_at(var_dclr->name ? var_dclr->name->start : NULL,
+      tac_error_at(var_dclr->source_name ? var_dclr->source_name->start : NULL,
                    "invalid storage class for local variable declaration");
       return tac_instr_list(NULL);
   }
@@ -1316,10 +1344,14 @@ struct TACInstrList for_init_to_TAC(struct Slice* func_name, struct ForInit* ini
         tac_error_at(NULL, "for-init declaration is missing");
         return tac_instr_list(NULL);
       }
-      struct Declaration tmp;
-      tmp.type = VAR_DCLR;
-      tmp.dclr.var_dclr = *init_->init.dclr_init;
-      return var_dclr_to_TAC(func_name, &tmp);
+      struct TACInstrList instrs = tac_instr_list(NULL);
+      for (struct VarDclrList* var = init_->init.dclr_init; var != NULL; var = var->next) {
+        struct Declaration tmp;
+        tmp.type = VAR_DCLR;
+        tmp.dclr.var_dclr = var->dclr;
+        concat_TAC_instrs(&instrs, var_dclr_to_TAC(func_name, &tmp));
+      }
+      return instrs;
     }
     case EXPR_INIT: {
       if (init_->init.expr_init == NULL) {
@@ -1466,7 +1498,9 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
   size_t enclosing_cleanup_count = active_cleanup_count;
   struct TACInstrList init_instrs = for_init_to_TAC(func_name, init_);
   if (init_ != NULL && init_->type == DCLR_INIT) {
-    note_cleanup_declaration(init_->init.dclr_init);
+    for (struct VarDclrList* var = init_->init.dclr_init; var != NULL; var = var->next) {
+      note_cleanup_declaration(&var->dclr);
+    }
   }
   struct TACInstrList body_instrs = stmt_to_TAC(func_name, body);
 

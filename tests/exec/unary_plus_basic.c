@@ -1,10 +1,8 @@
 // Basic sanity checks for unary plus on literals and variables.
-// Expected: main returns K_LIT + K_VAR.
-#define K_LIT 7 // literal to verify unary plus preserves value
-#define K_VAR 5 // variable value to verify unary plus preserves value
+// Expected: main returns 7 + 5.
 
 int main(void) { /* Exercise unary plus basic behavior. */
-  int x = K_VAR;
-  int result = (+K_LIT) + (+x);
+  int x = 5;
+  int result = (+7) + (+x);
   return result;
 }

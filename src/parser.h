@@ -70,10 +70,12 @@ struct AbstractDeclarator* parse_abstract_declarator();
 // Returns a VariableDclr node or NULL on failure.
 struct VariableDclr* parse_var_dclr();
 
-// Parse a full declaration (variable or function).
-// Returns a Declaration or NULL when no declaration matches.
+// Parse a full declaration (variable, function, or struct/union/enum tag).
+// A declaration with several declarators (`int a, b;`) yields one Declaration
+// per declarator, linked in source order.
+// Returns the list or NULL when no declaration matches.
 // Cursor points at a declaration start.
-struct Declaration* parse_declaration();
+struct DeclarationList* parse_declaration();
 
 // Parse a declarator (possibly with pointers and parameters).
 // Returns a Declarator node or NULL on failure.

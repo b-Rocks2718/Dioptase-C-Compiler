@@ -1,2 +1,2 @@
 Typechecking failed
-Type error at tests/types_invalid/cleanup_bad_param_type.c:6:36: cleanup function cleanup_short must have type void func(type*) where type matches variable value.1
+Type error at tests/types_invalid/cleanup_bad_param_type.c:4:36: cleanup function cleanup_short must have type void func(type*) where type matches variable value

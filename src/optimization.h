@@ -5,7 +5,8 @@
 #include "TAC.h"
 #include "cfg.h"
 
-// Configure optimization options.
+// Select compiler optimization passes. Body passes operate on one function's
+// TAC/CFG; the remaining fields reserve switches for later pipeline stages.
 struct OptimizationOptions {
   // within function body
   bool constant_fold;
@@ -22,14 +23,17 @@ struct OptimizationOptions {
   bool reg_alloc;
 };
 
+// Apply enabled body optimizations to every function until reaching a fixed
+// point. This is a no-op when no implemented body pass is selected.
 void optimize(struct TACProg* prog, struct OptimizationOptions options);
 
-struct TACInstr* optimize_body(struct TACInstr* body, struct OptimizationOptions options);
+// Collect address-taken variables in body together with every translation-unit
+// static variable. Returned list nodes are allocated from the current arena
+// (the optimizer's per-function scratch arena when called from optimize).
+struct SliceList get_aliased_vars(struct TACInstr* body, struct SliceList static_vars);
 
-// Collect address-taken variables in body together with every static variable.
-struct SliceList get_aliased_vars(struct TACInstr* body);
-
-// Collect all static variables in the given function body. Each name appears at most once.
-struct SliceList get_static_vars(struct TACInstr* body);
+// Collect all static variables in the translation unit exactly once per name.
+// Returned list nodes are allocated from the current arena.
+struct SliceList get_static_vars(void);
 
 #endif // OPTIMIZATION_H

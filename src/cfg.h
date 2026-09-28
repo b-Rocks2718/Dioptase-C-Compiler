@@ -26,6 +26,7 @@ struct CFGNodeList {
 // Represent one control-flow node with bidirectional edges and an optional TAC block.
 struct CFGNode {
   enum CFGNodeType type;
+  unsigned index; // position in cfg->nodes; see cfg_number_nodes
 
   // Predecessor and successor links are bidirectional.
 
@@ -33,9 +34,6 @@ struct CFGNode {
   struct CFGNodeList successors;
 
   struct TACInstrList body; // basic-block instructions; empty for entry/exit
-
-  struct ReachingCopyList reaching_copies; // copies reaching the end of this block
-  struct SliceList live_vars; // live variables at the end of this block
 
   bool marked; // used for marking nodes during traversals
 };
@@ -54,7 +52,7 @@ struct CFG* build_cfg(struct TACInstr* body);
 void print_cfg(const struct CFG* cfg);
 
 // Rebuild a linear TAC body from the CFG's current basic blocks.
-struct TACInstr* rebuild_body(struct CFG* cfg);
+struct TACInstrList rebuild_body(struct CFG* cfg);
 
 // Append node at the end of list. An empty list has both head and tail NULL.
 void cfg_node_list_append(struct CFGNodeList* list, struct CFGNode* node);
@@ -67,6 +65,11 @@ bool cfg_node_list_is_empty(const struct CFGNodeList* list);
 
 // Return whether list holds node. Membership is pointer identity.
 bool cfg_node_list_contains(const struct CFGNodeList* list, const struct CFGNode* node);
+
+// Set every node's index field to its position in cfg->nodes. build_cfg
+// numbers new graphs; passes that index pass-local arrays by node call this on
+// entry so the numbering is valid even for a CFG edited since construction.
+void cfg_number_nodes(struct CFG* cfg);
 
 // Clear traversal marks on every CFG node.
 void reset_marks(struct CFG* cfg);

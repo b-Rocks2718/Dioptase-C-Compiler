@@ -9,7 +9,8 @@ enum ConstantFoldAction {
   CONSTANT_FOLD_DELETE,
 };
 
-// Performs constant folding on the given three-address code (TAC) instruction list
-struct TACInstr* constant_fold(struct TACInstr* body);
+// Performs constant folding on the given three-address code (TAC) instruction list.
+// The list is edited in place; the returned list has head and last updated.
+struct TACInstrList constant_fold(struct TACInstrList body);
 
 #endif // CONSTANT_FOLD_H

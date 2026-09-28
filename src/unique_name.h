@@ -7,8 +7,8 @@
 // Returns new slices with unique suffixes.
 
 // Generate a unique identifier based on an existing name.
-// Returns a new Slice with ".<id>" appended.
-struct Slice* make_unique(struct Slice* original_name);
+// Returns a new Slice with ".<id>" appended. Optional suffix can be provided.
+struct Slice* make_unique(struct Slice* original_name, const char* suffix);
 
 // Generate a unique label for a function-local label category.
 // Returns a new Slice "func.suffix.<id>".

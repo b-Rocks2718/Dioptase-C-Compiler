@@ -494,7 +494,10 @@ void print_block(struct Block* block, int tabs){
 void print_for_init(struct ForInit* for_init, int tabs){
   switch (for_init->type){
     case DCLR_INIT:
-      print_var_dclr(for_init->init.dclr_init, tabs);
+      for (struct VarDclrList* var = for_init->init.dclr_init; var != NULL; var = var->next){
+        print_var_dclr(&var->dclr, tabs);
+        if (var->next != NULL) printf(", ");
+      }
       break;
     case EXPR_INIT:
       if (for_init->init.expr_init == NULL) return;
@@ -743,12 +746,17 @@ void print_var_attributes(struct VarAttributes attrs){
 }
 
 // Render a variable declaration, including type, attributes, and initializer.
+// name is NULL for unnamed prototype parameters (`int f(int);`).
 void print_var_dclr(struct VariableDclr* var_dclr, int tabs){
   printf("VarDclr(");
   print_storage_class(var_dclr->storage); printf(", ");
   print_type(var_dclr->type); printf(", ");
   print_var_attributes(var_dclr->attributes);
-  print_slice(var_dclr->name);
+  if (var_dclr->name != NULL) {
+    print_slice(var_dclr->name);
+  } else {
+    printf("<unnamed>");
+  }
   if (var_dclr->init != NULL) {
     printf(", "); print_initializer(var_dclr->init, tabs);
   }

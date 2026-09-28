@@ -62,8 +62,12 @@ struct VarAttributes {
 };
 
 // Describe a variable's name, type, storage class, initializer, and attributes.
+// Identifier resolution may replace name with a unique generated slice that
+// does not point into the source; source_name keeps the identifier as written
+// (NULL for unnamed parameters) and is what diagnostics should report.
 struct VariableDclr {
   struct Slice* name;
+  struct Slice* source_name;
   struct Initializer* init;
   struct Type* type;
   enum StorageClass storage;
@@ -461,9 +465,17 @@ enum ForInitType {
   EXPR_INIT,
 };  
 
+// Link the variables declared by one declaration in source order
+// (`int a = 0, b = a;` is two nodes).
+struct VarDclrList {
+  struct VariableDclr dclr;
+  struct VarDclrList* next;
+};
+
 // Select declaration or expression form of a for-loop initializer.
+// dclr_init is non-empty; its variables are initialized in list order.
 union ForInitVariant {
-  struct VariableDclr* dclr_init;
+  struct VarDclrList* dclr_init;
   struct Expr* expr_init;
 };
 

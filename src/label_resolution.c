@@ -256,7 +256,10 @@ static bool label_for_init(struct Slice* func_name, struct ForInit* init) {
 
   switch (init->type) {
     case DCLR_INIT:
-      return label_initializer(func_name, init->init.dclr_init->init);
+      for (struct VarDclrList* var = init->init.dclr_init; var != NULL; var = var->next) {
+        if (!label_initializer(func_name, var->dclr.init)) return false;
+      }
+      return true;
     case EXPR_INIT:
       if (init->init.expr_init != NULL) {
         return label_expr(func_name, init->init.expr_init);
@@ -700,8 +703,10 @@ static bool resolve_stmt(struct Statement* stmt) {
     struct ForStmt* for_stmt = &stmt->statement.for_stmt;
     if (for_stmt->init != NULL) {
       if (for_stmt->init->type == DCLR_INIT) {
-        if (!resolve_gotos_initializer(for_stmt->init->init.dclr_init->init)) {
-          return false;
+        for (struct VarDclrList* var = for_stmt->init->init.dclr_init; var != NULL; var = var->next) {
+          if (!resolve_gotos_initializer(var->dclr.init)) {
+            return false;
+          }
         }
       } else if (for_stmt->init->type == EXPR_INIT) {
         if (!resolve_gotos_expr(for_stmt->init->init.expr_init)) {
@@ -909,8 +914,10 @@ bool collect_cases_stmt(struct Statement* stmt){
       struct ForStmt* for_stmt = &stmt->statement.for_stmt;
       if (for_stmt->init != NULL) {
         if (for_stmt->init->type == DCLR_INIT) {
-          if (!collect_cases_initializer(for_stmt->init->init.dclr_init->init)) {
-            return false;
+          for (struct VarDclrList* var = for_stmt->init->init.dclr_init; var != NULL; var = var->next) {
+            if (!collect_cases_initializer(var->dclr.init)) {
+              return false;
+            }
           }
         } else if (for_stmt->init->type == EXPR_INIT) {
           if (!collect_cases_expr(for_stmt->init->init.expr_init)) {
