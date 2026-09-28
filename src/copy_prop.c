@@ -536,6 +536,11 @@ static void build_variable_masks(struct CopyPropState* s) {
     masks += wants_mask(s, s->dst_start[v + 1] - s->dst_start[v]);
     masks += wants_mask(s, s->involve_start[v + 1] - s->involve_start[v]);
   }
+  // cp_calloc intentionally returns NULL for an empty allocation. Make the
+  // corresponding no-mask path explicit before deriving pointers from it.
+  if (masks == 0) {
+    return;
+  }
   s->mask_storage = cp_calloc(masks * s->words, sizeof(uint64_t),
                               "indexing heavily copied variables");
   uint64_t* next = s->mask_storage;
