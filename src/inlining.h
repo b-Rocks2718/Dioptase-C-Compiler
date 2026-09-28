@@ -6,7 +6,7 @@
 #define MAX_INLINE_CALLEE_INSTRS 16
 #define MAX_INLINE_CALLER_INSTRS 128
 
-#define NUM_INLINE_ITERS 1
+#define NUM_INLINE_ITERS 3
 
 /*
   Current inlining policy:

@@ -34,7 +34,7 @@ struct AsmType {
 };
 
 // Store an ASM symbol's type, linkage, definition state, and value.
-struct AsmSymbolEntry{
+struct AsmSymbolEntry {
   struct Slice* key;
   struct AsmType* type; // for data
   bool is_static;  // for data
