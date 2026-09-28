@@ -557,6 +557,12 @@ static void build_variable_masks(struct CopyPropState* s) {
   size_t mask_words = masks * s->words;
   s->mask_storage = cp_calloc(mask_words, sizeof(uint64_t),
                               "indexing heavily copied variables");
+  // The sizes above are nonzero and cp_calloc terminates on allocation
+  // failure. Keep the sparse-list representation as a defensive fallback if
+  // that helper's contract is not visible to a caller or static analyzer.
+  if (s->mask_storage == NULL) {
+    return;
+  }
   uint64_t* next = s->mask_storage;
   for (uint32_t v = 0; v < vars; ++v) {
     if (wants_mask(s, s->dst_start[v + 1] - s->dst_start[v])) {
