@@ -7,16 +7,71 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static struct Slice* replace_name(struct Slice* name, struct LabelMap* var_map) {
-  // check if name already has a mapping in the var map
+// Return a unique copy of a function-local label. Labels do not participate in
+// the symbol table and every inlined copy needs a separate namespace.
+static struct Slice* replace_label_name(struct Slice* name,
+                                        struct LabelMap* label_map) {
+  struct Slice* mapped_name = label_map_get(label_map, name);
+  if (mapped_name != NULL) {
+    return mapped_name;
+  }
+
+  struct Slice* unique_name = make_unique(name, "inline");
+  label_map_insert(label_map, name, unique_name);
+  return unique_name;
+}
+
+// Return whether a symbol has translation-unit or static-storage identity and
+// therefore must keep its original name in every inlined copy.
+static bool preserve_symbol_name(const struct SymbolEntry* entry) {
+  if (entry->type != NULL && entry->type->type == FUN_TYPE) {
+    return true;
+  }
+  return entry->attrs != NULL &&
+         (entry->attrs->attr_type == FUN_ATTR ||
+          entry->attrs->attr_type == STATIC_ATTR ||
+          entry->attrs->attr_type == CONST_ATTR);
+}
+
+// Map one callee variable into the caller. Automatic locals receive a fresh
+// name and an equivalent symbol-table entry so later ASM lowering knows their
+// type and storage class. Functions and static/constant objects retain their
+// identity because renaming them would change which object the program uses.
+static struct Slice* replace_var_name(struct Slice* name,
+                                      struct LabelMap* var_map) {
   struct Slice* mapped_name = label_map_get(var_map, name);
   if (mapped_name != NULL) {
     return mapped_name;
   }
 
-  // if no mapping exists, create a new unique name and add it to the var map
+  // if no mapping exists, create a new unique name 
+  // and add it to the symbol table and var map
+  
+  struct SymbolEntry* entry = NULL;
+  entry = symbol_table_get(global_symbol_table, name);
+  if (entry == NULL) {
+    fprintf(stderr,
+            "Inlining error: no symbol-table entry for TAC variable %.*s\n",
+            name == NULL ? 0 : (int)name->len,
+            name == NULL ? "<null>" : name->start);
+    exit(EXIT_FAILURE);
+  }
+  if (preserve_symbol_name(entry)) {
+    label_map_insert(var_map, name, name);
+    return name;
+  }
+  if (entry->attrs == NULL || entry->attrs->attr_type != LOCAL_ATTR) {
+    fprintf(stderr,
+            "Inlining error: TAC variable %.*s has unsupported symbol "
+            "attributes\n",
+            (int)name->len, name->start);
+    exit(EXIT_FAILURE);
+  }
+
   struct Slice* unique_name = make_unique(name, "inline");
   label_map_insert(var_map, name, unique_name);
+  symbol_table_insert(global_symbol_table, unique_name, entry->type,
+                      entry->attrs);
   return unique_name;
 }
 
@@ -25,7 +80,7 @@ static struct Slice* replace_name(struct Slice* name, struct LabelMap* var_map) 
 // changing one of those operands in place would corrupt the original function.
 static void replace_val_name(struct Val* val, struct LabelMap* var_map) {
   if (val != NULL && val->val_type == VARIABLE) {
-    val->val.var_name = replace_name(val->val.var_name, var_map);
+    val->val.var_name = replace_var_name(val->val.var_name, var_map);
   }
 }
 
@@ -87,15 +142,18 @@ static void replace_identifiers_and_labels(struct TACInstr* instr,
     case TACCOND_JUMP: {
       instr->instr.tac_cond_jump.src1 = replace_val(instr->instr.tac_cond_jump.src1, var_map);
       instr->instr.tac_cond_jump.src2 = replace_val(instr->instr.tac_cond_jump.src2, var_map);
-      instr->instr.tac_cond_jump.label = replace_name(instr->instr.tac_cond_jump.label, label_map);
+      instr->instr.tac_cond_jump.label =
+          replace_label_name(instr->instr.tac_cond_jump.label, label_map);
       break;
     }
     case TACJUMP: {
-      instr->instr.tac_jump.label = replace_name(instr->instr.tac_jump.label, label_map);
+      instr->instr.tac_jump.label =
+          replace_label_name(instr->instr.tac_jump.label, label_map);
       break;
     }
     case TACLABEL: {
-      instr->instr.tac_label.label = replace_name(instr->instr.tac_label.label, label_map);
+      instr->instr.tac_label.label =
+          replace_label_name(instr->instr.tac_label.label, label_map);
       break;
     }
     case TACCOPY: {
@@ -125,11 +183,13 @@ static void replace_identifiers_and_labels(struct TACInstr* instr,
     }
     case TACVOLATILE_COPY_TO_OFFSET: {
       instr->instr.tac_copy_to_offset.src = replace_val(instr->instr.tac_copy_to_offset.src, var_map);
-      instr->instr.tac_copy_to_offset.dst = replace_name(instr->instr.tac_copy_to_offset.dst, var_map);
+      instr->instr.tac_copy_to_offset.dst =
+          replace_var_name(instr->instr.tac_copy_to_offset.dst, var_map);
       break;
     }
     case TACVOLATILE_COPY_FROM_OFFSET: {
-      instr->instr.tac_copy_from_offset.src = replace_name(instr->instr.tac_copy_from_offset.src, var_map);
+      instr->instr.tac_copy_from_offset.src =
+          replace_var_name(instr->instr.tac_copy_from_offset.src, var_map);
       instr->instr.tac_copy_from_offset.dst = replace_val(instr->instr.tac_copy_from_offset.dst, var_map);
       break;
     }
@@ -175,11 +235,13 @@ static void replace_identifiers_and_labels(struct TACInstr* instr,
     }
     case TACCOPY_TO_OFFSET: {
       instr->instr.tac_copy_to_offset.src = replace_val(instr->instr.tac_copy_to_offset.src, var_map);
-      instr->instr.tac_copy_to_offset.dst = replace_name(instr->instr.tac_copy_to_offset.dst, var_map);
+      instr->instr.tac_copy_to_offset.dst =
+          replace_var_name(instr->instr.tac_copy_to_offset.dst, var_map);
       break;
     }
     case TACCOPY_FROM_OFFSET: {
-      instr->instr.tac_copy_from_offset.src = replace_name(instr->instr.tac_copy_from_offset.src, var_map);
+      instr->instr.tac_copy_from_offset.src =
+          replace_var_name(instr->instr.tac_copy_from_offset.src, var_map);
       instr->instr.tac_copy_from_offset.dst = replace_val(instr->instr.tac_copy_from_offset.dst, var_map);
       break;
     }
@@ -220,9 +282,7 @@ static struct TACInstr* inline_callsite(
   // generate unique parameter names for the callee
   struct Slice** params = arena_alloc(sizeof(struct Slice*) * callee->num_params);
   for (int i = 0; i < callee->num_params; i++) {
-    params[i] = make_unique(callee->params[i], "inline");
-
-    label_map_insert(var_map, callee->params[i], params[i]);
+    params[i] = replace_var_name(callee->params[i], var_map);
   }
 
   // generate TAC copying args into params
@@ -319,6 +379,9 @@ static struct TACInstr* inline_callsite(
     exit(EXIT_FAILURE);
   }
   // no change to count, we added end label and removed the call
+
+  destroy_label_map(var_map);
+  destroy_label_map(label_map);
 
   return end_label_instr;
 }

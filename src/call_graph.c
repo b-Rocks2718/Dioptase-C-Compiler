@@ -244,7 +244,7 @@ static void find_sccs(struct CallGraph* call_graph) {
 
     node->consider_inlining = 
         !node->can_recurse && 
-        (node->num_instrs < MAX_INLINE_CALLEE_INSTRS) &&
+        (node->num_instrs <= MAX_INLINE_CALLEE_INSTRS) &&
         !node->contains_tail_calls;
   }
 

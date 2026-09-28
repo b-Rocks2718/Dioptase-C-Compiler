@@ -1477,6 +1477,7 @@ contains a nested external call to ensure its argument and result operands are
 also copied before renaming.
 */
 static bool tac_test_inlining_operands_copy_on_write(void) {
+  const size_t kSymbolBuckets = 8;
   struct Slice helper_name = tac_slice_literal("helper");
   struct Slice external_name = tac_slice_literal("external");
   struct Slice main_name = tac_slice_literal("main");
@@ -1500,6 +1501,9 @@ static bool tac_test_inlining_operands_copy_on_write(void) {
   struct TACInstr main_return;
   struct TopLevel helper;
   struct TopLevel main_func;
+  struct IdentAttr local_attrs =
+      {LOCAL_ATTR, true, NONE, {NO_INIT, NULL}, NULL};
+  struct SymbolTable* saved_table = global_symbol_table;
   bool ok = true;
 
   tac_init_instr(&add, TACBINARY);
@@ -1536,6 +1540,13 @@ static bool tac_test_inlining_operands_copy_on_write(void) {
   prog.tail = &main_func;
 
   arena_init(1024);
+  global_symbol_table = create_symbol_table(kSymbolBuckets);
+  symbol_table_insert(global_symbol_table, &param_name, &kTestIntType,
+                      &local_attrs);
+  symbol_table_insert(global_symbol_table, &sum_name, &kTestIntType,
+                      &local_attrs);
+  symbol_table_insert(global_symbol_table, &nested_result_name,
+                      &kTestIntType, &local_attrs);
   struct CallGraph call_graph = build_call_graph(&prog);
   perform_inlining(&call_graph);
 
@@ -1582,6 +1593,7 @@ static bool tac_test_inlining_operands_copy_on_write(void) {
     ok = false;
   }
 
+  global_symbol_table = saved_table;
   arena_destroy();
   return ok;
 }
@@ -1597,6 +1609,67 @@ static struct CallGraphNode* tac_test_find_call_graph_node(
     }
   }
   return NULL;
+}
+
+/*
+The documented callee limit is inclusive: a function with exactly
+MAX_INLINE_CALLEE_INSTRS instructions is eligible, while one additional
+instruction makes it ineligible.
+*/
+static bool tac_test_call_graph_inline_size_limit(void) {
+  struct Slice at_limit_name = tac_slice_literal("at_limit");
+  struct Slice over_limit_name = tac_slice_literal("over_limit");
+  struct TACInstr at_limit_body[MAX_INLINE_CALLEE_INSTRS];
+  struct TACInstr over_limit_body[MAX_INLINE_CALLEE_INSTRS + 1];
+  struct TopLevel at_limit;
+  struct TopLevel over_limit;
+  bool ok = true;
+
+  for (size_t i = 0; i < MAX_INLINE_CALLEE_INSTRS; i++) {
+    tac_init_instr(&at_limit_body[i], TACBOUNDARY);
+    if (i + 1 < MAX_INLINE_CALLEE_INSTRS) {
+      tac_link_instr(&at_limit_body[i], &at_limit_body[i + 1]);
+    }
+  }
+  for (size_t i = 0; i < MAX_INLINE_CALLEE_INSTRS + 1; i++) {
+    tac_init_instr(&over_limit_body[i], TACBOUNDARY);
+    if (i + 1 < MAX_INLINE_CALLEE_INSTRS + 1) {
+      tac_link_instr(&over_limit_body[i], &over_limit_body[i + 1]);
+    }
+  }
+
+  tac_init_func(&at_limit, &at_limit_name, &at_limit_body[0],
+                &at_limit_body[MAX_INLINE_CALLEE_INSTRS - 1], NULL, 0);
+  tac_init_func(&over_limit, &over_limit_name, &over_limit_body[0],
+                &over_limit_body[MAX_INLINE_CALLEE_INSTRS], NULL, 0);
+  at_limit.next = &over_limit;
+
+  struct TACProg prog = {0};
+  prog.head = &at_limit;
+  prog.tail = &over_limit;
+
+  arena_init(1024);
+  struct CallGraph call_graph = build_call_graph(&prog);
+  struct CallGraphNode* at_limit_node =
+      tac_test_find_call_graph_node(&call_graph, &at_limit_name);
+  struct CallGraphNode* over_limit_node =
+      tac_test_find_call_graph_node(&call_graph, &over_limit_name);
+
+  if (at_limit_node == NULL || !at_limit_node->consider_inlining) {
+    printf("call graph inline-limit test failed: a %d-instruction callee "
+           "should be eligible\n",
+           MAX_INLINE_CALLEE_INSTRS);
+    ok = false;
+  }
+  if (over_limit_node == NULL || over_limit_node->consider_inlining) {
+    printf("call graph inline-limit test failed: a %d-instruction callee "
+           "should be ineligible\n",
+           MAX_INLINE_CALLEE_INSTRS + 1);
+    ok = false;
+  }
+
+  arena_destroy();
+  return ok;
 }
 
 /*
@@ -1725,6 +1798,8 @@ int main(void) {
   ok = tac_test_copy_prop_args_copy_on_write() && ok;
   printf("- tac_test_inlining_operands_copy_on_write\n");
   ok = tac_test_inlining_operands_copy_on_write() && ok;
+  printf("- tac_test_call_graph_inline_size_limit\n");
+  ok = tac_test_call_graph_inline_size_limit() && ok;
   printf("- tac_test_call_graph_sccs\n");
   ok = tac_test_call_graph_sccs() && ok;
   printf("- tac_test_get_aliased_vars\n");
