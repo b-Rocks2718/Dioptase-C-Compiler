@@ -622,6 +622,69 @@ static bool try_expand_builtin_macro(const char* name, size_t len,
   return true;
 }
 
+// Track macros currently being expanded. A name already on this chain is
+// emitted as a token, which terminates direct and indirect recursion.
+struct ActiveMacro {
+  const struct Macro* macro;
+  const struct ActiveMacro* parent;
+};
+
+static bool macro_is_active(const struct ActiveMacro* active,
+                            const struct Macro* macro) {
+  for (const struct ActiveMacro* cur = active; cur != NULL; cur = cur->parent) {
+    if (cur->macro == macro) return true;
+  }
+  return false;
+}
+
+// Rescan an object-like macro's replacement text using its invocation site
+// for source mapping. Quoted strings and characters are copied without macro
+// expansion, as in the outer source line.
+static bool expand_macro_text(const char* text, size_t len,
+                              struct SourceMappingEntry loc,
+                              struct Macro* macros, struct Buffer* out,
+                              const struct ActiveMacro* active) {
+  for (size_t i = 0; i < len; ) {
+    if (is_ident_start(text[i])) {
+      size_t start = i++;
+      while (i < len && is_ident_char(text[i])) i++;
+      bool matched = false;
+      if (!try_expand_builtin_macro(text + start, i - start, &loc, out, &matched)) {
+        return false;
+      }
+      if (matched) continue;
+      struct Macro* nested = macro_find(macros, text + start, i - start);
+      if (nested != NULL && !macro_is_active(active, nested)) {
+        struct ActiveMacro next = {nested, active};
+        if (!expand_macro_text(nested->value, nested->value_len, loc,
+                               macros, out, &next)) return false;
+      } else if (!buffer_append_str_with_loc(out, text + start, i - start, loc)) {
+        return false;
+      }
+      continue;
+    }
+
+    size_t start = i;
+    if (text[i] == '"' || text[i] == '\'') {
+      char quote = text[i++];
+      bool escape = false;
+      while (i < len) {
+        char c = text[i++];
+        if (escape) escape = false;
+        else if (c == '\\') escape = true;
+        else if (c == quote) break;
+      }
+    } else {
+      while (i < len && !is_ident_start(text[i]) &&
+             text[i] != '"' && text[i] != '\'') i++;
+    }
+    if (!buffer_append_str_with_loc(out, text + start, i - start, loc)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Expand macros in a single line while copying strings, character literals,
 // punctuation, and whitespace in mapped spans. Returns true on success and
 // appends expanded content to out.
@@ -645,7 +708,9 @@ static bool expand_macros_in_line(const char* line, size_t len,
       if (matched) continue;
       struct Macro* macro = macro_find(macros, line + start, i - start);
       if (macro != NULL) {
-        if (!buffer_append_str_with_loc(out, macro->value, macro->value_len, macro_loc)) return false;
+        struct ActiveMacro active = {macro, NULL};
+        if (!expand_macro_text(macro->value, macro->value_len,
+                               macro_loc, macros, out, &active)) return false;
       } else {
         if (!buffer_append_range(out, src_text, src_map, line_offset + start, i - start)) return false;
       }

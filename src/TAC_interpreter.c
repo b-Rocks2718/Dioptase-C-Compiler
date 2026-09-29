@@ -15,6 +15,8 @@
 
 // Centralize interpreter allocation granularity and dynamic-array growth policy.
 static const int kTacInterpWordBytes = 4;
+// ISA bytes have eight bits; TAC scalar destinations use the target type width.
+static const size_t kTacInterpTargetByteBits = 8;
 static const size_t kTacInterpInitialMemoryCapacity = 8;
 static const size_t kTacInterpInitialBindingCapacity = 8;
 static const size_t kTacInterpInitialLabelCapacity = 8;
@@ -719,6 +721,28 @@ static uint64_t tac_eval_val(struct TacInterpreter* interp,
   }
 }
 
+// Match the target machine's scalar write width before storing a TAC value.
+// Narrow unsigned results are masked, while narrow signed results are extended
+// after truncation so later arithmetic sees the same mathematical value.
+static uint64_t tac_normalize_scalar(uint64_t value, const struct Type* type) {
+  if (type == NULL || (!is_arithmetic_type((struct Type*)type) &&
+                       !is_pointer_type((struct Type*)type))) {
+    return value;
+  }
+  size_t bits = get_type_size((struct Type*)type) * kTacInterpTargetByteBits;
+  size_t raw_bits = sizeof(value) * CHAR_BIT;
+  if (bits == 0 || bits >= raw_bits) {
+    return value;
+  }
+  uint64_t mask = (UINT64_C(1) << bits) - UINT64_C(1);
+  value &= mask;
+  if (is_signed_type((struct Type*)type) &&
+      (value & (UINT64_C(1) << (bits - 1))) != 0) {
+    value |= ~mask;
+  }
+  return value;
+}
+
 // Assign a TAC value to a destination variable.
 // dst must be a VARIABLE value.
 static void tac_assign_val(struct TacInterpreter* interp,
@@ -728,7 +752,8 @@ static void tac_assign_val(struct TacInterpreter* interp,
   if (dst == NULL || dst->val_type != VARIABLE) {
     tac_interp_error("assignment target is not a variable");
   }
-  tac_write_var(interp, frame, dst->val.var_name, value);
+  tac_write_var(interp, frame, dst->val.var_name,
+                tac_normalize_scalar(value, dst->type));
 }
 
 // Determine the result of a TAC conditional jump.
@@ -1299,9 +1324,10 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
                        (int)name->len, name->start);
     }
 
-    // Zero-fill the full allocation first to handle implicit zero init.
-    for (size_t offset = 0; offset < total_bytes; offset += elem_size) {
-      tac_memory_store(&interp->memory, base_addr + (int)offset, 0);
+    // Members of an aggregate may begin at any byte offset, even when the
+    // aggregate's base type is larger than a scalar memory cell.
+    for (size_t byte_offset = 0; byte_offset < total_bytes; byte_offset++) {
+      tac_memory_store(&interp->memory, base_addr + (int)byte_offset, 0);
     }
 
     struct InitList* init = init_values;
@@ -1315,7 +1341,7 @@ static void tac_init_globals(struct TacInterpreter* interp, const struct TACProg
 
       if (init_value->int_type == ZERO_INIT) {
         size_t zero_bytes = (size_t)init_value->value.num;
-        for (size_t z = 0; z < zero_bytes; z += elem_size) {
+        for (size_t z = 0; z < zero_bytes; z++) {
           tac_memory_store(&interp->memory, base_addr + (int)(offset + z), 0);
         }
         offset += zero_bytes;

@@ -141,8 +141,10 @@ I also use [test cases from Writing a C Compiler](https://github.com/nlsandler/w
 ```sh
 make test-wacc
 make test-wacc-opt
+make test-wacc-ch19-opt
 make test-wacc-release
 make test-wacc-release-opt
+make test-wacc-ch19-release-opt
 make test-wacc-kernel
 make test-wacc-kernel-opt
 make test-wacc-kernel-release
@@ -153,7 +155,7 @@ make test-tac-wacc-release
 make test-tac-wacc-release-opt
 ```
 
-`test-wacc*` runs the WACC tests via the emulator + assembler pipeline (simple emulator), `test-wacc-kernel*` runs them via the full emulator using kernel-mode assembly plus `tests/kernel/init.s` and `tests/kernel/arithmetic.s`, and `test-tac-wacc*` uses the TAC interpreter wrapper. Targets ending in `-opt` are separate slower runs that also pass `OPT_TEST_FLAGS` to the compiler. For example, `make test-wacc-opt OPT_TEST_FLAGS=-constant-fold` isolates constant folding in WACC tests, while `make test OPT_TEST_FLAGS=-constant-fold` does the same for the normal execution suites. The existing WACC targets continue to test without compiler optimizations. The WACC runner defaults can be overridden with `WACC_CORE_CHAPTER`, `WACC_EXTRA_CHAPTERS`, `WACC_EXTRA_CREDIT`, `WACC_SKIP_TYPES`, and `WACC_ARGS`. Kernel runs can also override `DIOPTASE_EMULATOR_FULL`, `DIOPTASE_WACC_KERNEL_INIT`, and `DIOPTASE_WACC_KERNEL_ARITH`.
+`test-wacc*` runs the WACC tests via the emulator + assembler pipeline (simple emulator), `test-wacc-kernel*` runs them via the full emulator using kernel-mode assembly plus `tests/kernel/init.s` and `tests/kernel/arithmetic.s`, and `test-tac-wacc*` uses the TAC interpreter wrapper. Targets ending in `-opt` are separate slower runs that also pass `OPT_TEST_FLAGS` to the compiler. For example, `make test-wacc-opt OPT_TEST_FLAGS=-constant-fold` isolates constant folding in WACC tests, while `make test OPT_TEST_FLAGS=-constant-fold` does the same for the normal execution suites. The existing WACC targets continue to test without compiler optimizations. `test-wacc-opt` and `test-wacc-release-opt` also run chapter 19 programs through the emulator with `OPT_TEST_FLAGS`; the chapter 19 runs are available alone as `test-wacc-ch19-opt` and `test-wacc-ch19-release-opt`. Chapter 19 uses a runtime adapter because the upstream optimization checks inspect x86 assembly. It checks expected return values for supported cases. The emulator harness cannot capture program stdout, so upstream cases with expected stdout are skipped by that runner; fork variants in `tests/writing-a-c-compiler-tests/tests/chapter_18/valid/dioptase/` and `chapter_19/dioptase/` capture and check their exact output in memory. The NaN case that uses an unsupported floating-point literal is listed and skipped explicitly by the chapter 19 adapter. See `docs/wacc-exclusions.md` for the exclusion audit and adapted cases. The WACC runner defaults can be overridden with `WACC_CORE_CHAPTER`, `WACC_EXTRA_CHAPTERS`, `WACC_EXTRA_CREDIT`, `WACC_SKIP_TYPES`, and `WACC_ARGS`. Kernel runs can also override `DIOPTASE_EMULATOR_FULL`, `DIOPTASE_WACC_KERNEL_INIT`, and `DIOPTASE_WACC_KERNEL_ARITH`.
 
 ## Makefile Targets
 
@@ -171,8 +173,10 @@ Test suites:
 - `make test-release`
 - `make test-wacc`
 - `make test-wacc-opt`
+- `make test-wacc-ch19-opt`
 - `make test-wacc-release`
 - `make test-wacc-release-opt`
+- `make test-wacc-ch19-release-opt`
 - `make test-wacc-kernel`
 - `make test-wacc-kernel-opt`
 - `make test-wacc-kernel-release`

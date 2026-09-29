@@ -79,6 +79,7 @@ EMU_EXEC_FULL_TEST_EXEC_RELEASE := $(RELEASE_DIR)/emu_exec_full_tests
 WACC_TEST_DIR := tests/writing-a-c-compiler-tests
 WACC_TEST_RUNNER := $(WACC_TEST_DIR)/test_compiler
 WACC_TAC_WRAPPER := tests/wacc_tac_compiler.py
+WACC_CH19_RUNTIME := tests/wacc_ch19_runtime.py
 WACC_CORE_CHAPTER ?= 10
 WACC_EXTRA_CHAPTERS ?= 12 14 15 16 17 18
 WACC_ARGS ?=
@@ -529,7 +530,8 @@ define RUN_TESTS
 		done; \
 	done; \
 	echo; \
-	echo "Summary: $$passed / $$total tests passed.";
+	echo "Summary: $$passed / $$total tests passed."; \
+	test "$$passed" -eq "$$total"
 endef
 
 test: TEST_EXEC := $(DEBUG_EXEC)
@@ -571,8 +573,17 @@ test-wacc test-wacc-opt: $(DEBUG_EXEC) emulator-debug assembler-debug
 		if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(DEBUG_EXEC) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	done
 
+# Chapter 19's upstream tests inspect x86 assembly. Check observable behavior
+# through the Dioptase emulator when compiler optimizations are enabled.
+test-wacc-opt: test-wacc-ch19-opt
+test-wacc-ch19-opt: $(DEBUG_EXEC) emulator-debug assembler-debug
+	@DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) \
+		python3 $(WACC_CH19_RUNTIME) $(DEBUG_EXEC) $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) -- $(OPT_TEST_FLAGS)
+
 test-wacc-release test-wacc-release-opt: WACC_EMU_ASSEMBLER := $(ASSEMBLER_RELEASE)
 test-wacc-release test-wacc-release-opt: WACC_EMU_EMULATOR := $(EMULATOR_SIMPLE_RELEASE)
+test-wacc-ch19-release-opt: WACC_EMU_ASSEMBLER := $(ASSEMBLER_RELEASE)
+test-wacc-ch19-release-opt: WACC_EMU_EMULATOR := $(EMULATOR_SIMPLE_RELEASE)
 test-wacc-release-opt: WACC_COMPILER_OPTIONS := -- $(OPT_TEST_FLAGS)
 test-wacc-release-opt: WACC_TEST_MODE := release, $(OPT_TEST_FLAGS)
 test-wacc-release: WACC_TEST_MODE := release
@@ -582,6 +593,11 @@ test-wacc-release test-wacc-release-opt: $(RELEASE_EXEC) emulator-release assemb
 	for ch in $(WACC_EXTRA_CHAPTERS); do \
 		if ! DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) $(WACC_TEST_RUNNER) $(RELEASE_EXEC) --chapter $$ch --latest-only $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) $(WACC_ARGS) $(WACC_COMPILER_OPTIONS); then exit 1; fi; \
 	done
+
+test-wacc-release-opt: test-wacc-ch19-release-opt
+test-wacc-ch19-release-opt: $(RELEASE_EXEC) emulator-release assembler-release
+	@DIOPTASE_WACC_EMULATOR=1 DIOPTASE_ASSEMBLER=$(WACC_EMU_ASSEMBLER) DIOPTASE_EMULATOR_SIMPLE=$(WACC_EMU_EMULATOR) \
+		python3 $(WACC_CH19_RUNTIME) $(RELEASE_EXEC) $(WACC_EXTRA_CREDIT) $(WACC_EMU_SKIP_ARGS) -- $(OPT_TEST_FLAGS)
 
 test-wacc-kernel-opt: WACC_COMPILER_OPTIONS := -- $(OPT_TEST_FLAGS)
 test-wacc-kernel-opt: WACC_TEST_MODE := $(OPT_TEST_FLAGS)
@@ -681,6 +697,7 @@ $(EMU_EXEC_FULL_TEST_EXEC_RELEASE): $(EMU_EXEC_FULL_TEST_OBJ_RELEASE) $(RELEASE_
 
 # Phony targets
 .PHONY: all debug release clean purge test test-release test-wacc test-wacc-opt \
+	test-wacc-ch19-opt test-wacc-ch19-release-opt \
 	test-wacc-release test-wacc-release-opt test-wacc-kernel test-wacc-kernel-opt \
 	test-wacc-kernel-release test-wacc-kernel-release-opt test-tac-wacc \
 	test-tac-wacc-opt test-tac-wacc-release test-tac-wacc-release-opt \
