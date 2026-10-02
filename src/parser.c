@@ -345,6 +345,10 @@ struct TypeSpecifier parse_type_spec(){
     struct TypeSpecifier spec = { VOLATILE_SPEC, NULL };
     return spec;
   }
+  if (consume(RESTRICT_TOK)) {
+    struct TypeSpecifier spec = { RESTRICT_SPEC, NULL };
+    return spec;
+  }
   else {
     struct TypeSpecifier spec = { -1, NULL };
     return spec;
@@ -418,7 +422,8 @@ bool spec_list_valid(struct TypeSpecList* types){
         break;
       case CONST_SPEC:
       case VOLATILE_SPEC:
-        // Repeated const or volatile is the same qualifier, not a conflicting specifier.
+      case RESTRICT_SPEC:
+        // Repeated qualifiers are the same qualifier, not a conflicting specifier.
         break;
       default:
         break;
@@ -474,7 +479,8 @@ static bool spec_list_has_volatile(struct TypeSpecList* types) {
 // Return whether the specifier list names a type, not only qualifiers.
 static bool spec_list_has_base_type(struct TypeSpecList* types) {
   for (struct TypeSpecList* cur = types; cur != NULL; cur = cur->next) {
-    if (cur->spec.type != CONST_SPEC && cur->spec.type != VOLATILE_SPEC) return true;
+    if (cur->spec.type != CONST_SPEC && cur->spec.type != VOLATILE_SPEC &&
+        cur->spec.type != RESTRICT_SPEC) return true;
   }
   return false;
 }
@@ -492,7 +498,15 @@ static struct Type* qualify_type_from_specs(struct Type* type, struct TypeSpecLi
 struct Type* type_spec_to_type(struct TypeSpecList* types){
   struct TypeSpecifier* found = NULL;
   if (types == NULL) return NULL;
-  else if (!spec_list_valid(types)) {
+  else if (spec_list_contains(types, RESTRICT_SPEC) != NULL) {
+    // C11 6.7.3p2 permits restrict only on pointers to object types. With no
+    // typedef support, the type named by a specifier list is never a pointer.
+    // If typedefs are added, a typedef'd pointer type may legally take it here.
+    parse_error_at(parser_error_ptr(),
+                   "'restrict' can only qualify a pointer; write it after the '*' "
+                   "(for example 'int * restrict p')");
+    return NULL;
+  } else if (!spec_list_valid(types)) {
     parse_error_at(parser_error_ptr(), "invalid type specifiers");
     return NULL;
   } else if (!spec_list_has_base_type(types)) {
@@ -709,6 +723,11 @@ struct AbstractDeclarator* parse_abstract_declarator(){
       }
       if (consume(VOLATILE_TOK)) {
         is_volatile = true;
+        continue;
+      }
+      // restrict is accepted on pointers but deliberately not recorded: it
+      // only licenses optimizations, and the optimizer does not use it yet.
+      if (consume(RESTRICT_TOK)) {
         continue;
       }
       break;
@@ -1685,6 +1704,8 @@ bool is_type_specifier(enum TokenType type){
     case ENUM_TOK:
     case CONST_TOK:
     case VOLATILE_TOK:
+    case RESTRICT_TOK:
+    case INLINE_TOK:
       return true;
     default:
       return false;
@@ -1694,7 +1715,7 @@ bool is_type_specifier(enum TokenType type){
 static bool merge_cleanup_attrs(struct VarAttributes** attrs,
                                 struct VarAttributes* new_attrs);
 static struct DeclarationList* parse_init_declarator_list(
-    struct Type* base_type, enum StorageClass storage,
+    struct Type* base_type, enum StorageClass storage, bool is_inline,
     struct VarAttributes* spec_attrs, bool allow_functions,
     const char* context, struct Token* old_current);
 
@@ -1718,7 +1739,8 @@ static struct DeclarationList* parse_for_dclr(){
 
   struct Type* base_type = NULL;
   enum StorageClass storage = NONE;
-  parse_type_and_storage_class(&base_type, &storage);
+  bool is_inline = false;
+  parse_type_and_storage_class(&base_type, &storage, &is_inline);
   if (base_type == NULL) {
     current = old_current;
     return NULL;
@@ -1728,7 +1750,7 @@ static struct DeclarationList* parse_for_dclr(){
   if ((new_attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 2
   if (!merge_cleanup_attrs(&attrs, new_attrs)) return NULL;
 
-  return parse_init_declarator_list(base_type, storage, attrs, false,
+  return parse_init_declarator_list(base_type, storage, is_inline, attrs, false,
                                     "for-loop initializer", old_current);
 }
 
@@ -2029,6 +2051,11 @@ struct DclrPrefix* parse_type_or_storage_class(){
     dclr_prefix->prefix.storage_class = EXTERN;
     return dclr_prefix;
   }
+  else if (consume(INLINE_TOK)){
+    struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
+    dclr_prefix->type = INLINE_PREFIX;
+    return dclr_prefix;
+  }
   struct TypeSpecifier spec = parse_type_spec();
   if (spec.type != -1){
     struct DclrPrefix* dclr_prefix = arena_alloc(sizeof(struct DclrPrefix));
@@ -2039,11 +2066,16 @@ struct DclrPrefix* parse_type_or_storage_class(){
   return NULL;
 }
 
-// Collect a sequence of type and storage keywords into lists.
-void parse_types_and_storage_classes(struct StorageClassList** storages_result, struct TypeSpecList** type_specs_result){
+// Collect a sequence of type, storage, and function-specifier keywords.
+// `inline` is reported only so callers can reject it on non-functions; it has
+// no other effect. Repeating it is permitted (C11 6.7.4p5).
+void parse_types_and_storage_classes(struct StorageClassList** storages_result,
+                                     struct TypeSpecList** type_specs_result,
+                                     bool* is_inline_result){
   struct DclrPrefix* prefix;
   struct TypeSpecList* specs = NULL;
   struct StorageClassList* storages = NULL;
+  bool is_inline = false;
 
   struct TypeSpecList* prev_specs = NULL;
   struct StorageClassList* prev_storages = NULL;
@@ -2072,17 +2104,22 @@ void parse_types_and_storage_classes(struct StorageClassList** storages_result, 
         }
         prev_specs = next_spec;
         break;
+      case INLINE_PREFIX:
+        is_inline = true;
+        break;
     }
   }
   *storages_result = storages;
   *type_specs_result = specs;
+  *is_inline_result = is_inline;
 }
 
 // Validate specifiers and build the base type + storage class.
-void parse_type_and_storage_class(struct Type** type, enum StorageClass* class){
+void parse_type_and_storage_class(struct Type** type, enum StorageClass* class,
+                                  bool* is_inline){
   struct StorageClassList* storages = NULL;
   struct TypeSpecList* specs = NULL;
-  parse_types_and_storage_classes(&storages, &specs);
+  parse_types_and_storage_classes(&storages, &specs, is_inline);
 
   *class = (storages == NULL) ? NONE : storages->spec;
   *type = type_spec_to_type(specs);
@@ -2105,6 +2142,11 @@ struct Declarator* parse_declarator(){
       }
       if (consume(VOLATILE_TOK)) {
         is_volatile = true;
+        continue;
+      }
+      // restrict is accepted on pointers but deliberately not recorded: it
+      // only licenses optimizations, and the optimizer does not use it yet.
+      if (consume(RESTRICT_TOK)) {
         continue;
       }
       break;
@@ -2528,8 +2570,18 @@ struct MemberDclr* parse_member_declarations(){
   while (true){
     struct Type* base_type = NULL;
     enum StorageClass storage = NONE;
-    parse_type_and_storage_class(&base_type, &storage);
+    bool is_inline = false;
+    // Capture the specifiers' start so the inline error points at them.
+    const char* member_start =
+        (size_t)(current - program) < prog_size ? current->start : parser_error_ptr();
+    parse_type_and_storage_class(&base_type, &storage, &is_inline);
     if (base_type == NULL) break;
+    if (is_inline){
+      parse_error_at(member_start,
+                     "'inline' can only be used on function declarations, "
+                     "not on a struct or union member");
+      return NULL;
+    }
 
     struct Declarator* declarator = parse_declarator();
     if (declarator == NULL){
@@ -2639,7 +2691,7 @@ static struct Type* copy_base_type(struct Type* base_type){
 // context names the construct in diagnostics. On failure returns NULL with the
 // cursor reset to old_current.
 static struct DeclarationList* parse_init_declarator_list(
-    struct Type* base_type, enum StorageClass storage,
+    struct Type* base_type, enum StorageClass storage, bool is_inline,
     struct VarAttributes* spec_attrs, bool allow_functions,
     const char* context, struct Token* old_current){
   struct DeclarationList* head = NULL;
@@ -2699,6 +2751,16 @@ static struct DeclarationList* parse_init_declarator_list(
       node->dclr.type = FUN_DCLR;
       node->dclr.dclr.fun_dclr = *build_function_dclr(ret_type, storage, name, params);
     } else {
+      // C11 6.7.4p1: function specifiers may only appear on functions. This
+      // also rejects function pointers such as `inline void (*fp)(void);`.
+      if (is_inline){
+        parse_error_at(name->start,
+                       "'inline' can only be used on function declarations; "
+                       "'%.*s' is not a function",
+                       (int)name->len, name->start);
+        current = old_current;
+        return NULL;
+      }
       struct VariableDclr* var_dclr = parse_var_dclr(decl_type, storage, name);
       if (var_dclr == NULL){
         current = old_current;
@@ -2843,7 +2905,8 @@ struct DeclarationList* parse_declaration(){
   
   struct Type* base_type = NULL;
   enum StorageClass storage = NONE;
-  parse_type_and_storage_class(&base_type, &storage);
+  bool is_inline = false;
+  parse_type_and_storage_class(&base_type, &storage, &is_inline);
   if (base_type == NULL){
     current = old_current;
     return NULL;
@@ -2852,7 +2915,7 @@ struct DeclarationList* parse_declaration(){
   if ((new_attrs = parse_var_attributes()) == NULL) return NULL; // possible attribute location 2
   if (!merge_cleanup_attrs(&attrs, new_attrs)) return NULL;
 
-  return parse_init_declarator_list(base_type, storage, attrs, true,
+  return parse_init_declarator_list(base_type, storage, is_inline, attrs, true,
                                     "declaration", old_current);
 }
 

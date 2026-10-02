@@ -107,7 +107,7 @@ Supported:
 Limitations:
 - No floating-point
 - No `long` or `long long` integers
-- No `typedef`, `inline`, or `restrict`
+- No `typedef`
 - No variadic functions
 - No inline assembly
 

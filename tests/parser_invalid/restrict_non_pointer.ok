@@ -1,0 +1,2 @@
+Parse error at tests/parser_invalid/restrict_non_pointer.c:7:7: 'restrict' can only qualify a pointer; write it after the '*' (for example 'int * restrict p')
+Parse error at tests/parser_invalid/restrict_non_pointer.c:7:7: unexpected token
