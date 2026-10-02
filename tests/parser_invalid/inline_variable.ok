@@ -1,0 +1,2 @@
+Parse error at tests/parser_invalid/inline_variable.c:4:12: 'inline' can only be used on function declarations; 'counter' is not a function
+Parse error at tests/parser_invalid/inline_variable.c:4:12: unexpected token

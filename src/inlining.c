@@ -262,6 +262,24 @@ static void replace_identifiers_and_labels(struct TACInstr* instr,
   }
 }
 
+// Return whether an inlined `return ret_src` must be copied into call_dst.
+// A void return (NULL source) has nothing to copy. A constant returned into a
+// struct or union result is skipped too: C forbids returning a constant from
+// an aggregate-returning function, so it can only be the `Return Const(0)`
+// that func_to_TAC appends for falling off the function's end. Reaching that
+// leaves the result indeterminate, and ASM generation cannot copy a scalar
+// constant into an aggregate.
+static bool should_copy_return(const struct Val* ret_src,
+                               const struct Val* call_dst) {
+  if (ret_src == NULL) {
+    return false;
+  }
+  bool aggregate_dst = call_dst->type != NULL &&
+                       (call_dst->type->type == STRUCT_TYPE ||
+                        call_dst->type->type == UNION_TYPE);
+  return !(aggregate_dst && ret_src->val_type == CONSTANT);
+}
+
 // Inline a single callsite within the caller function.
 // return the last instruction of the inlined code
 static struct TACInstr* inline_callsite(
@@ -311,10 +329,12 @@ static struct TACInstr* inline_callsite(
   for (struct TACInstr* callee_instr = callee->body.head; callee_instr != NULL; callee_instr = callee_instr->next) {
     if (callee_instr->type == TACRETURN) {
       // replace return with copy into call result and jump to end label
-      if (call_instr->instr.tac_call.dst != NULL){
+      struct Val* ret_src =
+          replace_val(callee_instr->instr.tac_return.src, var_map);
+      if (call_instr->instr.tac_call.dst != NULL &&
+          should_copy_return(ret_src, call_instr->instr.tac_call.dst)){
         struct TACInstr* ret_copy = tac_instr_create(TACCOPY);
-        ret_copy->instr.tac_copy.src =
-            replace_val(callee_instr->instr.tac_return.src, var_map);
+        ret_copy->instr.tac_copy.src = ret_src;
         ret_copy->instr.tac_copy.dst = call_instr->instr.tac_call.dst;
         // insert the copy instruction before the call instruction in the caller's body
         ret_copy->next = call_instr;
@@ -416,11 +436,8 @@ static void perform_inlining_for_node(struct CallGraph* cg, struct CallGraphNode
 
 // Perform function inlining on the given call graph.
 void perform_inlining(struct CallGraph* cg) {
-  for (int i = 0; i < NUM_INLINE_ITERS; i++) {
-    // iterate multiple times to allow for nested inlining opportunities
-    for (struct CallGraphEntry* entry = cg->nodes.head; entry != NULL; entry = entry->next) {
-      struct CallGraphNode* node = entry->node;
-      perform_inlining_for_node(cg, node);
-    }
+  for (struct CallGraphEntry* entry = cg->nodes.head; entry != NULL; entry = entry->next) {
+    struct CallGraphNode* node = entry->node;
+    perform_inlining_for_node(cg, node);
   }
 }

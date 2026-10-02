@@ -1890,6 +1890,52 @@ struct TACInstrList expr_to_TAC_convert(struct Slice* func_name, struct Expr* ex
   }
 }
 
+// Load a scalar lvalue represented by a pointer or an aggregate subobject.
+// Precondition: location has type DEREFERENCED_POINTER or SUB_OBJECT. The
+// caller has already emitted the code that computes its base exactly once.
+static struct TACInstrList load_indirect_lvalue(struct ExprResult* location,
+                                                struct Type* object_type,
+                                                struct Val* dst) {
+  bool is_volatile = type_is_volatile(object_type);
+  if (location->type == DEREFERENCED_POINTER) {
+    struct TACInstr* load_instr = tac_instr_create(
+        is_volatile ? TACVOLATILE_LOAD : TACLOAD);
+    load_instr->instr.tac_load.dst = dst;
+    load_instr->instr.tac_load.src_ptr = location->val;
+    return tac_instr_list(load_instr);
+  }
+
+  struct TACInstr* copy_instr = tac_instr_create(
+      is_volatile ? TACVOLATILE_COPY_FROM_OFFSET : TACCOPY_FROM_OFFSET);
+  copy_instr->instr.tac_copy_from_offset.dst = dst;
+  copy_instr->instr.tac_copy_from_offset.src = location->sub_object_base;
+  copy_instr->instr.tac_copy_from_offset.offset = location->sub_object_offset;
+  return tac_instr_list(copy_instr);
+}
+
+// Store a scalar value into a pointer or aggregate subobject lvalue.
+// Precondition: location has type DEREFERENCED_POINTER or SUB_OBJECT.
+static struct TACInstrList store_indirect_lvalue(struct ExprResult* location,
+                                                 struct Type* object_type,
+                                                 struct Val* src) {
+  bool is_volatile = type_is_volatile(object_type);
+  if (location->type == DEREFERENCED_POINTER) {
+    struct TACInstr* store_instr = tac_instr_create(
+        is_volatile ? TACVOLATILE_STORE : TACSTORE);
+    store_instr->instr.tac_store.dst_ptr = location->val;
+    store_instr->instr.tac_store.src = src;
+    return tac_instr_list(store_instr);
+  }
+
+  struct TACInstr* copy_instr = tac_instr_create(
+      is_volatile ? TACVOLATILE_COPY_TO_OFFSET : TACCOPY_TO_OFFSET);
+  copy_instr->instr.tac_copy_to_offset.dst = location->sub_object_base;
+  copy_instr->instr.tac_copy_to_offset.offset = location->sub_object_offset;
+  copy_instr->instr.tac_copy_to_offset.src = src;
+  copy_instr->instr.tac_copy_to_offset.dst_type = object_type;
+  return tac_instr_list(copy_instr);
+}
+
 // Lower an expression into TAC instructions and an ExprResult.
 // Returns TAC instruction list; result describes the computed value.
 struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, struct ExprResult* result) {
@@ -2074,21 +2120,11 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
           return instrs;
         }
 
-        if (lhs_result.type == DEREFERENCED_POINTER) {
-          struct Val* cur = make_temp(func_name, expr->value_type);
-          // AST:
-          // *ptr <op>= rhs
-          // TAC:
-          // Load cur, [ptr]
-          // [optional] Binary Mul scaled = rhs * sizeof(T)
-          // Binary op cur, cur, rhs_or_scaled
-          // Store [ptr], cur
-          // Load lvalue before applying the compound operation.
-          struct TACInstr* load_instr = tac_instr_create(
-              type_is_volatile(lhs_type) ? TACVOLATILE_LOAD : TACLOAD);
-          load_instr->instr.tac_load.dst = cur;
-          load_instr->instr.tac_load.src_ptr = lhs_result.val;
-          concat_TAC_instrs(&instrs, tac_instr_list(load_instr));
+        if (lhs_result.type == DEREFERENCED_POINTER || lhs_result.type == SUB_OBJECT) {
+          struct Val* cur = make_temp(func_name, unqualify_type(expr->value_type));
+          // The left side's base was evaluated once above. Read its current
+          // value after the right side, then update the same location.
+          concat_TAC_instrs(&instrs, load_indirect_lvalue(&lhs_result, lhs_type, cur));
 
           struct Val* rhs_for_op = rhs_val;
           if (pointer_lhs && (base_op == ADD_OP || base_op == SUB_OP) && is_arithmetic_type(rhs_type)) {
@@ -2117,11 +2153,7 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
                                                 rhs_for_op->type, base_op == MOD_OP);
             concat_TAC_instrs(&instrs, div_instrs);
 
-            struct TACInstr* store_instr = tac_instr_create(
-                type_is_volatile(lhs_type) ? TACVOLATILE_STORE : TACSTORE);
-            store_instr->instr.tac_store.dst_ptr = lhs_result.val;
-            store_instr->instr.tac_store.src = cur;
-            concat_TAC_instrs(&instrs, tac_instr_list(store_instr));
+            concat_TAC_instrs(&instrs, store_indirect_lvalue(&lhs_result, lhs_type, cur));
 
             result->type = PLAIN_OPERAND;
             result->val = cur;
@@ -2135,11 +2167,7 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
           bin_instr->instr.tac_binary.src2 = rhs_for_op;
           concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
 
-          struct TACInstr* store_instr = tac_instr_create(
-              type_is_volatile(lhs_type) ? TACVOLATILE_STORE : TACSTORE);
-          store_instr->instr.tac_store.dst_ptr = lhs_result.val;
-          store_instr->instr.tac_store.src = cur;
-          concat_TAC_instrs(&instrs, tac_instr_list(store_instr));
+          concat_TAC_instrs(&instrs, store_indirect_lvalue(&lhs_result, lhs_type, cur));
 
           result->type = PLAIN_OPERAND;
           result->val = cur;
@@ -2453,19 +2481,11 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
         return instrs;
       }
 
-      if (lhs_result.type == DEREFERENCED_POINTER) {
-        // AST:
-        // (*ptr)++ or (*ptr)--
-        // TAC:
-        // Load old, [ptr]
-        // Binary new, old, step
-        // Store [ptr], new
-        bool obj_volatile = type_is_volatile(expr->value_type);
-        struct TACInstr* load_instr = tac_instr_create(
-            obj_volatile ? TACVOLATILE_LOAD : TACLOAD);
-        load_instr->instr.tac_load.dst = old_val;
-        load_instr->instr.tac_load.src_ptr = lhs_result.val;
-        concat_TAC_instrs(&instrs, tac_instr_list(load_instr));
+      if (lhs_result.type == DEREFERENCED_POINTER || lhs_result.type == SUB_OBJECT) {
+        // Preserve the original value as the result of postfix update while
+        // writing the incremented/decremented value to the same lvalue.
+        concat_TAC_instrs(&instrs,
+                          load_indirect_lvalue(&lhs_result, expr->value_type, old_val));
 
         struct Val* new_val = make_temp(func_name, expr->value_type);
         struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
@@ -2475,11 +2495,8 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
         bin_instr->instr.tac_binary.src2 = step_val;
         concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
 
-        struct TACInstr* store_instr = tac_instr_create(
-            obj_volatile ? TACVOLATILE_STORE : TACSTORE);
-        store_instr->instr.tac_store.dst_ptr = lhs_result.val;
-        store_instr->instr.tac_store.src = new_val;
-        concat_TAC_instrs(&instrs, tac_instr_list(store_instr));
+        concat_TAC_instrs(&instrs,
+                          store_indirect_lvalue(&lhs_result, expr->value_type, new_val));
 
         result->type = PLAIN_OPERAND;
         result->val = old_val;

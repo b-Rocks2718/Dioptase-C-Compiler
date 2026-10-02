@@ -197,6 +197,12 @@ void print_token(struct Token token){
     case VOLATILE_TOK:
       printf("volatile");
       break;
+    case RESTRICT_TOK:
+      printf("restrict");
+      break;
+    case INLINE_TOK:
+      printf("inline");
+      break;
     case SWITCH_TOK:
       printf("switch");
       break;

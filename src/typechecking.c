@@ -501,17 +501,18 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
   }
 
   decay_param_array_types(func_dclr);
+  // A function declarator has FUN_TYPE itself; inspect its return type for
+  // the forbidden array result, including on redeclarations.
+  if (func_dclr->type->type == FUN_TYPE &&
+      func_dclr->type->type_data.fun_type.return_type->type == ARRAY_TYPE) {
+    type_error_at(func_dclr->name->start,
+                  "function %.*s cannot have array return type",
+                  (int)func_dclr->name->len, func_dclr->name->start);
+    return false;
+  }
   struct SymbolEntry* entry = symbol_table_get(global_symbol_table, func_dclr->name);
 
   if (entry == NULL) {
-    // ensure return type is not array
-    if (func_dclr->type->type == ARRAY_TYPE) {
-      type_error_at(func_dclr->name->start,
-                    "function %.*s cannot have array return type",
-                    (int)func_dclr->name->len, func_dclr->name->start);
-      return false;
-    }
-
     // First declaration/definition of this function.
     struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
     attrs->attr_type = FUN_ATTR;

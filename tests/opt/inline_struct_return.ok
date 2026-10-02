@@ -1,0 +1,200 @@
+Key: pr.4
+  Type: struct Pair.0
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: p.3
+  Type: struct Pair.0
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: b.2.inline.6
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: a.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: b.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: p.3.inline.7
+  Type: struct Pair.0
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.0
+  Type: struct Pair.0
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.1
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.2
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main.tmp.3
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: make_pair
+  Type: func(ret_type=struct Pair.0, param_types=[int, int, ])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+Key: a.1.inline.5
+  Type: int
+  Attributes:
+    Attr Type: Local Variable
+    Is Defined: true
+    Storage Class: None
+
+Key: main
+  Type: func(ret_type=int, param_types=[])
+  Attributes:
+    Attr Type: Function
+    Is Defined: true
+    Storage Class: None
+
+TACProg
+    Func make_pair global
+        Params: a.1, b.2
+        Body:
+            CopyToOffset p.3, Var(a.1), 0
+            CopyToOffset p.3, Var(b.2), 4
+            Return Var(p.3)
+            Return Const(0)
+    Func main global
+        Params: <none>
+        Body:
+            Copy Var(a.1.inline.5), Const(4)
+            Copy Var(b.2.inline.6), Const(6)
+            CopyToOffset p.3.inline.7, Var(a.1.inline.5), 0
+            CopyToOffset p.3.inline.7, Var(b.2.inline.6), 4
+            Copy Var(main.tmp.0), Var(p.3.inline.7)
+            Jump main.inline_end.0
+            Jump main.inline_end.0
+            Label main.inline_end.0
+            CopyToOffset pr.4, Var(main.tmp.0), 0
+            CopyFromOffset Var(main.tmp.1), pr.4, 0
+            CopyFromOffset Var(main.tmp.2), pr.4, 4
+            Binary SmulOp Var(main.tmp.3), Var(main.tmp.1), Var(main.tmp.2)
+            Return Var(main.tmp.3)
+            Return Const(0)
+Function make_pair
+CFG (4 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    CopyToOffset p.3, Var(a.1), 0
+    CopyToOffset p.3, Var(b.2), 4
+    Return Var(p.3)
+    edges:
+      +-- return --> [EXIT]
+
+[B2]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+       [ENTRY]
+   +------+
+   v
+ [B1]         [B2]
+   +------+     |
+          +-----+
+          v
+       [EXIT]
+
+Function main
+CFG (6 nodes)
+===============
+[ENTRY]
+    edges:
+      +-- entry --> [B1]
+
+[B1]
+    Copy Var(a.1.inline.5), Const(4)
+    Copy Var(b.2.inline.6), Const(6)
+    CopyToOffset p.3.inline.7, Var(a.1.inline.5), 0
+    CopyToOffset p.3.inline.7, Var(b.2.inline.6), 4
+    Copy Var(main.tmp.0), Var(p.3.inline.7)
+    Jump main.inline_end.0
+    edges:
+      +-- jump --> [B3]
+
+[B2]
+    Jump main.inline_end.0
+    edges:
+      +-- jump --> [B3]
+
+[B3]
+    Label main.inline_end.0
+    CopyToOffset pr.4, Var(main.tmp.0), 0
+    CopyFromOffset Var(main.tmp.1), pr.4, 0
+    CopyFromOffset Var(main.tmp.2), pr.4, 4
+    Binary SmulOp Var(main.tmp.3), Var(main.tmp.1), Var(main.tmp.2)
+    Return Var(main.tmp.3)
+    edges:
+      +-- return --> [EXIT]
+
+[B4]
+    Return Const(0)
+    edges:
+      +-- return --> [EXIT]
+
+[EXIT]
+    edges: none
+
+             [ENTRY]
+   +------------+
+   v
+ [B1]         [B2]         [B4]
+   +------------+            |
+                |            |
+                |            +------+
+                v                   |
+              [B3]                  |
+                |                   |
+                +-------------------+
+                v
+             [EXIT]

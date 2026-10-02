@@ -100,7 +100,10 @@ bool process_declarator(struct Declarator* decl, struct Type* base_type,
 // Parse a token stream into AST structures for the C subset.
 // Allocates AST nodes in the arena and returns parse results.
 
-void parse_type_and_storage_class(struct Type** type, enum StorageClass* class);
+// Parse declaration specifiers into a base type, storage class, and whether
+// the `inline` function specifier appeared. `inline` is otherwise ignored.
+void parse_type_and_storage_class(struct Type** type, enum StorageClass* class,
+                                  bool* is_inline);
 
 struct LitExpr parse_lit_expr(void);
 

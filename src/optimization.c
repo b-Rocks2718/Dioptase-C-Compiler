@@ -157,60 +157,6 @@ struct OptimizerArenas {
   struct Arena* iteration[2]; // alternating per-iteration storage
 };
 
-static struct TACInstrList optimize_body(
-    struct TACInstrList body,
-    struct OptimizationOptions options,
-    struct SliceList static_vars,
-    struct OptimizerArenas* arenas);
-
-// Run the enabled body optimizations on every function until each TAC body
-// reaches a fixed point. Translation-unit static names are collected once and
-// reused, while address-taken names are invariant for each function.
-void optimize(struct TACProg* prog, struct OptimizationOptions options) {
-  if (prog == NULL || !(has_body_optimization(options) || options.inline_opt)) {
-    return;
-  }
-
-  // Static storage duration is a translation-unit property. Reuse this set
-  // across every function instead of rescanning the symbol table per function.
-  struct SliceList static_vars = get_static_vars();
-
-  struct OptimizerArenas arenas = {
-      arena_create(kOptimizerScratchBlockSize),
-      {arena_create(kOptimizerScratchBlockSize), arena_create(kOptimizerScratchBlockSize)},
-  };
-  for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
-    if (top->type == FUNC) {
-      top->top.tac_func.body =
-          optimize_body(top->top.tac_func.body, options, static_vars, &arenas);
-    }
-  }
-
-  if (!options.inline_opt) {
-    arena_free(arenas.function);
-    arena_free(arenas.iteration[0]);
-    arena_free(arenas.iteration[1]);
-    return;
-  }
-
-  // do inlining optimizations
-  struct CallGraph call_graph = build_call_graph(prog);
-
-  perform_inlining(&call_graph);
-
-  // after inlining, re-run the optimization passes
-  for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
-    if (top->type == FUNC) {
-      top->top.tac_func.body =
-          optimize_body(top->top.tac_func.body, options, static_vars, &arenas);
-    }
-  }
-
-  arena_free(arenas.function);
-  arena_free(arenas.iteration[0]);
-  arena_free(arenas.iteration[1]);
-}
-
 // Copy body into the compilation arena. Operand pointers are shared with the
 // source instructions; those operands are already compilation-lifetime data.
 static struct TACInstrList copy_body_persistent(struct TACInstrList body) {
@@ -299,4 +245,54 @@ static struct TACInstrList optimize_body(
   arena_reset(arenas->iteration[0]);
   arena_reset(arenas->iteration[1]);
   return result;
+}
+
+// Run the enabled body optimizations on every function until each TAC body
+// reaches a fixed point. Translation-unit static names are collected once and
+// reused, while address-taken names are invariant for each function.
+void optimize(struct TACProg* prog, struct OptimizationOptions options) {
+  if (prog == NULL || !(has_body_optimization(options) || options.inline_opt)) {
+    return;
+  }
+
+  // Static storage duration is a translation-unit property. Reuse this set
+  // across every function instead of rescanning the symbol table per function.
+  struct SliceList static_vars = get_static_vars();
+
+  struct OptimizerArenas arenas = {
+      arena_create(kOptimizerScratchBlockSize),
+      {arena_create(kOptimizerScratchBlockSize), arena_create(kOptimizerScratchBlockSize)},
+  };
+  for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
+    if (top->type == FUNC) {
+      top->top.tac_func.body =
+          optimize_body(top->top.tac_func.body, options, static_vars, &arenas);
+    }
+  }
+
+  if (!options.inline_opt) {
+    arena_free(arenas.function);
+    arena_free(arenas.iteration[0]);
+    arena_free(arenas.iteration[1]);
+    return;
+  }
+
+  // do inlining optimizations
+  struct CallGraph call_graph = build_call_graph(prog);
+
+  for (int i = 0; i < NUM_INLINE_ITERS; i++) {
+    perform_inlining(&call_graph);
+
+    // after each inlining pass, re-run the optimization passes
+    for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
+      if (top->type == FUNC) {
+        top->top.tac_func.body =
+            optimize_body(top->top.tac_func.body, options, static_vars, &arenas);
+      }
+    }
+  }
+
+  arena_free(arenas.function);
+  arena_free(arenas.iteration[0]);
+  arena_free(arenas.iteration[1]);
 }

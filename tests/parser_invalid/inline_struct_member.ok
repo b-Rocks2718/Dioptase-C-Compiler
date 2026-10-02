@@ -1,0 +1,3 @@
+Parse error at tests/parser_invalid/inline_struct_member.c:5:3: 'inline' can only be used on function declarations, not on a struct or union member
+Parse error at tests/parser_invalid/inline_struct_member.c:5:10: expected at least one struct member declaration
+Parse error at tests/parser_invalid/inline_struct_member.c:5:10: unexpected token

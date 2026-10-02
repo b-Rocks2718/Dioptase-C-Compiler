@@ -693,6 +693,9 @@ enum TypeSpecifierType {
   ENUM_SPEC,
   CONST_SPEC,
   VOLATILE_SPEC,
+  // Parsed only so type_spec_to_type can reject it: without typedefs, a
+  // specifier-list `restrict` always qualifies a non-pointer type.
+  RESTRICT_SPEC,
 };
 
 // Store a type-specifier kind and optional named tag.
@@ -713,10 +716,13 @@ struct StorageClassList {
   struct StorageClassList* next;
 };
 
-// Distinguish type-specifier and storage-class declaration prefixes.
+// Distinguish type-specifier, storage-class, and function-specifier
+// declaration prefixes. INLINE_PREFIX carries no payload because `inline` is
+// accepted on functions but otherwise ignored.
 enum DclrPrefixType {
   STORAGE_PREFIX,
-  TYPE_PREFIX
+  TYPE_PREFIX,
+  INLINE_PREFIX
 };
 
 // Select type-specifier or storage-class prefix data.
