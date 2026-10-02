@@ -416,11 +416,8 @@ static void perform_inlining_for_node(struct CallGraph* cg, struct CallGraphNode
 
 // Perform function inlining on the given call graph.
 void perform_inlining(struct CallGraph* cg) {
-  for (int i = 0; i < NUM_INLINE_ITERS; i++) {
-    // iterate multiple times to allow for nested inlining opportunities
-    for (struct CallGraphEntry* entry = cg->nodes.head; entry != NULL; entry = entry->next) {
-      struct CallGraphNode* node = entry->node;
-      perform_inlining_for_node(cg, node);
-    }
+  for (struct CallGraphEntry* entry = cg->nodes.head; entry != NULL; entry = entry->next) {
+    struct CallGraphNode* node = entry->node;
+    perform_inlining_for_node(cg, node);
   }
 }

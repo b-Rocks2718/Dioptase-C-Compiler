@@ -216,6 +216,9 @@ static void print_asm_alu_op(enum ALUOp op) {
     case ALU_LSL:
       printf("LslOp");
       break;
+    case ALU_ASL:
+      printf("AslOp");
+      break;
     case ALU_ASR:
       printf("AsrOp");
       break;
