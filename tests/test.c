@@ -9,10 +9,10 @@ int next_collatz(int x) {
 
 int main() {
   int a0 = 37;
-  int a1 = next_collatz(a0);
-  int a2 = next_collatz(a1);
-  int a3 = next_collatz(a2);
-  int a4 = next_collatz(a3);
-  int a5 = next_collatz(a4);
+  int a1 = next_collatz(a0); // 37 -> 112
+  int a2 = next_collatz(a1); // 112 -> 56
+  int a3 = next_collatz(a2); // 56 -> 28
+  int a4 = next_collatz(a3); // 28 -> 14
+  int a5 = next_collatz(a4); // 14 -> 7
   return a5;
 }

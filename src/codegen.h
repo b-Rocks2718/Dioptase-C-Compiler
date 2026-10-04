@@ -207,10 +207,9 @@ struct MachineInstr {
   struct MachineInstr* next;
 };
 
+// Lower a pseudo-free ASM program to machine instructions. Reads the global
+// asm_symbol_table for static object layout. Exits with a diagnostic on
+// malformed input; never returns NULL.
 struct MachineProg* prog_to_machine(struct AsmProg* asm_prog);
-
-struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top);
-
-struct MachineProg* instr_to_machine(struct Slice* name, struct AsmInstr* instr);
 
 #endif // CODEGEN_H
