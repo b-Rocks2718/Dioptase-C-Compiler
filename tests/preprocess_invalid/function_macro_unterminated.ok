@@ -1,0 +1,1 @@
+Preprocessor error at tests/preprocess_invalid/function_macro_unterminated.c:2: unterminated argument list invoking macro "F": expected ')' before the next preprocessor directive or end of file

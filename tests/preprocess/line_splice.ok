@@ -1,0 +1,16 @@
+ 
+
+
+
+
+
+
+
+do { int tmp = (x); (x) = (y); (y) = tmp; } while (0);
+int split = 1 + 2;
+
+char* s = "abcd";
+
+ 
+
+int line = 18;

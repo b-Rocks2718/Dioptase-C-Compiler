@@ -1,0 +1,1 @@
+Preprocessor error at tests/preprocess_invalid/function_macro_va_args_not_variadic.c:1: __VA_ARGS__ can only appear in the replacement list of a variadic macro (macro "G" is not declared with "...")

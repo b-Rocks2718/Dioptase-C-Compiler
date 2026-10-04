@@ -21,7 +21,8 @@ struct PreprocessResult {
   struct FileTable file_table;
 };
 
-// Preprocess a source buffer (comments, directives, object-like macros).
+// Preprocess a source buffer (comments, directives, object-like and
+// function-like macros).
 // Returns true on success and fills result; false on error.
 bool preprocess(char const* prog, const char* filename, int num_defines,
                 const char* const* defines, struct PreprocessResult* result);

@@ -1,0 +1,1 @@
+Preprocessor error at tests/preprocess_invalid/function_macro_missing_rparen.c:1: missing ')' in parameter list of macro "F"

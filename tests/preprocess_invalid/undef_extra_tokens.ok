@@ -1,0 +1,1 @@
+Preprocessor error at tests/preprocess_invalid/undef_extra_tokens.c:2: unexpected tokens after macro name "X" in #undef directive

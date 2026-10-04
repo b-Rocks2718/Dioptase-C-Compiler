@@ -77,11 +77,17 @@ For user-mode links, `bcc` always passes `-crt <dir>` through to the assembler. 
 
 ### Preprocessor
 
-- `#define` (object-like macros. no function-like macros yet)
+- `#define` with object-like and function-like macros: `#` stringizing, `##` pasting,
+  variadic `...`/`__VA_ARGS__`, and the GNU `, ## __VA_ARGS__` comma elision. An
+  invocation's arguments may span lines, but not a directive.
+- `#undef`
+- backslash-newline line continuation (`\` before LF or CRLF), anywhere in the source
+- `-DNAME`, `-DNAME=value`, and `-D'NAME(params)=value'` on the command line
 - `#include` (only supports `""` includes for now)
 - `#ifdef`, `#ifndef`, `#else`, `#endif`
 - `__FILE__`, `__LINE__` builtin macros
-- comments (`//` and `/* ... */`)
+- comments (`//` and `/* ... */`), each replaced by one space, so a comment spanning
+  lines does not end a directive
 
 ### C Subset
 
