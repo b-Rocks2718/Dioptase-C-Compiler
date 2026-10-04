@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "arena.h"
+#include "exit_codes.h"
 
 // Smallest block size accepted by arena constructors.
 enum { kArenaMinBlockSize = 1024 };
@@ -23,7 +24,7 @@ struct Arena* arena_create(size_t block_size) {
   if (a == NULL) {
     fprintf(stderr, "Arena error: unable to allocate an arena header (%zu bytes)\n",
             sizeof(struct Arena));
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   a->head = NULL;
   a->free_blocks = NULL;

@@ -1,4 +1,5 @@
 #include "copy_prop.h"
+#include "exit_codes.h"
 #include "cfg.h"
 #include "arena.h"
 #include "AST.h"
@@ -155,14 +156,14 @@ static void* cp_calloc(size_t count, size_t size, const char* purpose) {
     fprintf(stderr,
             "Copy propagation error: allocation size overflow while %s\n",
             purpose);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   void* allocation = calloc(count, size);
   if (allocation == NULL) {
     fprintf(stderr,
             "Copy propagation error: unable to allocate %zu bytes while %s\n",
             count * size, purpose);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   return allocation;
 }
@@ -546,13 +547,13 @@ static void build_variable_masks(struct CopyPropState* s) {
             "Copy propagation error: cannot build %zu variable masks with "
             "zero words per mask\n",
             masks);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   if (masks > SIZE_MAX / s->words) {
     fprintf(stderr,
             "Copy propagation error: allocation size overflow while indexing "
             "heavily copied variables\n");
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   size_t mask_words = masks * s->words;
   s->mask_storage = cp_calloc(mask_words, sizeof(uint64_t),
@@ -663,7 +664,7 @@ static bool copy_prop_state_init(struct CopyPropState* s, struct CFG* cfg,
                 "Copy propagation error: TACCOPY destination in CFG block %u is "
                 "not a variable (operand kind %d); expected a writable variable\n",
                 i, (int)dst->val_type);
-        exit(1);
+        exit(BCC_EXIT_INTERNAL);
       }
       class_lookup(s, dst_key, src_key, true, dst, src);
     }
@@ -814,7 +815,7 @@ static void meet(struct CopyPropState* s, const struct CFGNode* node, uint64_t* 
               "Copy propagation error: CFG block %u has the EXIT node as a "
               "predecessor; EXIT must not have successors\n",
               node->index);
-      exit(1);
+      exit(BCC_EXIT_INTERNAL);
     }
     const uint64_t* pred_out = node_out(s, pred->node->index);
     for (size_t w = 0; w < s->words; ++w) {
@@ -872,7 +873,7 @@ static void find_reaching_copies(struct CopyPropState* s, uint64_t* state) {
                 "Copy propagation error: CFG block %u has the ENTRY node as a "
                 "successor; ENTRY must not have predecessors\n",
                 b);
-        exit(1);
+        exit(BCC_EXIT_INTERNAL);
       }
       unsigned succ_index = succ->node->index;
       if (!queued[succ_index]) {
@@ -961,7 +962,7 @@ static struct Val* replace_args(struct CopyPropState* s, struct Val* args, size_
                 "Copy propagation error: unable to allocate %zu bytes for a "
                 "rewritten %zu-argument call\n",
                 num_args * sizeof(struct Val), num_args);
-        exit(1);
+        exit(BCC_EXIT_INTERNAL);
       }
       memcpy(rewritten, args, num_args * sizeof(struct Val));
     }

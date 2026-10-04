@@ -24,6 +24,7 @@
 #include "machine_print.h"
 #include "arena.h"
 #include "source_location.h"
+#include "exit_codes.h"
 
 // When set, results are printed to stderr instead of stdout.
 // Only used for interpreter-only execution.
@@ -366,7 +367,7 @@ int main(int argc, const char *const *const argv) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "option -crt requires a CRT directory path\n");
                 free(cli_defines);
-                exit(1);
+                exit(BCC_EXIT_INPUT);
             }
             crt_dir_option = argv[++i];
             continue;
@@ -375,7 +376,7 @@ int main(int argc, const char *const *const argv) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "option -o requires an output file path\n");
                 free(cli_defines);
-                exit(1);
+                exit(BCC_EXIT_INPUT);
             }
             output_path = argv[++i];
             output_path_set = true;
@@ -386,7 +387,7 @@ int main(int argc, const char *const *const argv) {
             if (def[0] == '\0') {
                 fprintf(stderr, "Invalid -D definition (expected -DNAME or -DNAME=value)\n");
                 free(cli_defines);
-                exit(1);
+                exit(BCC_EXIT_INPUT);
             }
             cli_defines[num_defines++] = def;
             continue;
@@ -395,7 +396,7 @@ int main(int argc, const char *const *const argv) {
             fprintf(stderr, "unknown option: %s\n", arg);
             fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-cg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
             free(cli_defines);
-            exit(1);
+            exit(BCC_EXIT_INPUT);
         }
         if (filename == NULL) {
             filename = arg;
@@ -404,19 +405,19 @@ int main(int argc, const char *const *const argv) {
 
         fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-cg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
-        exit(1);
+        exit(BCC_EXIT_INPUT);
     }
 
     if (filename == NULL) {
         fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-cg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
         free(cli_defines);
-        exit(1);
+        exit(BCC_EXIT_INPUT);
     }
 
     if (kernel_mode && crt_dir_option != NULL) {
         fprintf(stderr, "option -crt is only valid for user-mode links\n");
         free(cli_defines);
-        exit(1);
+        exit(BCC_EXIT_INPUT);
     }
 
     if (!output_path_set) {
@@ -434,7 +435,7 @@ int main(int argc, const char *const *const argv) {
     if (fd < 0) {
         perror("open");
         free(cli_defines);
-        exit(1);
+        exit(BCC_EXIT_INPUT);
     }
 
     // determine its size (std::filesystem::get_size?)
@@ -442,7 +443,7 @@ int main(int argc, const char *const *const argv) {
     int rc = fstat(fd,&file_stats);
     if (rc != 0) {
         perror("fstat");
-        exit(1);
+        exit(BCC_EXIT_INPUT);
     }
 
     // map the file in my address space
@@ -455,13 +456,13 @@ int main(int argc, const char *const *const argv) {
         0);
     if (text == MAP_FAILED) {
         perror("mmap");
-        exit(1);
+        exit(BCC_EXIT_INPUT);
     }
 
     struct PreprocessResult preprocessed = {0};
     if (!preprocess(text, filename, num_defines, cli_defines, &preprocessed)) {
         free(cli_defines);
-        return 1;
+        return BCC_EXIT_INPUT;
     }
     free(cli_defines);
     size_t preprocessed_len = strlen(preprocessed.text);
@@ -494,7 +495,7 @@ int main(int argc, const char *const *const argv) {
     struct TokenArray* tokens = lex(preprocessed.text);
     if (tokens == NULL) {
        destroy_preprocess_result(&preprocessed);
-       return 1;
+       return BCC_EXIT_INPUT;
     }
 
     if (print_tokens) {
@@ -516,7 +517,7 @@ int main(int argc, const char *const *const argv) {
        destroy_preprocess_result(&preprocessed);
        destroy_token_array(tokens);
        arena_destroy();
-       return 2;
+       return BCC_EXIT_PARSE;
     };
     // The AST keeps only payload slices and source pointers, not tokens, so
     // the token entries can go now; their slices live until the final cleanup.
@@ -542,7 +543,7 @@ int main(int argc, const char *const *const argv) {
         destroy_preprocess_result(&preprocessed);
         destroy_token_array(tokens);
         arena_destroy();
-        return 3;
+        return BCC_EXIT_RESOLVE;
     } else  if (print_idents) {
         print_prog(prog);
     }
@@ -562,7 +563,7 @@ int main(int argc, const char *const *const argv) {
         destroy_preprocess_result(&preprocessed);
         destroy_token_array(tokens);
         arena_destroy();
-        return 4;
+        return BCC_EXIT_LABELS;
     } else if (print_labels) {
         print_prog(prog);
     }
@@ -581,7 +582,7 @@ int main(int argc, const char *const *const argv) {
         destroy_preprocess_result(&preprocessed);
         destroy_token_array(tokens);
         arena_destroy();
-        return 5;
+        return BCC_EXIT_TYPES;
     } else if (print_types) {
         print_symbol_table(global_symbol_table);
         print_prog(prog);
@@ -609,7 +610,7 @@ int main(int argc, const char *const *const argv) {
             destroy_preprocess_result(&preprocessed);
             destroy_token_array(tokens);
             arena_destroy();
-            return 6;
+            return BCC_EXIT_INTERNAL;
         }
 
         if (print_tac) {
@@ -661,7 +662,7 @@ int main(int argc, const char *const *const argv) {
             destroy_preprocess_result(&preprocessed);
             destroy_token_array(tokens);
             arena_destroy();
-            return 6;
+            return BCC_EXIT_INTERNAL;
         }
 
         if (print_asm) {
@@ -685,7 +686,7 @@ int main(int argc, const char *const *const argv) {
             destroy_preprocess_result(&preprocessed);
             destroy_token_array(tokens);
             arena_destroy();
-            return 6;
+            return BCC_EXIT_INTERNAL;
         }
 
         const char* asm_output_path = output_path;
@@ -696,7 +697,7 @@ int main(int argc, const char *const *const argv) {
                 destroy_preprocess_result(&preprocessed);
                 destroy_token_array(tokens);
                 arena_destroy();
-                return 6;
+                return BCC_EXIT_OUTPUT;
             }
             asm_output_path = asm_output_path_alloc;
         }
@@ -707,7 +708,7 @@ int main(int argc, const char *const *const argv) {
             destroy_preprocess_result(&preprocessed);
             destroy_token_array(tokens);
             arena_destroy();
-            return 6;
+            return BCC_EXIT_OUTPUT;
         }
 
         if (!emit_asm_file) {
@@ -723,7 +724,7 @@ int main(int argc, const char *const *const argv) {
                 destroy_preprocess_result(&preprocessed);
                 destroy_token_array(tokens);
                 arena_destroy();
-                return 6;
+                return BCC_EXIT_OUTPUT;
             }
             if (!kernel_mode) {
                 crt_dir = (crt_dir_option != NULL)
@@ -740,7 +741,7 @@ int main(int argc, const char *const *const argv) {
                     destroy_preprocess_result(&preprocessed);
                     destroy_token_array(tokens);
                     arena_destroy();
-                    return 6;
+                    return BCC_EXIT_OUTPUT;
                 }
             }
             bool assembled = run_assembler(assembler_path,
@@ -758,7 +759,7 @@ int main(int argc, const char *const *const argv) {
                 destroy_preprocess_result(&preprocessed);
                 destroy_token_array(tokens);
                 arena_destroy();
-                return 6;
+                return BCC_EXIT_OUTPUT;
             }
             remove_temp_asm(asm_output_path);
         }

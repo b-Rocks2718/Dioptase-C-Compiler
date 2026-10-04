@@ -1,4 +1,5 @@
 #include "inlining.h"
+#include "exit_codes.h"
 #include "TAC.h"
 #include "unique_name.h"
 #include "label_map.h"
@@ -54,7 +55,7 @@ static struct Slice* replace_var_name(struct Slice* name,
             "Inlining error: no symbol-table entry for TAC variable %.*s\n",
             name == NULL ? 0 : (int)name->len,
             name == NULL ? "<null>" : name->start);
-    exit(EXIT_FAILURE);
+    exit(BCC_EXIT_INTERNAL);
   }
   if (preserve_symbol_name(entry)) {
     label_map_insert(var_map, name, name);
@@ -65,7 +66,7 @@ static struct Slice* replace_var_name(struct Slice* name,
             "Inlining error: TAC variable %.*s has unsupported symbol "
             "attributes\n",
             (int)name->len, name->start);
-    exit(EXIT_FAILURE);
+    exit(BCC_EXIT_INTERNAL);
   }
 
   struct Slice* unique_name = make_unique(name, "inline");
@@ -103,7 +104,7 @@ static struct Val* replace_args(const struct Val* args, size_t num_args,
     fprintf(stderr,
             "Inlining error: call has %zu arguments but no argument array\n",
             num_args);
-    exit(EXIT_FAILURE);
+    exit(BCC_EXIT_INTERNAL);
   }
 
   struct Val* replaced = arena_alloc(sizeof(*replaced) * num_args);
@@ -111,7 +112,7 @@ static struct Val* replace_args(const struct Val* args, size_t num_args,
     fprintf(stderr,
             "Inlining error: unable to allocate %zu copied call arguments\n",
             num_args);
-    exit(EXIT_FAILURE);
+    exit(BCC_EXIT_INTERNAL);
   }
   for (size_t i = 0; i < num_args; i++) {
     replaced[i] = args[i];
@@ -126,7 +127,7 @@ static void replace_identifiers_and_labels(struct TACInstr* instr,
     case TACRETURN: {
       // should not happen, as returns are replaced with jumps to the end label
       fprintf(stderr, "Error: unexpected return instruction during inlining\n");
-      exit(EXIT_FAILURE);
+      exit(BCC_EXIT_INTERNAL);
     }
     case TACUNARY: {
       instr->instr.tac_unary.src = replace_val(instr->instr.tac_unary.src, var_map);
@@ -216,7 +217,7 @@ static void replace_identifiers_and_labels(struct TACInstr* instr,
     case TACTAIL_CALL_INDIRECT: {
       // for now we do not inline functions containing tail calls
       fprintf(stderr, "Tail calls should not be inlined.\n");
-      exit(EXIT_FAILURE);
+      exit(BCC_EXIT_INTERNAL);
     }
     case TACGET_ADDRESS: {
       instr->instr.tac_get_address.dst = replace_val(instr->instr.tac_get_address.dst, var_map);
@@ -396,7 +397,7 @@ static struct TACInstr* inline_callsite(
     // return, not a call
 
     fprintf(stderr, "Error: function should end with a return, not a call\n");
-    exit(EXIT_FAILURE);
+    exit(BCC_EXIT_INTERNAL);
   }
   // no change to count, we added end label and removed the call
 

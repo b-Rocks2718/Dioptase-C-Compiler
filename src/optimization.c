@@ -1,4 +1,5 @@
 #include "optimization.h"
+#include "exit_codes.h"
 #include "arena.h"
 #include "TAC.h"
 #include "cfg.h"
@@ -47,7 +48,7 @@ static struct NameSet name_set_create(size_t max_names) {
             "Optimizer error: unable to allocate a %zu-slot name set for "
             "collecting static and aliased variables\n",
             set.slot_count);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   return set;
 }
@@ -169,7 +170,7 @@ static struct TACInstrList copy_body_persistent(struct TACInstrList body) {
               "Optimizer error: unable to allocate %zu bytes while copying an "
               "optimized TAC body into compilation storage\n",
               sizeof(struct TACInstr));
-      exit(1);
+      exit(BCC_EXIT_INTERNAL);
     }
     *instr_copy = *instr;
     instr_copy->next = NULL;

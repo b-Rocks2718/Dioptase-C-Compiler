@@ -510,6 +510,29 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
                   (int)func_dclr->name->len, func_dclr->name->start);
     return false;
   }
+
+  // C11 6.9.1p3 and 6.7.6.3p4: a definition needs a void or complete return
+  // type and complete parameter types (after array decay). Declarations alone
+  // may name incomplete struct/union types.
+  if (func_dclr->body != NULL && func_dclr->type->type == FUN_TYPE) {
+    struct Type* ret_type = func_dclr->type->type_data.fun_type.return_type;
+    if (ret_type->type != VOID_TYPE && !is_complete_type(ret_type)) {
+      type_error_at(func_dclr->name->start,
+                    "function %.*s is defined with an incomplete return type",
+                    (int)func_dclr->name->len, func_dclr->name->start);
+      return false;
+    }
+    for (struct ParamList* param = func_dclr->params; param != NULL; param = param->next) {
+      if (!is_complete_type(param->param.type)) {
+        type_error_at(param->param.source_name->start,
+                      "parameter %.*s of function %.*s has incomplete type",
+                      (int)param->param.source_name->len, param->param.source_name->start,
+                      (int)func_dclr->name->len, func_dclr->name->start);
+        return false;
+      }
+    }
+  }
+
   struct SymbolEntry* entry = symbol_table_get(global_symbol_table, func_dclr->name);
 
   if (entry == NULL) {
@@ -595,6 +618,15 @@ bool typecheck_params(struct ParamList* params) {
     if (!is_valid_type_specifier(cur->param.type)) {
       type_error_at(cur->param.source_name->start,
                     "invalid type specifier for function parameter %.*s",
+                    (int)cur->param.source_name->len, cur->param.source_name->start);
+      return false;
+    }
+
+    // `(void)` alone is parsed as an empty list, so any void-typed parameter
+    // here names an object of type void.
+    if (cur->param.type->type == VOID_TYPE) {
+      type_error_at(cur->param.source_name->start,
+                    "function parameter %.*s cannot have type void",
                     (int)cur->param.source_name->len, cur->param.source_name->start);
       return false;
     }
@@ -772,6 +804,11 @@ bool typecheck_stmt(struct Statement* stmt) {
       }
       if (stmt->statement.for_stmt.condition != NULL) {
         if (!typecheck_convert_expr(&stmt->statement.for_stmt.condition)) {
+          return false;
+        }
+        if (!is_scalar_type(stmt->statement.for_stmt.condition->value_type)) {
+          type_error_at(stmt->statement.for_stmt.condition->loc,
+                        "for condition must have scalar type");
           return false;
         }
       }
@@ -1526,6 +1563,12 @@ static bool ensure_modifiable_lvalue(struct Expr* expr, const char* loc,
     type_error_at(loc, "%s", non_lvalue_message);
     return false;
   }
+  // C11 6.3.2.1p1: a modifiable lvalue cannot have incomplete type, which
+  // rejects writes through void * (e.g. `*vp = f()`) and to incomplete structs.
+  if (!is_complete_type(expr->value_type)) {
+    type_error_at(loc, "cannot modify an object of incomplete type");
+    return false;
+  }
   if (type_contains_const(expr->value_type)) {
     type_error_at(loc, "cannot modify const-qualified object");
     return false;
@@ -1577,9 +1620,15 @@ bool typecheck_expr(struct Expr* expr) {
         }
 
         enum BinOp base_op = compound_assign_base_op(bin_expr->op);
-        if ((base_op == ADD_OP || base_op == SUB_OP) &&
-            is_pointer_type(left_type) &&
-            is_arithmetic_type(right_type)) {
+        if ((base_op == ADD_OP || base_op == SUB_OP) && is_pointer_type(left_type)) {
+          // Pointer arithmetic scales by the pointee size, so it must be complete
+          // (C11 6.5.6p2); this also covers prefix ++/--, which lower to += / -=.
+          if (!is_pointer_to_complete_type(left_type) || !is_arithmetic_type(right_type)) {
+            type_error_at(expr->loc,
+                          "compound pointer assignment requires a pointer to a complete "
+                          "type and an integer operand");
+            return false;
+          }
           expr->value_type = left_type;
           return true;
         }
@@ -1764,9 +1813,10 @@ bool typecheck_expr(struct Expr* expr) {
       }
 
       if (!is_arithmetic_type(post_assign_expr->expr->value_type) &&
-          !is_pointer_type(post_assign_expr->expr->value_type)) {
+          !is_pointer_to_complete_type(post_assign_expr->expr->value_type)) {
         type_error_at(expr->loc,
-                      "post-increment/decrement requires arithmetic or pointer type");
+                      "post-increment/decrement requires arithmetic type or a pointer "
+                      "to a complete type");
         return false;
       }
 
@@ -2039,6 +2089,12 @@ bool typecheck_expr(struct Expr* expr) {
         sub_expr->index = temp;
       } else {
         type_error_at(expr->loc, "array subscript requires array/pointer and integer types");
+        return false;
+      }
+
+      // C11 6.5.2.1p1: the pointer operand must point to a complete object type.
+      if (!is_complete_type(ptr_type->type_data.pointer_type.referenced_type)) {
+        type_error_at(expr->loc, "cannot subscript a pointer to an incomplete type");
         return false;
       }
 
@@ -2509,7 +2565,7 @@ bool is_valid_type_specifier(struct Type* type) {
       // check parameter types and return type
       for (struct ParamTypeList* param = type->type_data.fun_type.param_types;
            param != NULL; param = param->next) {
-        if (!is_valid_type_specifier(param->type)) {
+        if (param->type->type == VOID_TYPE || !is_valid_type_specifier(param->type)) {
           return false;
         }
       }

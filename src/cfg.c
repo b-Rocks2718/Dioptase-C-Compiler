@@ -1,4 +1,5 @@
 #include "cfg.h"
+#include "exit_codes.h"
 #include "arena.h"
 #include "slice.h"
 #include <stdbool.h>
@@ -55,7 +56,7 @@ static void append_instr(struct CFGNode* block, const struct TACInstr* instr) {
             "CFG error: cannot append TAC instruction type %d to CFG node type %d; "
             "expected a basic block\n",
             instr->type, block->type);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
 
   struct TACInstr* instr_copy = copy_instr(instr);
@@ -255,7 +256,7 @@ static struct LabelIndex label_index_build(const struct CFG* cfg) {
             "CFG error: unable to allocate a %zu-slot label index while linking "
             "a %u-node CFG\n",
             index.slot_count, cfg->num_nodes);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   size_t mask = index.slot_count - 1;
   for (unsigned i = 0; i < cfg->num_nodes; i++) {
@@ -325,7 +326,7 @@ static struct CFG* link_cfg(struct CFG* cfg) {
             fprintf(stderr, "CFG error: cannot resolve jump target label '");
             fwrite(label->start, sizeof(char), label->len, stderr);
             fprintf(stderr, "' while linking basic block %u\n", i);
-            exit(1);
+            exit(BCC_EXIT_INTERNAL);
           }
           break;
         }
@@ -993,7 +994,7 @@ struct TACInstrList rebuild_body(struct CFG* cfg) {
   if (cfg == NULL || cfg->nodes == NULL) {
     fprintf(stderr,
             "CFG error: cannot rebuild a TAC body from a null or uninitialized CFG\n");
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
 
   struct TACInstrList rebuilt = tac_instr_list(NULL);
@@ -1009,7 +1010,7 @@ struct TACInstrList rebuild_body(struct CFG* cfg) {
               "CFG error: cannot rebuild basic block %u because its non-empty "
               "body has no last instruction\n",
               i);
-      exit(1);
+      exit(BCC_EXIT_INTERNAL);
     }
 
     struct TACInstr* instr = node->body.head;
@@ -1027,7 +1028,7 @@ struct TACInstrList rebuild_body(struct CFG* cfg) {
                 "CFG error: cannot rebuild basic block %u because its last "
                 "instruction is not reachable from its body\n",
                 i);
-        exit(1);
+        exit(BCC_EXIT_INTERNAL);
       }
     }
   }

@@ -1,4 +1,5 @@
 #include "dead_store_elim.h"
+#include "exit_codes.h"
 #include "slice.h"
 
 #include <limits.h>
@@ -56,14 +57,14 @@ static void* dse_calloc(size_t count, size_t size, const char* purpose) {
     fprintf(stderr,
             "Dead-store elimination error: allocation size overflow while %s\n",
             purpose);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   void* allocation = calloc(count, size);
   if (allocation == NULL && count != 0 && size != 0) {
     fprintf(stderr,
             "Dead-store elimination error: unable to allocate %zu bytes while %s\n",
             count * size, purpose);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   return allocation;
 }
@@ -115,7 +116,7 @@ static void variable_index_grow(struct VariableIndex* index) {
   if (new_bucket_count < index->bucket_count) {
     fprintf(stderr,
             "Dead-store elimination error: variable index bucket count overflow\n");
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
 
   struct VariableIndexEntry** new_buckets =
@@ -175,7 +176,7 @@ static size_t variable_index_get(const struct VariableIndex* index,
             "Dead-store elimination error: liveness variable '%.*s' was not indexed\n",
             name == NULL ? 0 : (int)name->len,
             name == NULL ? "" : name->start);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   return entry->index;
 }
@@ -452,7 +453,7 @@ static bool instruction_is_dead(struct TACInstr* instr,
           "Dead-store elimination error: unsupported TAC instruction type %d "
           "while testing liveness\n",
           instr->type);
-  exit(1);
+  exit(BCC_EXIT_INTERNAL);
 }
 
 // Apply the backward liveness transfer function for one instruction.
@@ -576,7 +577,7 @@ static unsigned cfg_node_index(const struct CFG* cfg, const struct CFGNode* node
           "Dead-store elimination error: CFG edge references a node outside "
           "the current graph (stale index %u, graph has %u nodes)\n",
           node->index, cfg->num_nodes);
-  exit(1);
+  exit(BCC_EXIT_INTERNAL);
 }
 
 // Return a non-owning LiveSet view for one block in the contiguous live array.
@@ -605,7 +606,7 @@ static void meet_successors(const struct CFG* cfg,
         fprintf(stderr,
                 "Dead-store elimination error: CFG entry node appears as a "
                 "successor\n");
-        exit(1);
+        exit(BCC_EXIT_INTERNAL);
       case CFG_EXIT:
         live_set_union(result, static_vars);
         break;
@@ -668,7 +669,7 @@ static void block_queue_push(struct BlockQueue* queue, unsigned block_index) {
             "Dead-store elimination error: liveness work queue exceeded %zu "
             "CFG nodes\n",
             queue->capacity);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   size_t tail = (queue->head + queue->count) % queue->capacity;
   queue->items[tail] = block_index;
@@ -682,7 +683,7 @@ static unsigned block_queue_pop(struct BlockQueue* queue) {
     fprintf(stderr,
             "Dead-store elimination error: attempted to pop an empty liveness "
             "work queue\n");
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   unsigned block_index = queue->items[queue->head];
   queue->head = (queue->head + 1) % queue->capacity;
@@ -731,7 +732,7 @@ static void find_live_variables(struct CFG* cfg,
           fprintf(stderr,
                   "Dead-store elimination error: CFG exit node appears as a "
                   "predecessor\n");
-          exit(1);
+          exit(BCC_EXIT_INTERNAL);
         }
         block_queue_push(&queue, cfg_node_index(cfg, predecessor->node));
       }

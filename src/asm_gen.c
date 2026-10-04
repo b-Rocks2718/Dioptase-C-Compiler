@@ -1,4 +1,5 @@
 #include "asm_gen.h"
+#include "exit_codes.h"
 #include "arena.h"
 #include "typechecking.h"
 #include "unique_name.h"
@@ -761,7 +762,7 @@ void asm_gen_error(const char* operation,
   vfprintf(stderr, fmt, args);
   va_end(args);
   fputc('\n', stderr);
-  exit(1);
+  exit(BCC_EXIT_INTERNAL);
 }
 
 // Name a TAC instruction type for diagnostics.

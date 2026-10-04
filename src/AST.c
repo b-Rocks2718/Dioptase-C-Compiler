@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "AST.h"
+#include "exit_codes.h"
 #include "arena.h"
 #include "slice.h"
 
@@ -223,7 +224,7 @@ void print_expr(struct Expr* expr, int tabs){
       break;
     default:
       printf("unknown_expr %u\n", expr->type);
-      exit(1);
+      exit(BCC_EXIT_INTERNAL);
       break;
   }
   if (expr->value_type == NULL){

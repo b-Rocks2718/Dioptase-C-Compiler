@@ -4,6 +4,7 @@
 #include <stdio.h>
 
 #include "AST.h"
+#include "exit_codes.h"
 #include "analysis.h"
 #include "arena.h"
 #include "parser.h"
@@ -1036,7 +1037,7 @@ static size_t append_escaped_string(char* out, size_t out_index,
               parse_error_at(raw->start + i + 1 + digits,
                              "hex escape exceeds byte value 0xff");
             }
-            exit(1);
+            exit(BCC_EXIT_PARSE);
           }
           out[out_index++] = (char)value;
           i += digits;
@@ -1044,7 +1045,7 @@ static size_t append_escaped_string(char* out, size_t out_index,
         }
         default:
           parse_error_at(raw->start + i, "invalid escape sequence");
-          exit(1);
+          exit(BCC_EXIT_PARSE);
       }
     } else {
       out[out_index++] = raw->start[i];
@@ -2087,7 +2088,7 @@ void parse_types_and_storage_classes(struct StorageClassList** storages_result,
         next_storage->next = NULL;
         if (prev_storages != NULL){
           parse_error_at(parser_error_ptr(), "duplicate storage class specifier");
-          exit(1);
+          exit(BCC_EXIT_PARSE);
         } else {
           storages = next_storage;
         }
@@ -2580,6 +2581,11 @@ struct MemberDclr* parse_member_declarations(){
       parse_error_at(member_start,
                      "'inline' can only be used on function declarations, "
                      "not on a struct or union member");
+      return NULL;
+    }
+    if (storage != NONE){
+      parse_error_at(member_start,
+                     "struct or union member cannot have a storage class specifier");
       return NULL;
     }
 

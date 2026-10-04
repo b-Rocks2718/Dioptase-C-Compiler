@@ -1,6 +1,7 @@
 #include <stdlib.h>
 
 #include "arena.h"
+#include "exit_codes.h"
 #include "identifier_map.h"
 #include "slice.h"
 
@@ -135,7 +136,7 @@ struct IdentMap* exit_scope(struct IdentStack* stack){
   } else {
     // error: no map to pop
     printf("Identifier Map Error: No map in stack to pop\n");
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
 }
 

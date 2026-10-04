@@ -1,4 +1,5 @@
 #include "TAC.h"
+#include "exit_codes.h"
 #include "arena.h"
 #include "label_resolution.h"
 #include "source_location.h"
@@ -70,7 +71,7 @@ static void tac_error_at(const char* loc, const char* fmt, ...) {
   vprintf(fmt, args);
   va_end(args);
   printf("\n");
-  exit(EXIT_FAILURE);
+  exit(BCC_EXIT_INTERNAL);
 }
 
 // Allocate and initialize a single TAC instruction node.
@@ -143,7 +144,7 @@ static struct Type* tac_builtin_type(enum TypeType kind) {
       return &ulong_type;
     default:
       tac_error_at(NULL, "unsupported builtin type kind in tac_builtin_type");
-      exit(1);
+      exit(BCC_EXIT_INTERNAL);
   }
 }
 

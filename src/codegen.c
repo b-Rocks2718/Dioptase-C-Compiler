@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "exit_codes.h"
 #include "asm_gen.h"
 #include "arena.h"
 #include <stdio.h>
@@ -79,7 +80,7 @@ ANALYSIS_NORETURN static void codegen_errorf(const struct Emitter* e,
   } else {
     fprintf(stderr, "\n");
   }
-  exit(1);
+  exit(BCC_EXIT_INTERNAL);
 }
 
 // ---------------------------------------------------------------------------
