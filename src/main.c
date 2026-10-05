@@ -467,9 +467,11 @@ static void print_cfg_graphs(const struct TACProg* tac_prog) {
 // Write machine code and, unless -s was given, assemble and link it into the
 // requested output. Returns BCC_EXIT_OK or BCC_EXIT_OUTPUT.
 static int emit_output(const struct CommandLine* cl, struct MachineProg* machine_prog) {
+  // Read once: every cleanup below depends on which branch allocated the path.
+  bool assemble = !cl->emit_asm_file;
   const char* asm_output_path = cl->output_path;
   char* asm_output_path_alloc = NULL;
-  if (!cl->emit_asm_file) {
+  if (assemble) {
     asm_output_path_alloc = make_temp_asm_path(cl->output_path);
     if (asm_output_path_alloc == NULL) {
       return BCC_EXIT_OUTPUT;
@@ -482,7 +484,7 @@ static int emit_output(const struct CommandLine* cl, struct MachineProg* machine
     free(asm_output_path_alloc);
     return BCC_EXIT_OUTPUT;
   }
-  if (cl->emit_asm_file) {
+  if (!assemble) {
     return BCC_EXIT_OK;
   }
 

@@ -1325,6 +1325,25 @@ static bool expanded_arg(struct Expander* ex, struct MacroArg* arg, struct PPTok
   return true;
 }
 
+// Return the argument bound to parameter `param` of the invocation of m being
+// substituted. The definition checks guarantee that only function-like macros,
+// whose invocations always collect arguments, reference parameters; this
+// rechecks that contract so a violation is reported instead of reading
+// through a NULL or out-of-range argument array.
+static struct MacroArg* macro_param_arg(const struct Macro* m, struct MacroArg* args, int param,
+                                        struct SourceMappingEntry origin) {
+  if (args == NULL || param < 0 || (size_t)param >= m->param_count) {
+    preprocessor_error_at(origin.filename, origin.line,
+                          "internal error: replacement list of macro \"%s\" references "
+                          "parameter %d, which the invocation does not supply (%zu "
+                          "parameters, %s)",
+                          m->name, param, m->param_count,
+                          args == NULL ? "no argument list" : "arguments collected");
+    return NULL;
+  }
+  return &args[param];
+}
+
 // Build the replacement tokens for one invocation of m: substitute parameters
 // (expanded unless an operand of # or ##), stringize, and paste. args is NULL
 // for object-like macros. New tokens take origin as their location.
@@ -1353,7 +1372,9 @@ static bool substitute_body(struct Expander* ex, const struct Macro* m, struct M
     if (m->variadic && macro_body_is(m, i, ",") && i + 2 < m->body_len &&
         macro_body_is(m, i + 1, "##") &&
         m->body[i + 2].param == (int)(m->param_count - 1)) {
-      if (args[m->param_count - 1].tokens == NULL) {
+      struct MacroArg* va_args = macro_param_arg(m, args, m->body[i + 2].param, origin);
+      if (va_args == NULL) return false;
+      if (va_args->tokens == NULL) {
         // Drop ", ## __VA_ARGS__" entirely; like an empty operand, it is a
         // placemarker if another ## follows.
         i += 3;
@@ -1371,10 +1392,13 @@ static bool substitute_body(struct Expander* ex, const struct Macro* m, struct M
 
     struct PPToken* op = NULL;
     if (stringize) {
-      op = stringize_arg(args[m->body[i + 1].param].tokens, origin);
+      struct MacroArg* arg = macro_param_arg(m, args, m->body[i + 1].param, origin);
+      if (arg == NULL) return false;
+      op = stringize_arg(arg->tokens, origin);
       if (op == NULL) return false;
     } else if (bt->param >= 0) {
-      struct MacroArg* arg = &args[bt->param];
+      struct MacroArg* arg = macro_param_arg(m, args, bt->param, origin);
+      if (arg == NULL) return false;
       if (pasted_lhs || pasted_rhs) {
         if (!pp_copy_list(arg->tokens, &op)) return false;
       } else {
@@ -1388,7 +1412,14 @@ static bool substitute_body(struct Expander* ex, const struct Macro* m, struct M
     if (op != NULL) op->space_before = bt->space_before;
 
     if (pasted_rhs && !placemarker) {
-      // last is the final token of the non-empty left operand.
+      // last is the final token of the non-empty left operand. The definition
+      // check rejects a leading "##", so some operand precedes this one.
+      if (last == &head) {
+        preprocessor_error_at(origin.filename, origin.line,
+                              "internal error: '##' in macro \"%s\" has no left operand",
+                              m->name);
+        return false;
+      }
       if (op != NULL) {
         if (!paste_tokens(last, op, m, origin)) return false;
         last->next = op->next;
