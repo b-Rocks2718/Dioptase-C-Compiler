@@ -976,90 +976,36 @@ static struct Val* replace_args(struct CopyPropState* s, struct Val* args, size_
 // Returns true if the instruction can be deleted (is redundant), false otherwise.
 static bool rewrite_instr(struct CopyPropState* s, struct TACInstr* instr,
                           const struct CopyEffect* effect, const uint64_t* state) {
-  switch (instr->type) {
-    case TACCOPY: {
-      // Redundant when x = y or y = x already reaches.
-      if ((effect->own_class != kCopyPropNone && bit_test(state, effect->own_class)) ||
-          (effect->rev_class != kCopyPropNone && bit_test(state, effect->rev_class))) {
-        return true;
-      }
-      instr->instr.tac_copy.src = replace_operand(s, instr->instr.tac_copy.src, state);
-      break;
+  // A copy is redundant when x = y or y = x already reaches.
+  if (instr->type == TACCOPY &&
+      ((effect->own_class != kCopyPropNone && bit_test(state, effect->own_class)) ||
+       (effect->rev_class != kCopyPropNone && bit_test(state, effect->rev_class)))) {
+    return true;
+  }
+
+  struct TACOperands ops = tac_instr_operands(instr);
+  for (size_t i = 0; i < ops.count; i++) {
+    struct TACOperand* op = &ops.op[i];
+    // Only values that are read can be replaced. Directly named aggregates
+    // (offset copies) and address-taken operands name storage, not values.
+    if (op->role != TAC_USE || op->kind == TAC_OPERAND_NAME) {
+      continue;
     }
-    case TACVOLATILE_READ:
-      // The source is the volatile object itself and must be read.
-      break;
-    case TACVOLATILE_WRITE:
-      instr->instr.tac_copy.src = replace_operand(s, instr->instr.tac_copy.src, state);
-      break;
-    case TACRETURN:
-      instr->instr.tac_return.src = replace_operand(s, instr->instr.tac_return.src, state);
-      break;
-    case TACUNARY:
-      instr->instr.tac_unary.src = replace_operand(s, instr->instr.tac_unary.src, state);
-      break;
-    case TACBINARY:
-      instr->instr.tac_binary.src1 = replace_operand(s, instr->instr.tac_binary.src1, state);
-      instr->instr.tac_binary.src2 = replace_operand(s, instr->instr.tac_binary.src2, state);
-      break;
-    case TACCOND_JUMP:
-      instr->instr.tac_cond_jump.src1 = replace_operand(s, instr->instr.tac_cond_jump.src1, state);
-      instr->instr.tac_cond_jump.src2 = replace_operand(s, instr->instr.tac_cond_jump.src2, state);
-      break;
-    case TACJUMP:
-    case TACLABEL:
-    case TACBOUNDARY:
-      // no operands to replace
-      break;
-    case TACLOAD:
-    case TACVOLATILE_LOAD:
-      instr->instr.tac_load.src_ptr = replace_operand(s, instr->instr.tac_load.src_ptr, state);
-      break;
-    case TACSTORE:
-    case TACVOLATILE_STORE:
-      instr->instr.tac_store.src = replace_operand(s, instr->instr.tac_store.src, state);
-      break;
-    case TACTRUNC:
-      instr->instr.tac_trunc.src = replace_operand(s, instr->instr.tac_trunc.src, state);
-      break;
-    case TACEXTEND:
-      instr->instr.tac_extend.src = replace_operand(s, instr->instr.tac_extend.src, state);
-      break;
-    case TACGET_ADDRESS:
-      // can't use copy propagation for get_address
-      break;
-    case TACCOPY_TO_OFFSET:
-    case TACVOLATILE_COPY_TO_OFFSET:
-      instr->instr.tac_copy_to_offset.src =
-          replace_operand(s, instr->instr.tac_copy_to_offset.src, state);
-      break;
-    case TACCOPY_FROM_OFFSET:
-    case TACVOLATILE_COPY_FROM_OFFSET:
-      // can't use copy propagation for copy_from_offset
-      break;
-    case TACCALL:
-      instr->instr.tac_call.args =
-          replace_args(s, instr->instr.tac_call.args, instr->instr.tac_call.num_args, state);
-      break;
-    case TACCALL_INDIRECT:
-      instr->instr.tac_call_indirect.args =
-          replace_args(s, instr->instr.tac_call_indirect.args,
-                       instr->instr.tac_call_indirect.num_args, state);
-      instr->instr.tac_call_indirect.func =
-          replace_operand(s, instr->instr.tac_call_indirect.func, state);
-      break;
-    case TACTAIL_CALL:
-      instr->instr.tac_tail_call.args =
-          replace_args(s, instr->instr.tac_tail_call.args,
-                       instr->instr.tac_tail_call.num_args, state);
-      break;
-    case TACTAIL_CALL_INDIRECT:
-      instr->instr.tac_tail_call_indirect.args =
-          replace_args(s, instr->instr.tac_tail_call_indirect.args,
-                       instr->instr.tac_tail_call_indirect.num_args, state);
-      instr->instr.tac_tail_call_indirect.func =
-          replace_operand(s, instr->instr.tac_tail_call_indirect.func, state);
-      break;
+    if (op->kind == TAC_OPERAND_ARGS) {
+      *op->args = replace_args(s, *op->args, op->num_args, state);
+      continue;
+    }
+    // A volatile read's source is the volatile object itself and must be read.
+    if (instr->type == TACVOLATILE_READ) {
+      continue;
+    }
+    // Store addresses are not rewritten; propagating into them would be a
+    // further optimization.
+    if ((instr->type == TACSTORE || instr->type == TACVOLATILE_STORE) &&
+        op->val == &instr->instr.tac_store.dst_ptr) {
+      continue;
+    }
+    *op->val = replace_operand(s, *op->val, state);
   }
   return false;
 }

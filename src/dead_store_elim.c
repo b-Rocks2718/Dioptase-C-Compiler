@@ -200,85 +200,20 @@ static void variable_index_add_args(struct VariableIndex* index,
 // Add all variable operands read or written by one TAC instruction.
 static void collect_instruction_variables(struct VariableIndex* index,
                                           struct TACInstr* instr) {
-  switch (instr->type) {
-    case TACRETURN:
-      variable_index_add_val(index, instr->instr.tac_return.src);
-      break;
-    case TACUNARY:
-      variable_index_add_val(index, instr->instr.tac_unary.dst);
-      variable_index_add_val(index, instr->instr.tac_unary.src);
-      break;
-    case TACBINARY:
-      variable_index_add_val(index, instr->instr.tac_binary.dst);
-      variable_index_add_val(index, instr->instr.tac_binary.src1);
-      variable_index_add_val(index, instr->instr.tac_binary.src2);
-      break;
-    case TACCOND_JUMP:
-      variable_index_add_val(index, instr->instr.tac_cond_jump.src1);
-      variable_index_add_val(index, instr->instr.tac_cond_jump.src2);
-      break;
-    case TACCOPY:
-    case TACVOLATILE_READ:
-    case TACVOLATILE_WRITE:
-      variable_index_add_val(index, instr->instr.tac_copy.dst);
-      variable_index_add_val(index, instr->instr.tac_copy.src);
-      break;
-    case TACCALL:
-      variable_index_add_val(index, instr->instr.tac_call.dst);
-      variable_index_add_args(index, instr->instr.tac_call.args,
-                              instr->instr.tac_call.num_args);
-      break;
-    case TACCALL_INDIRECT:
-      variable_index_add_val(index, instr->instr.tac_call_indirect.func);
-      variable_index_add_val(index, instr->instr.tac_call_indirect.dst);
-      variable_index_add_args(index, instr->instr.tac_call_indirect.args,
-                              instr->instr.tac_call_indirect.num_args);
-      break;
-    case TACTAIL_CALL:
-      variable_index_add_args(index, instr->instr.tac_tail_call.args,
-                              instr->instr.tac_tail_call.num_args);
-      break;
-    case TACTAIL_CALL_INDIRECT:
-      variable_index_add_val(index, instr->instr.tac_tail_call_indirect.func);
-      variable_index_add_args(index, instr->instr.tac_tail_call_indirect.args,
-                              instr->instr.tac_tail_call_indirect.num_args);
-      break;
-    case TACGET_ADDRESS:
-      variable_index_add_val(index, instr->instr.tac_get_address.dst);
-      variable_index_add_val(index, instr->instr.tac_get_address.src);
-      break;
-    case TACLOAD:
-    case TACVOLATILE_LOAD:
-      variable_index_add_val(index, instr->instr.tac_load.dst);
-      variable_index_add_val(index, instr->instr.tac_load.src_ptr);
-      break;
-    case TACSTORE:
-    case TACVOLATILE_STORE:
-      variable_index_add_val(index, instr->instr.tac_store.dst_ptr);
-      variable_index_add_val(index, instr->instr.tac_store.src);
-      break;
-    case TACCOPY_TO_OFFSET:
-    case TACVOLATILE_COPY_TO_OFFSET:
-      variable_index_add(index, instr->instr.tac_copy_to_offset.dst);
-      variable_index_add_val(index, instr->instr.tac_copy_to_offset.src);
-      break;
-    case TACCOPY_FROM_OFFSET:
-    case TACVOLATILE_COPY_FROM_OFFSET:
-      variable_index_add_val(index, instr->instr.tac_copy_from_offset.dst);
-      variable_index_add(index, instr->instr.tac_copy_from_offset.src);
-      break;
-    case TACTRUNC:
-      variable_index_add_val(index, instr->instr.tac_trunc.dst);
-      variable_index_add_val(index, instr->instr.tac_trunc.src);
-      break;
-    case TACEXTEND:
-      variable_index_add_val(index, instr->instr.tac_extend.dst);
-      variable_index_add_val(index, instr->instr.tac_extend.src);
-      break;
-    case TACJUMP:
-    case TACLABEL:
-    case TACBOUNDARY:
-      break;
+  struct TACOperands ops = tac_instr_operands(instr);
+  for (size_t i = 0; i < ops.count; ++i) {
+    struct TACOperand* op = &ops.op[i];
+    switch (op->kind) {
+      case TAC_OPERAND_VAL:
+        variable_index_add_val(index, *op->val);
+        break;
+      case TAC_OPERAND_ARGS:
+        variable_index_add_args(index, *op->args, op->num_args);
+        break;
+      case TAC_OPERAND_NAME:
+        variable_index_add(index, *op->name);
+        break;
+    }
   }
 }
 
@@ -456,93 +391,56 @@ static bool instruction_is_dead(struct TACInstr* instr,
   exit(BCC_EXIT_INTERNAL);
 }
 
-// Apply the backward liveness transfer function for one instruction.
+// Return whether an instruction may read any aliased variable through memory:
+// a callee can read anything whose address escaped, and a load can read
+// whatever its pointer designates.
+static bool reads_aliased_memory(const struct TACInstr* instr) {
+  switch (instr->type) {
+    case TACCALL:
+    case TACCALL_INDIRECT:
+    case TACTAIL_CALL:
+    case TACTAIL_CALL_INDIRECT:
+    case TACLOAD:
+    case TACVOLATILE_LOAD:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Apply the backward liveness transfer function for one instruction: full
+// definitions are killed before uses are added, so `x = x + 1` keeps x live.
+// A partial write (CopyToOffset) kills nothing, and taking an address
+// (GetAddress) reads nothing; aliased variables are handled separately.
 static void transfer_instruction(struct TACInstr* instr,
                                  struct LiveSet live,
                                  struct LiveSet aliased,
                                  const struct VariableIndex* index) {
-  switch (instr->type) {
-    case TACRETURN:
-      live_set_add_val(live, index, instr->instr.tac_return.src);
-      break;
-    case TACBINARY:
-      live_set_remove_val(live, index, instr->instr.tac_binary.dst);
-      live_set_add_val(live, index, instr->instr.tac_binary.src1);
-      live_set_add_val(live, index, instr->instr.tac_binary.src2);
-      break;
-    case TACUNARY:
-      live_set_remove_val(live, index, instr->instr.tac_unary.dst);
-      live_set_add_val(live, index, instr->instr.tac_unary.src);
-      break;
-    case TACCOND_JUMP:
-      live_set_add_val(live, index, instr->instr.tac_cond_jump.src1);
-      live_set_add_val(live, index, instr->instr.tac_cond_jump.src2);
-      break;
-    case TACCOPY:
-    case TACVOLATILE_READ:
-    case TACVOLATILE_WRITE:
-      live_set_remove_val(live, index, instr->instr.tac_copy.dst);
-      live_set_add_val(live, index, instr->instr.tac_copy.src);
-      break;
-    case TACCALL:
-      live_set_remove_val(live, index, instr->instr.tac_call.dst);
-      live_set_add_args(live, index, instr->instr.tac_call.args,
-                        instr->instr.tac_call.num_args);
-      live_set_union(live, aliased);
-      break;
-    case TACCALL_INDIRECT:
-      live_set_remove_val(live, index, instr->instr.tac_call_indirect.dst);
-      live_set_add_val(live, index, instr->instr.tac_call_indirect.func);
-      live_set_add_args(live, index, instr->instr.tac_call_indirect.args,
-                        instr->instr.tac_call_indirect.num_args);
-      live_set_union(live, aliased);
-      break;
-    case TACTAIL_CALL:
-      live_set_add_args(live, index, instr->instr.tac_tail_call.args,
-                        instr->instr.tac_tail_call.num_args);
-      live_set_union(live, aliased);
-      break;
-    case TACTAIL_CALL_INDIRECT:
-      live_set_add_val(live, index, instr->instr.tac_tail_call_indirect.func);
-      live_set_add_args(live, index, instr->instr.tac_tail_call_indirect.args,
-                        instr->instr.tac_tail_call_indirect.num_args);
-      live_set_union(live, aliased);
-      break;
-    case TACGET_ADDRESS:
-      live_set_remove_val(live, index, instr->instr.tac_get_address.dst);
-      break;
-    case TACLOAD:
-    case TACVOLATILE_LOAD:
-      live_set_remove_val(live, index, instr->instr.tac_load.dst);
-      live_set_add_val(live, index, instr->instr.tac_load.src_ptr);
-      live_set_union(live, aliased);
-      break;
-    case TACSTORE:
-    case TACVOLATILE_STORE:
-      live_set_add_val(live, index, instr->instr.tac_store.src);
-      live_set_add_val(live, index, instr->instr.tac_store.dst_ptr);
-      break;
-    case TACCOPY_TO_OFFSET:
-    case TACVOLATILE_COPY_TO_OFFSET:
-      live_set_add_val(live, index, instr->instr.tac_copy_to_offset.src);
-      break;
-    case TACCOPY_FROM_OFFSET:
-    case TACVOLATILE_COPY_FROM_OFFSET:
-      live_set_remove_val(live, index, instr->instr.tac_copy_from_offset.dst);
-      live_set_add(live, index, instr->instr.tac_copy_from_offset.src);
-      break;
-    case TACTRUNC:
-      live_set_remove_val(live, index, instr->instr.tac_trunc.dst);
-      live_set_add_val(live, index, instr->instr.tac_trunc.src);
-      break;
-    case TACEXTEND:
-      live_set_remove_val(live, index, instr->instr.tac_extend.dst);
-      live_set_add_val(live, index, instr->instr.tac_extend.src);
-      break;
-    case TACJUMP:
-    case TACLABEL:
-    case TACBOUNDARY:
-      break;
+  struct TACOperands ops = tac_instr_operands(instr);
+  for (size_t i = 0; i < ops.count; ++i) {
+    if (ops.op[i].role == TAC_DEF && ops.op[i].kind == TAC_OPERAND_VAL) {
+      live_set_remove_val(live, index, *ops.op[i].val);
+    }
+  }
+  for (size_t i = 0; i < ops.count; ++i) {
+    struct TACOperand* op = &ops.op[i];
+    if (op->role != TAC_USE) {
+      continue;
+    }
+    switch (op->kind) {
+      case TAC_OPERAND_VAL:
+        live_set_add_val(live, index, *op->val);
+        break;
+      case TAC_OPERAND_ARGS:
+        live_set_add_args(live, index, *op->args, op->num_args);
+        break;
+      case TAC_OPERAND_NAME:
+        live_set_add(live, index, *op->name);
+        break;
+    }
+  }
+  if (reads_aliased_memory(instr)) {
+    live_set_union(live, aliased);
   }
 }
 

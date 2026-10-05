@@ -121,144 +121,48 @@ static struct Val* replace_args(const struct Val* args, size_t num_args,
   return replaced;
 }
 
+// Rename every variable operand and label of an inlined instruction so the
+// callee's names cannot collide with the caller's.
 static void replace_identifiers_and_labels(struct TACInstr* instr,
     struct LabelMap* var_map, struct LabelMap* label_map) {
   switch (instr->type) {
-    case TACRETURN: {
-      // should not happen, as returns are replaced with jumps to the end label
-      fprintf(stderr, "Error: unexpected return instruction during inlining\n");
+    case TACRETURN:
+      // Returns are replaced with jumps to the inlined body's end label first.
+      fprintf(stderr, "Inlining error: unexpected return instruction while renaming an inlined body\n");
       exit(BCC_EXIT_INTERNAL);
-    }
-    case TACUNARY: {
-      instr->instr.tac_unary.src = replace_val(instr->instr.tac_unary.src, var_map);
-      instr->instr.tac_unary.dst = replace_val(instr->instr.tac_unary.dst, var_map);
-      break;
-    }
-    case TACBINARY: {
-      instr->instr.tac_binary.src1 = replace_val(instr->instr.tac_binary.src1, var_map);
-      instr->instr.tac_binary.src2 = replace_val(instr->instr.tac_binary.src2, var_map);
-      instr->instr.tac_binary.dst = replace_val(instr->instr.tac_binary.dst, var_map);
-      break;
-    }
-    case TACCOND_JUMP: {
-      instr->instr.tac_cond_jump.src1 = replace_val(instr->instr.tac_cond_jump.src1, var_map);
-      instr->instr.tac_cond_jump.src2 = replace_val(instr->instr.tac_cond_jump.src2, var_map);
+    case TACTAIL_CALL:
+    case TACTAIL_CALL_INDIRECT:
+      fprintf(stderr, "Inlining error: functions containing tail calls are never inlined\n");
+      exit(BCC_EXIT_INTERNAL);
+    case TACCOND_JUMP:
       instr->instr.tac_cond_jump.label =
           replace_label_name(instr->instr.tac_cond_jump.label, label_map);
       break;
-    }
-    case TACJUMP: {
-      instr->instr.tac_jump.label =
-          replace_label_name(instr->instr.tac_jump.label, label_map);
+    case TACJUMP:
+      instr->instr.tac_jump.label = replace_label_name(instr->instr.tac_jump.label, label_map);
       break;
-    }
-    case TACLABEL: {
-      instr->instr.tac_label.label =
-          replace_label_name(instr->instr.tac_label.label, label_map);
+    case TACLABEL:
+      instr->instr.tac_label.label = replace_label_name(instr->instr.tac_label.label, label_map);
       break;
-    }
-    case TACCOPY: {
-      instr->instr.tac_copy.src = replace_val(instr->instr.tac_copy.src, var_map);
-      instr->instr.tac_copy.dst = replace_val(instr->instr.tac_copy.dst, var_map);
+    default:
       break;
-    }
-    case TACVOLATILE_READ: {
-      instr->instr.tac_copy.src = replace_val(instr->instr.tac_copy.src, var_map);
-      instr->instr.tac_copy.dst = replace_val(instr->instr.tac_copy.dst, var_map);
-      break;
-    }
-    case TACVOLATILE_WRITE: {
-      instr->instr.tac_copy.src = replace_val(instr->instr.tac_copy.src, var_map);
-      instr->instr.tac_copy.dst = replace_val(instr->instr.tac_copy.dst, var_map);
-      break;
-    }
-    case TACVOLATILE_LOAD: {
-      instr->instr.tac_load.src_ptr = replace_val(instr->instr.tac_load.src_ptr, var_map);
-      instr->instr.tac_load.dst = replace_val(instr->instr.tac_load.dst, var_map);
-      break;
-    }
-    case TACVOLATILE_STORE: {
-      instr->instr.tac_store.src = replace_val(instr->instr.tac_store.src, var_map);
-      instr->instr.tac_store.dst_ptr = replace_val(instr->instr.tac_store.dst_ptr, var_map);
-      break;
-    }
-    case TACVOLATILE_COPY_TO_OFFSET: {
-      instr->instr.tac_copy_to_offset.src = replace_val(instr->instr.tac_copy_to_offset.src, var_map);
-      instr->instr.tac_copy_to_offset.dst =
-          replace_var_name(instr->instr.tac_copy_to_offset.dst, var_map);
-      break;
-    }
-    case TACVOLATILE_COPY_FROM_OFFSET: {
-      instr->instr.tac_copy_from_offset.src =
-          replace_var_name(instr->instr.tac_copy_from_offset.src, var_map);
-      instr->instr.tac_copy_from_offset.dst = replace_val(instr->instr.tac_copy_from_offset.dst, var_map);
-      break;
-    }
-    case TACCALL: {
-      if (instr->instr.tac_call.dst != NULL){
-        instr->instr.tac_call.dst = replace_val(instr->instr.tac_call.dst, var_map);
-      }
-      instr->instr.tac_call.args =
-          replace_args(instr->instr.tac_call.args,
-                       instr->instr.tac_call.num_args, var_map);
-      break;
-    }
-    case TACCALL_INDIRECT: {
-      if (instr->instr.tac_call_indirect.dst != NULL){
-        instr->instr.tac_call_indirect.dst = replace_val(instr->instr.tac_call_indirect.dst, var_map);
-      }
-      instr->instr.tac_call_indirect.func = replace_val(instr->instr.tac_call_indirect.func, var_map);
-      instr->instr.tac_call_indirect.args =
-          replace_args(instr->instr.tac_call_indirect.args,
-                       instr->instr.tac_call_indirect.num_args, var_map);
-      break;
-    }
-    case TACTAIL_CALL:
-    case TACTAIL_CALL_INDIRECT: {
-      // for now we do not inline functions containing tail calls
-      fprintf(stderr, "Tail calls should not be inlined.\n");
-      exit(BCC_EXIT_INTERNAL);
-    }
-    case TACGET_ADDRESS: {
-      instr->instr.tac_get_address.dst = replace_val(instr->instr.tac_get_address.dst, var_map);
-      instr->instr.tac_get_address.src = replace_val(instr->instr.tac_get_address.src, var_map);
-      break;
-    }
-    case TACLOAD: {
-      instr->instr.tac_load.src_ptr = replace_val(instr->instr.tac_load.src_ptr, var_map);
-      instr->instr.tac_load.dst = replace_val(instr->instr.tac_load.dst, var_map);
-      break;
-    }
-    case TACSTORE: {
-      instr->instr.tac_store.src = replace_val(instr->instr.tac_store.src, var_map);
-      instr->instr.tac_store.dst_ptr = replace_val(instr->instr.tac_store.dst_ptr, var_map);
-      break;
-    }
-    case TACCOPY_TO_OFFSET: {
-      instr->instr.tac_copy_to_offset.src = replace_val(instr->instr.tac_copy_to_offset.src, var_map);
-      instr->instr.tac_copy_to_offset.dst =
-          replace_var_name(instr->instr.tac_copy_to_offset.dst, var_map);
-      break;
-    }
-    case TACCOPY_FROM_OFFSET: {
-      instr->instr.tac_copy_from_offset.src =
-          replace_var_name(instr->instr.tac_copy_from_offset.src, var_map);
-      instr->instr.tac_copy_from_offset.dst = replace_val(instr->instr.tac_copy_from_offset.dst, var_map);
-      break;
-    }
-    case TACBOUNDARY: {
-      // no change needed
-      break;
-    }
-    case TACTRUNC: {
-      instr->instr.tac_trunc.src = replace_val(instr->instr.tac_trunc.src, var_map);
-      instr->instr.tac_trunc.dst = replace_val(instr->instr.tac_trunc.dst, var_map);
-      break;
-    }
-    case TACEXTEND: {
-      instr->instr.tac_extend.src = replace_val(instr->instr.tac_extend.src, var_map);
-      instr->instr.tac_extend.dst = replace_val(instr->instr.tac_extend.dst, var_map);
-      break;
+  }
+
+  struct TACOperands ops = tac_instr_operands(instr);
+  for (size_t i = 0; i < ops.count; i++) {
+    struct TACOperand* op = &ops.op[i];
+    switch (op->kind) {
+      case TAC_OPERAND_VAL:
+        if (*op->val != NULL) {
+          *op->val = replace_val(*op->val, var_map);
+        }
+        break;
+      case TAC_OPERAND_ARGS:
+        *op->args = replace_args(*op->args, op->num_args, var_map);
+        break;
+      case TAC_OPERAND_NAME:
+        *op->name = replace_var_name(*op->name, var_map);
+        break;
     }
   }
 }

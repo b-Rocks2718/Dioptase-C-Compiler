@@ -86,6 +86,116 @@ struct TACInstr* tac_instr_create(enum TACInstrType type) {
   return instr;
 }
 
+// Append a Val-field operand to an operand list.
+static void add_val_operand(struct TACOperands* ops, struct Val** field, enum TACOperandRole role) {
+  struct TACOperand* op = &ops->op[ops->count++];
+  memset(op, 0, sizeof(*op));
+  op->kind = TAC_OPERAND_VAL;
+  op->role = role;
+  op->val = field;
+}
+
+// Append a call's argument array (always read) to an operand list.
+static void add_args_operand(struct TACOperands* ops, struct Val** field, size_t num_args) {
+  struct TACOperand* op = &ops->op[ops->count++];
+  memset(op, 0, sizeof(*op));
+  op->kind = TAC_OPERAND_ARGS;
+  op->role = TAC_USE;
+  op->args = field;
+  op->num_args = num_args;
+}
+
+// Append a directly named variable to an operand list.
+static void add_name_operand(struct TACOperands* ops, struct Slice** field, enum TACOperandRole role) {
+  struct TACOperand* op = &ops->op[ops->count++];
+  memset(op, 0, sizeof(*op));
+  op->kind = TAC_OPERAND_NAME;
+  op->role = role;
+  op->name = field;
+}
+
+struct TACOperands tac_instr_operands(struct TACInstr* instr) {
+  struct TACOperands ops = { .count = 0 };
+  union TACInstrVariant* in = &instr->instr;
+  switch (instr->type) {
+    case TACRETURN:
+      add_val_operand(&ops, &in->tac_return.src, TAC_USE);
+      break;
+    case TACUNARY:
+      add_val_operand(&ops, &in->tac_unary.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_unary.src, TAC_USE);
+      break;
+    case TACBINARY:
+      add_val_operand(&ops, &in->tac_binary.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_binary.src1, TAC_USE);
+      add_val_operand(&ops, &in->tac_binary.src2, TAC_USE);
+      break;
+    case TACCOND_JUMP:
+      add_val_operand(&ops, &in->tac_cond_jump.src1, TAC_USE);
+      add_val_operand(&ops, &in->tac_cond_jump.src2, TAC_USE);
+      break;
+    case TACCOPY:
+    case TACVOLATILE_READ:
+    case TACVOLATILE_WRITE:
+      add_val_operand(&ops, &in->tac_copy.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_copy.src, TAC_USE);
+      break;
+    case TACCALL:
+      add_val_operand(&ops, &in->tac_call.dst, TAC_DEF);
+      add_args_operand(&ops, &in->tac_call.args, in->tac_call.num_args);
+      break;
+    case TACCALL_INDIRECT:
+      add_val_operand(&ops, &in->tac_call_indirect.func, TAC_USE);
+      add_val_operand(&ops, &in->tac_call_indirect.dst, TAC_DEF);
+      add_args_operand(&ops, &in->tac_call_indirect.args, in->tac_call_indirect.num_args);
+      break;
+    case TACTAIL_CALL:
+      add_args_operand(&ops, &in->tac_tail_call.args, in->tac_tail_call.num_args);
+      break;
+    case TACTAIL_CALL_INDIRECT:
+      add_val_operand(&ops, &in->tac_tail_call_indirect.func, TAC_USE);
+      add_args_operand(&ops, &in->tac_tail_call_indirect.args, in->tac_tail_call_indirect.num_args);
+      break;
+    case TACGET_ADDRESS:
+      add_val_operand(&ops, &in->tac_get_address.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_get_address.src, TAC_ADDRESS);
+      break;
+    case TACLOAD:
+    case TACVOLATILE_LOAD:
+      add_val_operand(&ops, &in->tac_load.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_load.src_ptr, TAC_USE);
+      break;
+    case TACSTORE:
+    case TACVOLATILE_STORE:
+      add_val_operand(&ops, &in->tac_store.dst_ptr, TAC_USE);
+      add_val_operand(&ops, &in->tac_store.src, TAC_USE);
+      break;
+    case TACCOPY_TO_OFFSET:
+    case TACVOLATILE_COPY_TO_OFFSET:
+      add_name_operand(&ops, &in->tac_copy_to_offset.dst, TAC_PARTIAL_DEF);
+      add_val_operand(&ops, &in->tac_copy_to_offset.src, TAC_USE);
+      break;
+    case TACCOPY_FROM_OFFSET:
+    case TACVOLATILE_COPY_FROM_OFFSET:
+      add_val_operand(&ops, &in->tac_copy_from_offset.dst, TAC_DEF);
+      add_name_operand(&ops, &in->tac_copy_from_offset.src, TAC_USE);
+      break;
+    case TACTRUNC:
+      add_val_operand(&ops, &in->tac_trunc.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_trunc.src, TAC_USE);
+      break;
+    case TACEXTEND:
+      add_val_operand(&ops, &in->tac_extend.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_extend.src, TAC_USE);
+      break;
+    case TACJUMP:
+    case TACLABEL:
+    case TACBOUNDARY:
+      break;
+  }
+  return ops;
+}
+
 // Build a one-element list, or an empty list if instr is NULL.
 struct TACInstrList tac_instr_list(struct TACInstr* instr) {
   struct TACInstrList list;

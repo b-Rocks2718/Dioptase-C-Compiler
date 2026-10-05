@@ -457,6 +457,48 @@ struct Val* tac_make_var(struct Slice* name, struct Type* type);
 
 struct TACInstr* tac_instr_create(enum TACInstrType type);
 
+// How an instruction accesses one of its operands.
+enum TACOperandRole {
+  TAC_DEF,         // the whole value is overwritten
+  TAC_USE,         // the value is read
+  TAC_PARTIAL_DEF, // part of a named aggregate is written (CopyToOffset base);
+                   // the rest of the object keeps its value
+  TAC_ADDRESS,     // only the address is taken (GetAddress source)
+};
+
+// How an operand is stored in the instruction.
+enum TACOperandKind {
+  TAC_OPERAND_VAL,  // a `struct Val*` field (the Val may be NULL, e.g. a void call's dst)
+  TAC_OPERAND_ARGS, // a call's argument array of `num_args` inline Vals
+  TAC_OPERAND_NAME, // a variable named directly (offset copies name their aggregate)
+};
+
+// One operand of a TAC instruction. The pointers address fields inside the
+// instruction, so passes can read operands or replace them in place.
+struct TACOperand {
+  enum TACOperandKind kind;
+  enum TACOperandRole role;
+  struct Val** val;     // TAC_OPERAND_VAL
+  struct Val** args;    // TAC_OPERAND_ARGS: field holding the array
+  size_t num_args;      // TAC_OPERAND_ARGS
+  struct Slice** name;  // TAC_OPERAND_NAME
+};
+
+// Largest operand count of any TAC instruction (Binary; CallIndirect).
+#define TAC_MAX_OPERANDS 3
+
+// Every operand of one TAC instruction.
+struct TACOperands {
+  struct TACOperand op[TAC_MAX_OPERANDS];
+  size_t count;
+};
+
+// The single description of each TAC instruction's operands. Optimizer passes
+// derive variable collection, liveness, copy propagation, and renaming from it
+// instead of keeping their own per-opcode lists. Labels are not operands.
+// A tail call's dst is never set and is not reported.
+struct TACOperands tac_instr_operands(struct TACInstr* instr);
+
 struct Val* tac_make_const(uint64_t value, struct Type* type);
 
 
