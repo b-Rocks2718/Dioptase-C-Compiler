@@ -511,7 +511,7 @@ void print_case_list(struct CaseList* case_list, int tabs){
   if (case_list == NULL) return;
   switch (case_list->case_label.type){
     case INT_CASE:
-      printf("IntCase %d", case_list->case_label.data);
+      printf("IntCase %lld", (long long)case_list->case_label.data);
       break;
     case DEFAULT_CASE:
       printf("DefaultCase");

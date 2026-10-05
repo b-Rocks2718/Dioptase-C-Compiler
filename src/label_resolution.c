@@ -7,9 +7,12 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
+#include <inttypes.h>
 
-// Resolve control-flow labels (loops/switches/gotos/cases) in the AST.
-// Annotates statements with unique labels and case lists.
+// Resolve control-flow labels (loops, switches, defaults, gotos) in the AST.
+// Annotates statements with unique labels; case labels and each switch's case
+// list are produced by the type checker, which can evaluate case values.
 
 // Track the innermost loop/switch labels for break/continue/case.
 // Referenced when labeling break/continue/case/default nodes.
@@ -20,10 +23,6 @@ enum LabelType cur_label_type = -1;
 // Map user goto labels to unique labels within a function.
 // Used by resolve_gotos to rewrite goto targets.
 struct LabelMap* goto_labels = NULL;
-// Collects case/default labels for the current switch statement.
-// Stored on the switch statement node.
-// Reset when entering/leaving a switch statement.
-struct CaseList* current_case_list = NULL;
 
 // Emit a formatted label-resolution error at a source location.
 static void label_error_at(const char* prefix, const char* loc, const char* fmt, ...) {
@@ -41,18 +40,6 @@ static void label_error_at(const char* prefix, const char* loc, const char* fmt,
   printf("\n");
 }
 
-// Compute the decimal digit length of a 32-bit unsigned value.
-// Returns the number of base-10 digits needed.
-// Always returns at least 1.
-static unsigned u32_len(uint32_t value) {
-  unsigned len = 0;
-  do {
-    len++;
-    value /= 10u;
-  } while (value != 0u);
-  return len;
-}
-
 // Label all functions in a program and resolve gotos/cases.
 // Returns true on success; false on any labeling error.
 bool label_loops(struct Program* prog) {
@@ -65,8 +52,7 @@ bool label_loops(struct Program* prog) {
         // Each function gets its own goto-label map and labeling pass.
         goto_labels = create_label_map(256);
         bool labeled = label_block(func_dclr->name, func_dclr->body) &&
-                       resolve_gotos(func_dclr->body) &&
-                       collect_cases(func_dclr->body);
+                       resolve_gotos(func_dclr->body);
         destroy_label_map(goto_labels);
         goto_labels = NULL;
         if (!labeled) {
@@ -198,17 +184,12 @@ static enum AstWalkAction label_visit_stmt(struct AstVisitor* v, struct Statemen
       s->ret_stmt.func = func_name;
       return AST_WALK_CHILDREN;
     case CASE_STMT:
+      // The case's value needs types, so the type checker evaluates it,
+      // collects the switch's case list, and names the case label.
       if (cur_switch_label == NULL) {
         label_error_at("Loop Labeling Error", stmt->loc, "case statement outside switch");
         return AST_WALK_STOP;
       }
-      if (s->case_stmt.expr->type != LIT) {
-        label_error_at("Loop Labeling Error", stmt->loc,
-                       "case statement with non-constant expression");
-        return AST_WALK_STOP;
-      }
-      s->case_stmt.label = make_case_label(cur_switch_label,
-                                           s->case_stmt.expr->expr.lit_expr.value.int_val);
       return AST_WALK_CHILDREN;
     case DEFAULT_STMT:
       if (cur_switch_label == NULL) {
@@ -262,96 +243,28 @@ bool resolve_gotos(struct Block* block) {
   return ast_walk_block(&visitor, block);
 }
 
-// -------------------------------- case collection -------------------------------- //
-
-// Record each case and default label in the innermost enclosing switch's case
-// list (current_case_list), rejecting duplicates. Each switch collects its own
-// list and stores it on the switch statement.
-static enum AstWalkAction collect_case_visit_stmt(struct AstVisitor* v, struct Statement* stmt) {
-  switch (stmt->type) {
-    case CASE_STMT: {
-      struct CaseStmt* case_stmt = &stmt->statement.case_stmt;
-      if (case_stmt->expr->type != LIT) {
-        label_error_at("Case Collection Error", stmt->loc,
-                       "case statement with non-constant expression");
-        return AST_WALK_STOP;
-      }
-      int case_value = case_stmt->expr->expr.lit_expr.value.int_val;
-      for (struct CaseList* it = current_case_list; it != NULL; it = it->next) {
-        if (it->case_label.type == INT_CASE && it->case_label.data == case_value) {
-          label_error_at("Case Collection Error", stmt->loc, "duplicate case %d", case_value);
-          return AST_WALK_STOP;
-        }
-      }
-      struct CaseList* new_case = arena_alloc(sizeof(struct CaseList));
-      new_case->case_label.type = INT_CASE;
-      new_case->case_label.data = case_value;
-      new_case->next = current_case_list;
-      current_case_list = new_case;
-      return AST_WALK_CHILDREN;
-    }
-    case DEFAULT_STMT: {
-      for (struct CaseList* it = current_case_list; it != NULL; it = it->next) {
-        if (it->case_label.type == DEFAULT_CASE) {
-          label_error_at("Case Collection Error", stmt->loc, "duplicate default case");
-          return AST_WALK_STOP;
-        }
-      }
-      struct CaseList* new_case = arena_alloc(sizeof(struct CaseList));
-      new_case->case_label.type = DEFAULT_CASE;
-      new_case->case_label.data = 0;
-      new_case->next = current_case_list;
-      current_case_list = new_case;
-      return AST_WALK_CHILDREN;
-    }
-    case SWITCH_STMT: {
-      struct CaseList* enclosing = current_case_list;
-      current_case_list = NULL;
-      if (!ast_walk_stmt_children(v, stmt)) {
-        return AST_WALK_STOP;
-      }
-      stmt->statement.switch_stmt.cases = current_case_list;
-      current_case_list = enclosing;
-      return AST_WALK_SKIP;
-    }
-    default:
-      return AST_WALK_CHILDREN;
+// Synthesize the label for one case of a switch: "<switch>.case.<digits>".
+// A value that fits in 32 bits is spelled as its unsigned 32-bit pattern (so
+// -1 is "4294967295"); any other value (from a long switch) is spelled
+// "w<unsigned 64-bit pattern>" so the two forms can never collide.
+struct Slice* make_case_label(struct Slice* switch_label, int64_t case_value) {
+  char digits[32];
+  if (case_value >= INT32_MIN && case_value <= INT32_MAX) {
+    snprintf(digits, sizeof(digits), "%" PRIu32, (uint32_t)(int32_t)case_value);
+  } else {
+    snprintf(digits, sizeof(digits), "w%" PRIu64, (uint64_t)case_value);
   }
-}
-
-// Collect case/default labels for every switch in a block.
-// Returns true on success; false on case collection errors.
-// Case expressions must be literal integers.
-bool collect_cases(struct Block* block) {
-  struct AstVisitor visitor = { collect_case_visit_stmt, NULL, NULL };
-  return ast_walk_block(&visitor, block);
-}
-
-// Synthesize a unique label for a switch case value.
-// Returns a new Slice containing "switch.case.N".
-struct Slice* make_case_label(struct Slice* switch_label, int case_value) {
-  // append ".case.<u32>" to current switch label, using unsigned digits to keep labels valid
-  uint32_t unsigned_value = (uint32_t)case_value;
-  unsigned id_len = u32_len(unsigned_value);
-  char* case_label_str = (char*)arena_alloc(switch_label->len + 6 + id_len); // len(".case.") == 6
-  for (size_t i = 0; i < switch_label->len; i++) {
-    case_label_str[i] = switch_label->start[i];
-  }
-  case_label_str[switch_label->len] = '.';
-  case_label_str[switch_label->len + 1] = 'c';
-  case_label_str[switch_label->len + 2] = 'a';
-  case_label_str[switch_label->len + 3] = 's';
-  case_label_str[switch_label->len + 4] = 'e';
-  case_label_str[switch_label->len + 5] = '.';
-
-  for (unsigned i = 0; i < id_len; i++) {
-    case_label_str[switch_label->len + 6 + id_len - 1 - i] = '0' + (unsigned)(unsigned_value % 10u);
-    unsigned_value /= 10u;
-  }
+  static const char kCaseInfix[] = ".case.";
+  size_t infix_len = sizeof(kCaseInfix) - 1;
+  size_t digits_len = strlen(digits);
+  size_t len = switch_label->len + infix_len + digits_len;
+  char* text = (char*)arena_alloc(len);
+  memcpy(text, switch_label->start, switch_label->len);
+  memcpy(text + switch_label->len, kCaseInfix, infix_len);
+  memcpy(text + switch_label->len + infix_len, digits, digits_len);
 
   struct Slice* case_label = (struct Slice*)arena_alloc(sizeof(struct Slice));
-  case_label->start = case_label_str;
-  case_label->len = switch_label->len + 6 + id_len;
-
+  case_label->start = text;
+  case_label->len = len;
   return case_label;
 }

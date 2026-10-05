@@ -3,6 +3,7 @@
 
 #include "AST.h"
 #include <stdbool.h>
+#include <stdint.h>
 
 // Defines the loop/switch labeling pass for control-flow constructs.
 // Annotates statements with labels and case lists.
@@ -30,13 +31,8 @@ bool label_block(struct Slice* func_name, struct Block* block);
 // Returns true on success; errors are reported on unresolved labels.
 bool resolve_gotos(struct Block* block);
 
-// Collect case/default labels for each switch statement.
-// Returns true on success; errors are reported on duplicates.
-// Case expressions must be literals.
-bool collect_cases(struct Block* block);
-
 // Build a unique case label string for a switch and case value.
 // Returns a newly allocated Slice for the case label.
-struct Slice* make_case_label(struct Slice* switch_label, int case_value);
+struct Slice* make_case_label(struct Slice* switch_label, int64_t case_value);
 
 #endif // LABEL_RESOLUTION_H

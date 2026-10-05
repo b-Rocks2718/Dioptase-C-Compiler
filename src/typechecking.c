@@ -3,6 +3,7 @@
 #include "source_location.h"
 #include "unique_name.h"
 #include "const_eval.h"
+#include "label_resolution.h"
 
 #include <inttypes.h>
 #include <stdarg.h>
@@ -601,6 +602,57 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
   return true;
 }
 
+// The innermost switch whose body is being type checked. Case and default
+// labels are collected here; the list is newest first, which is the order TAC
+// emits the case comparisons in.
+struct SwitchContext {
+  struct SwitchStmt* stmt;
+  struct Type* case_type; // the controlling expression's promoted type
+  struct CaseList* cases;
+};
+static struct SwitchContext* current_switch = NULL;
+
+// Type check a case label: its expression must be an integer constant
+// expression (C11 6.8.4.2p3); its value is converted to the switch's promoted
+// controlling type, must not repeat an earlier case, and names the case label.
+static bool typecheck_case(struct Statement* stmt) {
+  struct CaseStmt* case_stmt = &stmt->statement.case_stmt;
+  if (current_switch == NULL) {
+    type_error_at(stmt->loc, "case label outside switch");
+    return false;
+  }
+  if (!typecheck_convert_expr(&case_stmt->expr)) {
+    return false;
+  }
+  uint64_t value;
+  if (!is_arithmetic_type(case_stmt->expr->value_type) || !eval_const(case_stmt->expr, &value)) {
+    type_error_at(stmt->loc, "case label is not an integer constant expression");
+    return false;
+  }
+  if (!const_normalize(value, current_switch->case_type, &value)) {
+    type_error_at(stmt->loc, "cannot convert case label to the switch's type");
+    return false;
+  }
+  // Int-sized switches store the 32-bit pattern sign-extended (unsigned values
+  // are reinterpreted in the switch's type when lowered); long switches keep
+  // the full value so distinct 64-bit cases stay distinct.
+  size_t case_bits = get_type_size(current_switch->case_type) * 8;
+  int64_t case_value = case_bits <= 32 ? (int64_t)(int32_t)(uint32_t)value : (int64_t)value;
+  for (struct CaseList* it = current_switch->cases; it != NULL; it = it->next) {
+    if (it->case_label.type == INT_CASE && it->case_label.data == case_value) {
+      type_error_at(stmt->loc, "duplicate case value %lld in switch", (long long)case_value);
+      return false;
+    }
+  }
+  struct CaseList* entry = arena_alloc(sizeof(struct CaseList));
+  entry->case_label.type = INT_CASE;
+  entry->case_label.data = case_value;
+  entry->next = current_switch->cases;
+  current_switch->cases = entry;
+  case_stmt->label = make_case_label(current_switch->stmt->label, case_value);
+  return true;
+}
+
 // Type check a controlling expression of an if, while, do-while, or for
 // statement; it must have scalar type (C11 6.8.4.1p1, 6.8.5p2). `statement`
 // names the construct in the error message.
@@ -792,23 +844,34 @@ bool typecheck_stmt(struct Statement* stmt) {
       break;
     }
     case SWITCH_STMT: {
-      if (!typecheck_convert_expr(&stmt->statement.switch_stmt.condition)) {
+      struct SwitchStmt* switch_stmt = &stmt->statement.switch_stmt;
+      if (!typecheck_convert_expr(&switch_stmt->condition)) {
         return false;
       }
 
-      if (!is_arithmetic_type(stmt->statement.switch_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.switch_stmt.condition->loc,
+      if (!is_arithmetic_type(switch_stmt->condition->value_type)) {
+        type_error_at(switch_stmt->condition->loc,
                       "switch condition must have arithmetic type");
         return false;
       }
 
-      if (!typecheck_stmt(stmt->statement.switch_stmt.statement)) {
+      // Cases in the body (including inside statement expressions) attach to
+      // this switch until it ends.
+      struct SwitchContext context = {
+        switch_stmt, promote_integer_type(switch_stmt->condition->value_type), NULL,
+      };
+      struct SwitchContext* enclosing = current_switch;
+      current_switch = &context;
+      bool body_ok = typecheck_stmt(switch_stmt->statement);
+      current_switch = enclosing;
+      if (!body_ok) {
         return false;
       }
+      switch_stmt->cases = context.cases;
       break;
     }
     case CASE_STMT: {
-      if (!typecheck_convert_expr(&stmt->statement.case_stmt.expr)) {
+      if (!typecheck_case(stmt)) {
         return false;
       }
       if (!typecheck_stmt(stmt->statement.case_stmt.statement)) {
@@ -817,6 +880,21 @@ bool typecheck_stmt(struct Statement* stmt) {
       break;
     }
     case DEFAULT_STMT: {
+      if (current_switch == NULL) {
+        type_error_at(stmt->loc, "default label outside switch");
+        return false;
+      }
+      for (struct CaseList* it = current_switch->cases; it != NULL; it = it->next) {
+        if (it->case_label.type == DEFAULT_CASE) {
+          type_error_at(stmt->loc, "duplicate default label in switch");
+          return false;
+        }
+      }
+      struct CaseList* entry = arena_alloc(sizeof(struct CaseList));
+      entry->case_label.type = DEFAULT_CASE;
+      entry->case_label.data = 0;
+      entry->next = current_switch->cases;
+      current_switch->cases = entry;
       if (!typecheck_stmt(stmt->statement.default_stmt.statement)) {
         return false;
       }

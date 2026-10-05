@@ -569,7 +569,10 @@ enum CaseLabelType {
 // Store a case-label kind and its constant/default data.
 struct CaseLabel {
   enum CaseLabelType type;
-  int data;
+  // The case value in the switch's promoted type: sign-extended from 32 bits
+  // for int-sized switches (the bit pattern is reinterpreted when lowered),
+  // the full value for long switches.
+  int64_t data;
 };
 
 // Link case labels in a switch statement.

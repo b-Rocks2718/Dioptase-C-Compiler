@@ -7,7 +7,6 @@ Program(
         body=
             SwitchStmt(
                 label=main.switch.0
-                cases=[IntCase 2, IntCase 0, ]
                 LitExpr(int, 0):untyped,
                 CompoundStmt(
                     CaseStmt(
