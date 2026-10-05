@@ -162,18 +162,6 @@ struct AsmMov {
   struct Operand* src;
 };
 
-// Read a volatile object. Same operands as a move; the read is a side effect.
-struct AsmVolatileRead {
-  struct Operand* dst;
-  struct Operand* src;
-};
-
-// Write a volatile object. Same operands as a move; the write is a side effect.
-struct AsmVolatileWrite {
-  struct Operand* dst;
-  struct Operand* src;
-};
-
 // Store unary operation, destination, and source operands.
 struct AsmUnary {
   enum UnOp op;
@@ -250,20 +238,8 @@ struct AsmLoad {
   struct Operand* src;
 };
 
-// Load through a pointer to a volatile object.
-struct AsmVolatileLoad {
-  struct Operand* dst;
-  struct Operand* src;
-};
-
 // Store destination address and source value for a store.
 struct AsmStore {
-  struct Operand* dst;
-  struct Operand* src;
-};
-
-// Store through a pointer to a volatile object.
-struct AsmVolatileStore {
   struct Operand* dst;
   struct Operand* src;
 };
@@ -290,8 +266,10 @@ struct AsmExtend {
 // Select the concrete ASM instruction payload identified by AsmInstrType.
 union AsmInstrVariant {
   struct AsmMov asm_mov;
-  struct AsmVolatileRead asm_volatile_read;
-  struct AsmVolatileWrite asm_volatile_write;
+  // The volatile forms share the plain forms' operand layout; only their
+  // opcode differs, so later passes cannot treat them as ordinary copies.
+  struct AsmMov asm_volatile_read;
+  struct AsmMov asm_volatile_write;
   struct AsmUnary asm_unary;
   struct AsmBinary asm_binary;
   struct AsmCmp asm_cmp;
@@ -305,9 +283,9 @@ union AsmInstrVariant {
   struct AsmLabel asm_label;
   struct AsmGetAddress asm_get_address;
   struct AsmLoad asm_load;
-  struct AsmVolatileLoad asm_volatile_load;
+  struct AsmLoad asm_volatile_load;
   struct AsmStore asm_store;
-  struct AsmVolatileStore asm_volatile_store;
+  struct AsmStore asm_volatile_store;
   struct AsmBoundary asm_boundary;
   struct AsmTrunc asm_trunc;
   struct AsmExtend asm_extend;

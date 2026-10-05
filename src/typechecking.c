@@ -601,6 +601,20 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
   return true;
 }
 
+// Type check a controlling expression of an if, while, do-while, or for
+// statement; it must have scalar type (C11 6.8.4.1p1, 6.8.5p2). `statement`
+// names the construct in the error message.
+static bool typecheck_condition(struct Expr** condition, const char* statement) {
+  if (!typecheck_convert_expr(condition)) {
+    return false;
+  }
+  if (!is_scalar_type((*condition)->value_type)) {
+    type_error_at((*condition)->loc, "%s condition must have scalar type", statement);
+    return false;
+  }
+  return true;
+}
+
 // Typecheck and register each function parameter.
 // Returns true on success; false on any type error.
 bool typecheck_params(struct ParamList* params) {
@@ -713,20 +727,7 @@ bool typecheck_stmt(struct Statement* stmt) {
       break;
     }
     case IF_STMT: {
-      if (!typecheck_convert_expr(&stmt->statement.if_stmt.condition)) {
-        return false;
-      }
-
-      if (!is_scalar_type(stmt->statement.if_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.if_stmt.condition->loc,
-                      "if condition must have scalar type");
-        return false;
-      }
-
-      if (!is_arithmetic_type(stmt->statement.if_stmt.condition->value_type) &&
-          !is_pointer_type(stmt->statement.if_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.if_stmt.condition->loc,
-                      "if condition must have scalar type");
+      if (!typecheck_condition(&stmt->statement.if_stmt.condition, "if")) {
         return false;
       }
 
@@ -751,20 +752,7 @@ bool typecheck_stmt(struct Statement* stmt) {
       break;
     }
     case WHILE_STMT: {
-      if (!typecheck_convert_expr(&stmt->statement.while_stmt.condition)) {
-        return false;
-      }
-
-      if (!is_scalar_type(stmt->statement.while_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.while_stmt.condition->loc,
-                      "while condition must have scalar type");
-        return false;
-      }
-
-      if (!is_arithmetic_type(stmt->statement.while_stmt.condition->value_type) &&
-          !is_pointer_type(stmt->statement.while_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.while_stmt.condition->loc,
-                      "while condition must have scalar type");
+      if (!typecheck_condition(&stmt->statement.while_stmt.condition, "while")) {
         return false;
       }
 
@@ -777,20 +765,7 @@ bool typecheck_stmt(struct Statement* stmt) {
       if (!typecheck_stmt(stmt->statement.do_while_stmt.statement)) {
         return false;
       }
-      if (!typecheck_convert_expr(&stmt->statement.do_while_stmt.condition)) {
-        return false;
-      }
-
-      if (!is_scalar_type(stmt->statement.do_while_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.do_while_stmt.condition->loc,
-                      "do-while condition must have scalar type");
-        return false;
-      }
-
-      if (!is_arithmetic_type(stmt->statement.do_while_stmt.condition->value_type) &&
-          !is_pointer_type(stmt->statement.do_while_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.do_while_stmt.condition->loc,
-                      "do-while condition must have scalar type");
+      if (!typecheck_condition(&stmt->statement.do_while_stmt.condition, "do-while")) {
         return false;
       }
 
@@ -802,12 +777,7 @@ bool typecheck_stmt(struct Statement* stmt) {
         return false;
       }
       if (stmt->statement.for_stmt.condition != NULL) {
-        if (!typecheck_convert_expr(&stmt->statement.for_stmt.condition)) {
-          return false;
-        }
-        if (!is_scalar_type(stmt->statement.for_stmt.condition->value_type)) {
-          type_error_at(stmt->statement.for_stmt.condition->loc,
-                        "for condition must have scalar type");
+        if (!typecheck_condition(&stmt->statement.for_stmt.condition, "for")) {
           return false;
         }
       }

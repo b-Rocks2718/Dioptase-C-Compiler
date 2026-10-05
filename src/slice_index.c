@@ -1,25 +1,15 @@
 #include "slice_index.h"
-#include "exit_codes.h"
+#include "checked_alloc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 
-// Allocate a zeroed array; failure is fatal.
-static void* slice_index_calloc(size_t count, size_t size) {
-  void* memory = calloc(count, size);
-  if (memory == NULL) {
-    fprintf(stderr, "Slice index error: unable to allocate %zu slots of %zu bytes\n",
-            count, size);
-    exit(BCC_EXIT_INTERNAL);
-  }
-  return memory;
-}
 
 // Allocate an empty table of slot_count (a power of two) slots.
 static void slice_index_alloc_slots(struct SliceIndex* index, size_t slot_count) {
   index->slot_count = slot_count;
-  index->slot_names = slice_index_calloc(slot_count, sizeof(*index->slot_names));
-  index->slot_ids = slice_index_calloc(slot_count, sizeof(*index->slot_ids));
+  index->slot_names = checked_calloc(slot_count, sizeof(*index->slot_names), "Slice index", "growing the table");
+  index->slot_ids = checked_calloc(slot_count, sizeof(*index->slot_ids), "Slice index", "growing the table");
 }
 
 void slice_index_init(struct SliceIndex* index, size_t expected_names) {

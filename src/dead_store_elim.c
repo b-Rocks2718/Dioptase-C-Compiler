@@ -1,5 +1,6 @@
 #include "dead_store_elim.h"
 #include "slice_index.h"
+#include "checked_alloc.h"
 #include "exit_codes.h"
 #include "slice.h"
 
@@ -40,24 +41,6 @@ struct BlockQueue {
   size_t count;
 };
 
-// Allocate zeroed pass-local storage or terminate with a contextual diagnostic.
-// The caller owns the returned allocation and releases it with free.
-static void* dse_calloc(size_t count, size_t size, const char* purpose) {
-  if (count != 0 && size > SIZE_MAX / count) {
-    fprintf(stderr,
-            "Dead-store elimination error: allocation size overflow while %s\n",
-            purpose);
-    exit(BCC_EXIT_INTERNAL);
-  }
-  void* allocation = calloc(count, size);
-  if (allocation == NULL && count != 0 && size != 0) {
-    fprintf(stderr,
-            "Dead-store elimination error: unable to allocate %zu bytes while %s\n",
-            count * size, purpose);
-    exit(BCC_EXIT_INTERNAL);
-  }
-  return allocation;
-}
 
 // Initialize an empty variable index.
 static void variable_index_init(struct VariableIndex* index) {
@@ -158,7 +141,7 @@ static void collect_cfg_variables(struct VariableIndex* index,
 static struct LiveSet live_set_allocate(size_t word_count, const char* purpose) {
   struct LiveSet set;
   set.word_count = word_count;
-  set.words = dse_calloc(word_count, sizeof(*set.words), purpose);
+  set.words = checked_calloc(word_count, sizeof(*set.words), "Dead-store elimination", purpose);
   return set;
 }
 
@@ -452,10 +435,10 @@ static void transfer_block(struct CFGNode* node,
 
 // Allocate an empty queue capable of holding each CFG node exactly once.
 static void block_queue_init(struct BlockQueue* queue, size_t capacity) {
-  queue->items = dse_calloc(capacity, sizeof(*queue->items),
-                            "creating the liveness work queue");
-  queue->queued = dse_calloc(capacity, sizeof(*queue->queued),
-                             "tracking queued CFG blocks");
+  queue->items = checked_calloc(capacity, sizeof(*queue->items),
+                            "Dead-store elimination", "creating the liveness work queue");
+  queue->queued = checked_calloc(capacity, sizeof(*queue->queued),
+                             "Dead-store elimination", "tracking queued CFG blocks");
   queue->capacity = capacity;
   queue->head = 0;
   queue->count = 0;
@@ -582,8 +565,8 @@ static void eliminate_dead_instructions(struct CFG* cfg,
          instr = instr->next) {
       instruction_count += 1;
     }
-    bool* dead = dse_calloc(instruction_count, sizeof(*dead),
-                            "marking dead instructions");
+    bool* dead = checked_calloc(instruction_count, sizeof(*dead),
+                            "Dead-store elimination", "marking dead instructions");
 
     reverse_block_body(&block->body);
     size_t reverse_index = instruction_count;
@@ -650,9 +633,9 @@ struct CFG* dead_store_elim(struct CFG* cfg,
   live_set_add_slice_list(aliased_set, &index, aliased_vars);
 
   uint64_t* block_live_words =
-      dse_calloc((size_t)cfg->num_nodes * word_count,
+      checked_calloc((size_t)cfg->num_nodes * word_count,
                  sizeof(*block_live_words),
-                 "storing CFG live-in sets");
+                 "Dead-store elimination", "storing CFG live-in sets");
 
   find_live_variables(cfg, block_live_words, static_set, aliased_set, &index);
   eliminate_dead_instructions(cfg, block_live_words, static_set, aliased_set,
