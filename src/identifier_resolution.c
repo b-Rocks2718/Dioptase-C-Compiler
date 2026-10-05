@@ -178,7 +178,11 @@ bool resolve_type(struct Type* type){
   switch (type->type){
     case STRUCT_TYPE:
     case UNION_TYPE:
-    case ENUM_TYPE:
+    case ENUM_TYPE: {
+      // Struct, union, and enum tags share the struct_type layout.
+      if (type->type_data.struct_type.name_resolved) {
+        return true;
+      }
       struct IdentMapEntry* entry = ident_stack_get(global_type_stack, type->type_data.struct_type.name, NULL);
       if (entry == NULL){
         ident_error_at(NULL, "specified an undeclared struct/union/enum type");
@@ -192,14 +196,23 @@ bool resolve_type(struct Type* type){
 
       // rename to unique name
       type->type_data.struct_type.name = entry->entry_name;
-
+      type->type_data.struct_type.name_resolved = true;
       return true;
+    }
     case POINTER_TYPE:
       return resolve_type(type->type_data.pointer_type.referenced_type);
     case ARRAY_TYPE:
       return resolve_type(type->type_data.array_type.element_type);
     case FUN_TYPE:
-      // resolve parameter types in resolve_params
+      // Parameter types are resolved here as well as through a declarator's
+      // parameter list: function types nested under pointers, arrays, casts,
+      // and repeated prototypes have no parameter list of their own.
+      for (struct ParamTypeList* param = type->type_data.fun_type.param_types;
+           param != NULL; param = param->next) {
+        if (!resolve_type(param->type)) {
+          return false;
+        }
+      }
       return resolve_type(type->type_data.fun_type.return_type);
     default:
       return true;
@@ -437,6 +450,12 @@ bool resolve_local_func(struct FunctionDclr* func_dclr) {
     return false;
   }
 
+  // Resolve struct/union/enum tags in the return and parameter types.
+  if (!resolve_type(func_dclr->type)) {
+    ident_error_at(func_dclr->name->start, "failed to resolve local function declaration type");
+    return false;
+  }
+
   bool from_current_scope = false;
   struct IdentMapEntry* entry = ident_stack_get(global_ident_stack, func_dclr->name, &from_current_scope);
   if (entry != NULL && from_current_scope && !entry->has_linkage) {
@@ -539,7 +558,9 @@ bool resolve_file_scope_var_dclr(struct VariableDclr* var_dclr) {
 // Returns true on success; false on invalid redeclarations.
 bool resolve_file_scope_func(struct FunctionDclr* func_dclr) {
   if (!resolve_type(func_dclr->type)) {
-    ident_error_at(func_dclr->name->start, "failed to resolve function return type");
+    ident_error_at(func_dclr->name->start,
+                   "failed to resolve a struct/union/enum tag in the type of function %.*s",
+                   (int)func_dclr->name->len, func_dclr->name->start);
     return false;
   }
 

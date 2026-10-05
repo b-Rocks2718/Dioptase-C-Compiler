@@ -545,21 +545,15 @@ struct Type* type_spec_to_type(struct TypeSpecList* types){
     return qualify_type_from_specs(type, types);
   } else if ((found = spec_list_contains(types, STRUCT_SPEC)) != NULL){
     struct Type* type = alloc_type(STRUCT_TYPE);
-    struct StructType struct_data;
-    struct_data.name = found->name;
-    type->type_data.struct_type = struct_data;
+    type->type_data.struct_type.name = found->name;
     return qualify_type_from_specs(type, types);
   } else if ((found = spec_list_contains(types, UNION_SPEC)) != NULL){
     struct Type* type = alloc_type(UNION_TYPE);
-    struct UnionType union_data;
-    union_data.name = found->name;
-    type->type_data.union_type = union_data;
+    type->type_data.union_type.name = found->name;
     return qualify_type_from_specs(type, types);
   } else if ((found = spec_list_contains(types, ENUM_SPEC)) != NULL){
     struct Type* type = alloc_type(ENUM_TYPE);
-    struct EnumType enum_data;
-    enum_data.name = found->name;
-    type->type_data.enum_type = enum_data;
+    type->type_data.enum_type.name = found->name;
     return qualify_type_from_specs(type, types);
   }
   // at this point it must be an int type 
