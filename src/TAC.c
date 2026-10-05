@@ -688,19 +688,17 @@ struct TACProg* prog_to_TAC(struct Program* program, bool emit_debug_info, bool 
   // Collect static storage entries from the symbol table for visibility.
   struct TopLevel* statics_head = NULL;
   struct TopLevel* statics_tail = NULL;
-  for (size_t i = 0; i < global_symbol_table->size; i++) {
-    for (struct SymbolEntry* entry = global_symbol_table->arr[i];
-      entry != NULL;
-      entry = entry->next) {
-      struct TopLevel* top_level = symbol_to_TAC(entry);
-      if (top_level != NULL) {
-        if (statics_head == NULL) {
-          statics_head = top_level;
-          statics_tail = top_level;
-        } else {
-          statics_tail->next = top_level;
-          statics_tail = top_level;
-        }
+  struct SliceMapIter symbols = slice_map_iter(&global_symbol_table->map);
+  for (struct SymbolEntry* entry = slice_map_next_value(&symbols); entry != NULL;
+       entry = slice_map_next_value(&symbols)) {
+    struct TopLevel* top_level = symbol_to_TAC(entry);
+    if (top_level != NULL) {
+      if (statics_head == NULL) {
+        statics_head = top_level;
+        statics_tail = top_level;
+      } else {
+        statics_tail->next = top_level;
+        statics_tail = top_level;
       }
     }
   }
@@ -818,6 +816,36 @@ struct TopLevel* func_to_TAC(struct FunctionDclr* declaration) {
   return top_level;
 }
 
+// At the end of a scope, call the cleanup handler of every variable declared
+// in it that has one (`__attribute__((cleanup(f)))`), passing the variable's
+// address. Visits the scope's identifiers in map order.
+static void emit_scope_cleanups(struct Slice* func_name, struct TACInstrList* instrs,
+                                struct IdentMap* idents) {
+  struct SliceMapIter it = slice_map_iter(&idents->map);
+  void* value;
+  while (slice_map_next(&it, NULL, &value)) {
+    struct IdentMapEntry* ident_entry = value;
+    struct SymbolEntry* symbol_entry = symbol_table_get(global_symbol_table, ident_entry->entry_name);
+    if (symbol_entry == NULL || symbol_entry->attrs == NULL ||
+        symbol_entry->attrs->attr_type != LOCAL_ATTR ||
+        symbol_entry->attrs->cleanup_handler == NULL) {
+      continue;
+    }
+    struct Val* var = tac_make_var(ident_entry->entry_name, symbol_entry->type);
+    struct Val* addr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
+    struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
+    addr_instr->instr.tac_get_address.dst = addr;
+    addr_instr->instr.tac_get_address.src = var;
+    tac_emit(instrs, addr_instr);
+    struct TACInstr* cleanup_instr = tac_instr_create(TACCALL);
+    cleanup_instr->instr.tac_call.func_name = symbol_entry->attrs->cleanup_handler;
+    cleanup_instr->instr.tac_call.args = addr;
+    cleanup_instr->instr.tac_call.dst = NULL;
+    cleanup_instr->instr.tac_call.num_args = 1;
+    tac_emit(instrs, cleanup_instr);
+  }
+}
+
 // Lower a block of statements/declarations into a TAC instruction list.
 // Returns an empty list if the block produces no instructions.
 struct TACInstrList block_to_TAC(struct Slice* func_name, struct Block* block) {
@@ -864,29 +892,7 @@ struct TACInstrList block_to_TAC(struct Slice* func_name, struct Block* block) {
     active_cleanup_count = enclosing_cleanup_count;
     return head;
   }
-  for (size_t i = 0; i < block->idents->size; ++i){
-    for (struct IdentMapEntry* ident_entry = block->idents->arr[i]; ident_entry != NULL; ident_entry = ident_entry->next) {
-      struct SymbolEntry* symbol_entry = symbol_table_get(global_symbol_table, ident_entry->entry_name);
-      if (symbol_entry == NULL || symbol_entry->attrs == NULL) {
-        continue;
-      }
-      if (symbol_entry->attrs->attr_type == LOCAL_ATTR &&
-          symbol_entry->attrs->cleanup_handler != NULL) {
-        struct TACInstr* cleanup_instr = tac_instr_create(TACCALL);
-        cleanup_instr->instr.tac_call.func_name = symbol_entry->attrs->cleanup_handler;
-        struct Val* var = tac_make_var(ident_entry->entry_name, symbol_entry->type);
-        struct Val* addr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
-        struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
-        addr_instr->instr.tac_get_address.dst = addr;
-        addr_instr->instr.tac_get_address.src = var;
-        tac_emit(&head, addr_instr);
-        cleanup_instr->instr.tac_call.args = addr;
-        cleanup_instr->instr.tac_call.dst = NULL;
-        cleanup_instr->instr.tac_call.num_args = 1;
-        tac_emit(&head, cleanup_instr);
-      }
-    }
-  }
+  emit_scope_cleanups(func_name, &head, block->idents);
   active_cleanup_count = enclosing_cleanup_count;
   return head;
 }
@@ -1625,30 +1631,7 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
     active_cleanup_count = enclosing_cleanup_count;
     return instrs;
   }
-  for (size_t i = 0; i < idents->size; ++i){
-    for (struct IdentMapEntry* ident_entry = idents->arr[i]; ident_entry != NULL; ident_entry = ident_entry->next) {
-      struct SymbolEntry* symbol_entry = symbol_table_get(global_symbol_table, ident_entry->entry_name);
-      if (symbol_entry == NULL || symbol_entry->attrs == NULL) {
-        continue;
-      }
-      if (symbol_entry->attrs->attr_type == LOCAL_ATTR &&
-          symbol_entry->attrs->cleanup_handler != NULL) {
-        struct TACInstr* cleanup_instr = tac_instr_create(TACCALL);
-        cleanup_instr->instr.tac_call.func_name = symbol_entry->attrs->cleanup_handler;
-        struct Val* var = tac_make_var(ident_entry->entry_name, symbol_entry->type);
-        // pass in address of var
-        struct Val* addr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
-        struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
-        addr_instr->instr.tac_get_address.dst = addr;
-        addr_instr->instr.tac_get_address.src = var;
-        tac_emit(&instrs, addr_instr);
-        cleanup_instr->instr.tac_call.args = addr;
-        cleanup_instr->instr.tac_call.dst = NULL;
-        cleanup_instr->instr.tac_call.num_args = 1;
-        tac_emit(&instrs, cleanup_instr);
-      }
-    }
-  }
+  emit_scope_cleanups(func_name, &instrs, idents);
   active_cleanup_count = enclosing_cleanup_count;
   return instrs;
 }

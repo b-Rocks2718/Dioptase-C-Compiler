@@ -1,4 +1,5 @@
 #include "copy_prop.h"
+#include "slice_index.h"
 #include "exit_codes.h"
 #include "cfg.h"
 #include "arena.h"
@@ -101,11 +102,8 @@ struct CopyEffect {
 // identity (null_id) because TAC operand equality treats two NULL names as
 // equal; it is never killed, matching the previous implementation.
 struct NameIndex {
-  struct Slice** slot_names;
-  uint32_t* slot_ids;
-  size_t slot_count;  // power of two
-  uint32_t count;
-  uint32_t null_id;
+  struct SliceIndex ids;
+  uint32_t null_id; // id of the NULL name, or kCopyPropNone until it is numbered
 };
 
 // Per-invocation analysis state. Every pointer member is owned and freed by
@@ -190,48 +188,34 @@ static uint64_t mix64(uint64_t x) {
 
 // ----- Name index -----
 
-// Initialize a fixed-capacity name index able to hold max_names names.
+// Key standing in for a NULL name so absent operand names get an id from the
+// same dense sequence; no identifier can equal it.
+static struct Slice kNullNameKey = {"<null name>", 11};
+
+// Initialize an empty name index sized for about max_names names.
 static void name_index_init(struct NameIndex* index, size_t max_names) {
-  index->slot_count = hash_slot_count_for(max_names);
-  index->slot_names = cp_calloc(index->slot_count, sizeof(*index->slot_names),
-                                "creating the copy-propagation name index");
-  index->slot_ids = cp_calloc(index->slot_count, sizeof(*index->slot_ids),
-                              "creating the copy-propagation name index");
-  index->count = 0;
+  slice_index_init(&index->ids, max_names);
   index->null_id = kCopyPropNone;
 }
 
-// Release the name index's slot arrays. Slice names remain arena-owned.
+// Release the name index. Slice names remain arena-owned.
 static void name_index_destroy(struct NameIndex* index) {
-  free(index->slot_names);
-  free(index->slot_ids);
-  index->slot_names = NULL;
-  index->slot_ids = NULL;
+  slice_index_free(&index->ids);
 }
 
 // Return the id for name, inserting it when insert is true. Returns
 // kCopyPropNone when name is absent and insert is false.
 static uint32_t name_index_lookup(struct NameIndex* index, struct Slice* name, bool insert) {
-  if (name == NULL) {
-    if (index->null_id == kCopyPropNone && insert) {
-      index->null_id = index->count++;
+  const struct Slice* key = name != NULL ? name : &kNullNameKey;
+  if (insert) {
+    uint32_t id = slice_index_add(&index->ids, key, NULL);
+    if (name == NULL) {
+      index->null_id = id;
     }
-    return index->null_id;
+    return id;
   }
-  size_t mask = index->slot_count - 1;
-  size_t slot = hash_slice(name) & mask;
-  while (index->slot_names[slot] != NULL) {
-    if (compare_slice_to_slice(index->slot_names[slot], name)) {
-      return index->slot_ids[slot];
-    }
-    slot = (slot + 1) & mask;
-  }
-  if (!insert) {
-    return kCopyPropNone;
-  }
-  index->slot_names[slot] = name;
-  index->slot_ids[slot] = index->count;
-  return index->count++;
+  uint32_t id = slice_index_get(&index->ids, key);
+  return id == SLICE_INDEX_NONE ? kCopyPropNone : id;
 }
 
 // ----- Operand keys and class lookup -----
@@ -473,7 +457,7 @@ static void csr_push(uint32_t* list, uint32_t* cursor, uint32_t var, uint32_t c)
 // Build per-variable class lists from the finished class table. Each list is
 // filled in ascending class order because classes are visited in order.
 static void build_variable_lists(struct CopyPropState* s) {
-  uint32_t vars = s->names.count;
+  uint32_t vars = s->names.ids.count;
   s->dst_start = cp_calloc((size_t)vars + 1, sizeof(uint32_t), "indexing copy destinations");
   s->involve_start = cp_calloc((size_t)vars + 1, sizeof(uint32_t), "indexing copy operands");
 
@@ -529,7 +513,7 @@ static bool wants_mask(const struct CopyPropState* s, uint32_t len) {
 
 // Build bitset masks for variables with long destination/operand lists.
 static void build_variable_masks(struct CopyPropState* s) {
-  uint32_t vars = s->names.count;
+  uint32_t vars = s->names.ids.count;
   s->dst_mask = cp_calloc(vars, sizeof(uint64_t*), "indexing heavily copied variables");
   s->involve_mask = cp_calloc(vars, sizeof(uint64_t*), "indexing heavily copied variables");
   size_t masks = 0;
@@ -586,7 +570,7 @@ static void build_variable_masks(struct CopyPropState* s) {
 // Mark classes that mention an aliased variable. aliased_vars is the set of
 // statics plus address-taken locals; calls and stores may modify any of them.
 static void build_aliased_mask(struct CopyPropState* s, struct SliceList aliased_vars) {
-  uint32_t vars = s->names.count;
+  uint32_t vars = s->names.ids.count;
   bool* aliased = cp_calloc(vars, sizeof(bool), "marking aliased variables");
   for (struct SliceListNode* node = aliased_vars.head; node != NULL; node = node->next) {
     if (node->slice == NULL) {

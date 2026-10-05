@@ -81,18 +81,21 @@ bool label_loops(struct Program* prog) {
 
 // -------------------------------- loop/switch labeling -------------------------------- //
 
-// Enter a loop for break/continue labeling; returns the state to restore.
+// The innermost loop/switch labels that break, continue, case, and default
+// refer to; saved on entry to a loop or switch and restored on exit.
 struct LabelState {
   struct Slice* loop_label;
   struct Slice* switch_label;
   enum LabelType label_type;
 };
 
+// Capture the current labeling state before entering a loop or switch.
 static struct LabelState save_label_state(void) {
   struct LabelState state = { cur_loop_label, cur_switch_label, cur_label_type };
   return state;
 }
 
+// Restore the labeling state captured when the loop or switch was entered.
 static void restore_label_state(struct LabelState state) {
   cur_loop_label = state.loop_label;
   cur_switch_label = state.switch_label;

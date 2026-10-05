@@ -143,87 +143,30 @@ struct IdentMap* exit_scope(struct IdentStack* stack){
 // Allocate a new identifier map with a given bucket count.
 // Returns an arena-allocated IdentMap.
 struct IdentMap* create_ident_map(size_t num_buckets){
-  struct IdentMapEntry** arr = arena_alloc(num_buckets * sizeof(struct IdentMapEntry*));
   struct IdentMap* hmap = arena_alloc(sizeof(struct IdentMap));
-
-  for (int i = 0; i < num_buckets; ++i){
-    arr[i] = NULL;
-  }
-
-  hmap->size = num_buckets;
-  hmap->arr = arr;
-
+  slice_map_init(&hmap->map, num_buckets, false);
   return hmap;
 }
 
-// Allocate a new identifier map entry.
-// Returns an arena-allocated IdentMapEntry.
-// key/entry_name pointers remain valid for the arena
-// lifetime.
-struct IdentMapEntry* create_ident_map_entry(struct Slice* key, 
+// Insert or update a mapping in the identifier map. An existing entry is
+// updated in place so callers holding it see the new meaning.
+void ident_map_insert(struct IdentMap* hmap, struct Slice* key,
     struct Slice* entry_name, bool has_linkage, enum TypeType type, bool is_const, unsigned value){
-  struct IdentMapEntry* entry = arena_alloc(sizeof(struct IdentMapEntry));
-
-  entry->key = key;
+  struct IdentMapEntry* entry = slice_map_get(&hmap->map, key);
+  if (entry == NULL) {
+    entry = arena_alloc(sizeof(struct IdentMapEntry));
+    entry->key = key;
+    slice_map_add(&hmap->map, key, entry);
+  }
   entry->entry_name = entry_name;
   entry->has_linkage = has_linkage;
   entry->type = type;
   entry->is_const = is_const;
   entry->value = value;
-  entry->next = NULL;
-
-  return entry;
-}
-
-// Insert or update a mapping within a bucket chain.
-void ident_map_entry_insert(struct IdentMapEntry* entry, struct Slice* key, 
-    struct Slice* entry_name, bool has_linkage, enum TypeType type, bool is_const, unsigned value){
-  if (compare_slice_to_slice(entry->key, key)){
-    entry->entry_name = entry_name;
-    entry->has_linkage = has_linkage;
-    entry->type = type;
-    entry->is_const = is_const;
-    entry->value = value;
-  } else if (entry->next == NULL){
-    entry->next = create_ident_map_entry(key, entry_name, has_linkage, type, is_const, value);
-  } else {
-    ident_map_entry_insert(entry->next, key, entry_name, has_linkage, type, is_const, value);
-  }
-}
-
-// Insert or update a mapping in the identifier map.
-// hash_slice produces stable bucket indices.
-void ident_map_insert(struct IdentMap* hmap, struct Slice* key, 
-    struct Slice* entry_name, bool has_linkage, enum TypeType type, bool is_const, unsigned value){
-  size_t hash = hash_slice(key) % hmap->size;
-  
-  if ((hmap->arr[hash]) == NULL){
-    hmap->arr[hash] = create_ident_map_entry(key, entry_name, has_linkage, type, is_const, value);
-  } else {
-    ident_map_entry_insert(hmap->arr[hash], key, entry_name, has_linkage, type, is_const, value);
-  }
-}
-
-// Look up an identifier within a bucket chain.
-// Returns the entry or NULL if missing.
-struct IdentMapEntry* ident_map_entry_get(struct IdentMapEntry* entry, struct Slice* key){
-  if (compare_slice_to_slice(entry->key, key)){
-    return entry;
-  } else if (entry->next == NULL){
-    return NULL;
-  } else {
-    return ident_map_entry_get(entry->next, key);
-  }
 }
 
 // Look up an identifier in the map.
 // Returns the entry or NULL if missing.
 struct IdentMapEntry* ident_map_get(struct IdentMap* hmap, struct Slice* key){
-  size_t hash = hash_slice(key) % hmap->size;
-
-  if (hmap->arr[hash] == NULL){
-    return NULL;
-  } else {
-    return ident_map_entry_get(hmap->arr[hash], key);
-  }
+  return slice_map_get(&hmap->map, key);
 }

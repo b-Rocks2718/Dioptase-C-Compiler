@@ -1,6 +1,7 @@
 #ifndef ASM_GEN_H
 #define ASM_GEN_H
 
+#include "slice_map.h"
 #include "AST.h"
 #include "analysis.h"
 #include "typechecking.h"
@@ -40,14 +41,12 @@ struct AsmSymbolEntry {
   bool is_static;  // for data
   bool is_defined; // for functions
   bool return_on_stack; // for functions
-
-  struct AsmSymbolEntry* next;
 };
 
 // Own the bucket array used for ASM symbol lookup.
+// Iterate with slice_map_iter(&table->map); values are AsmSymbolEntry*.
 struct AsmSymbolTable{
-  size_t size;
-  struct AsmSymbolEntry** arr;
+  struct SliceMap map;
 };
 
 // Own the linked list of top-level ASM declarations.
@@ -425,13 +424,13 @@ struct Operand {
 struct PseudoEntry {
   struct Operand* pseudo;
   struct Operand* mapped;
-  struct PseudoEntry* next;
 };
 
 // Own the bucket array used for pseudo-register mappings.
+// Keyed by the pseudo's name; values are PseudoEntry*. Heap-backed and
+// destroyed per function by destroy_pseudo_map.
 struct PseudoMap{
-  size_t size;
-  struct PseudoEntry** arr;
+  struct SliceMap map;
 };
 
 // Classify variables for the purpose of register allocation according to the ABI.

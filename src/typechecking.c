@@ -8,6 +8,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 // Implement typechecking and symbol table utilities.
 // Annotates expressions with types and validates declarations.
@@ -451,12 +452,9 @@ bool typecheck_enum(struct EnumDclr* enum_dclr){
     return false;
   }
 
-  struct TypeEntry* enum_entry = arena_alloc(sizeof(struct TypeEntry));
-  enum_entry->key = enum_dclr->name;
-  enum_entry->type = ENUM_ENTRY;
-  enum_entry->next = NULL;
-
+  // An enum entry only records that the tag is defined; it has no layout.
   union TypeEntryVariant entry_data;
+  memset(&entry_data, 0, sizeof(entry_data));
   type_table_insert(global_type_table, enum_dclr->name, ENUM_ENTRY, entry_data);
 
   return true;
@@ -2705,79 +2703,44 @@ enum StaticInitType get_var_init(struct Type* type) {
 // Returns a SymbolTable allocated in the arena.
 struct SymbolTable* create_symbol_table(size_t numBuckets){
   struct SymbolTable* table = arena_alloc(sizeof(struct SymbolTable));
-  table->size = numBuckets;
-  table->arr = arena_alloc(sizeof(struct SymbolEntry*) * numBuckets);
-  for (size_t i = 0; i < numBuckets; i++){
-    table->arr[i] = NULL;
-  }
+  slice_map_init(&table->map, numBuckets, false);
   return table;
 }
 
-// Insert a symbol entry into the table.
+// Add a symbol entry. An existing entry with the same name is kept and still
+// found first; callers check for redeclarations before inserting.
 void symbol_table_insert(struct SymbolTable* hmap, struct Slice* key, struct Type* type, struct IdentAttr* attrs){
-  size_t label = hash_slice(key) % hmap->size;
-  
-  struct SymbolEntry* newEntry = arena_alloc(sizeof(struct SymbolEntry));
-  newEntry->key = key;
-  newEntry->type = type;
-  newEntry->attrs = attrs;
-  newEntry->next = NULL;
-
-  if (hmap->arr[label] == NULL){
-    hmap->arr[label] = newEntry;
-  } else {
-    struct SymbolEntry* cur = hmap->arr[label];
-    while (cur->next != NULL){
-      cur = cur->next;
-    }
-    cur->next = newEntry;
-  }
+  struct SymbolEntry* entry = arena_alloc(sizeof(struct SymbolEntry));
+  entry->key = key;
+  entry->type = type;
+  entry->attrs = attrs;
+  slice_map_add(&hmap->map, key, entry);
 }
 
 // Look up a symbol entry by identifier name.
 // Returns the entry or NULL if missing.
 struct SymbolEntry* symbol_table_get(struct SymbolTable* hmap, struct Slice* key){
-  size_t label = hash_slice(key) % hmap->size;
-
-  struct SymbolEntry* cur = hmap->arr[label];
-  while (cur != NULL){
-    if (compare_slice_to_slice(cur->key, key)){
-      return cur;
-    }
-    cur = cur->next;
-  }
-  return NULL;
+  return slice_map_get(&hmap->map, key);
 }
 
-// Check if a symbol exists in the table.
-// Returns true if the symbol is present.
+// Check if a symbol entry exists in the table.
 bool symbol_table_contains(struct SymbolTable* hmap, struct Slice* key){
-  size_t label = hash_slice(key) % hmap->size;
-
-  struct SymbolEntry* cur = hmap->arr[label];
-  while (cur != NULL){
-    if (compare_slice_to_slice(cur->key, key)){
-      return true;
-    }
-    cur = cur->next;
-  }
-  return false;
+  return slice_map_contains(&hmap->map, key);
 }
 
 // Print the symbol table contents for debugging.
 void print_symbol_table(struct SymbolTable* hmap){
-  for (size_t i = 0; i < hmap->size; i++){
-    struct SymbolEntry* cur = hmap->arr[i];
-    while (cur != NULL){
-      printf("Key: %.*s\n", (int)cur->key->len, cur->key->start);
-      printf("  Type: ");
-      print_type(cur->type);
-      printf("\n");
-      printf("  Attributes:\n");
-      print_ident_attr(cur->attrs);
-      printf("\n");
-      cur = cur->next;
-    }
+  struct SliceMapIter it = slice_map_iter(&hmap->map);
+  void* value;
+  while (slice_map_next(&it, NULL, &value)){
+    struct SymbolEntry* cur = value;
+    printf("Key: %.*s\n", (int)cur->key->len, cur->key->start);
+    printf("  Type: ");
+    print_type(cur->type);
+    printf("\n");
+    printf("  Attributes:\n");
+    print_ident_attr(cur->attrs);
+    printf("\n");
   }
 }
 
@@ -2787,64 +2750,29 @@ void print_symbol_table(struct SymbolTable* hmap){
 // Returns a TypeTable allocated in the arena.
 struct TypeTable* create_type_table(size_t numBuckets){
   struct TypeTable* table = arena_alloc(sizeof(struct TypeTable));
-  table->size = numBuckets;
-  table->arr = arena_alloc(sizeof(struct TypeEntry*) * numBuckets);
-  for (size_t i = 0; i < numBuckets; i++){
-    table->arr[i] = NULL;
-  }
+  slice_map_init(&table->map, numBuckets, false);
   return table;
 }
 
-// Insert a type entry into the table.
+// Add a type entry; like the symbol table, an existing name is kept first.
 void type_table_insert(struct TypeTable* hmap, struct Slice* key,
     enum TypeEntryType type, union TypeEntryVariant data){
-  size_t label = hash_slice(key) % hmap->size;
-
-  struct TypeEntry* new_entry = arena_alloc(sizeof(struct TypeEntry));
-  new_entry->key = key;
-  new_entry->type = type;
-  new_entry->data = data;
-  new_entry->next = NULL;
-
-  if (hmap->arr[label] == NULL){
-    hmap->arr[label] = new_entry;
-  } else {
-    struct TypeEntry* cur = hmap->arr[label];
-    while (cur->next != NULL){
-      cur = cur->next;
-    }
-    cur->next = new_entry;
-  }
+  struct TypeEntry* entry = arena_alloc(sizeof(struct TypeEntry));
+  entry->key = key;
+  entry->type = type;
+  entry->data = data;
+  slice_map_add(&hmap->map, key, entry);
 }
 
 // Look up a type entry by identifier name.
 // Returns the entry or NULL if missing.
 struct TypeEntry* type_table_get(struct TypeTable* hmap, struct Slice* key){
-  size_t label = hash_slice(key) % hmap->size;
-
-  struct TypeEntry* cur = hmap->arr[label];
-  while (cur != NULL){
-    if (compare_slice_to_slice(cur->key, key)){
-      return cur;
-    }
-    cur = cur->next;
-  }
-  return NULL;
+  return slice_map_get(&hmap->map, key);
 }
 
 // Check if a type entry exists in the table.
-// Returns true if the entry is present.
 bool type_table_contains(struct TypeTable* hmap, struct Slice* key){
-  size_t label = hash_slice(key) % hmap->size;
-
-  struct TypeEntry* cur = hmap->arr[label];
-  while (cur != NULL){
-    if (compare_slice_to_slice(cur->key, key)){
-      return true;
-    }
-    cur = cur->next;
-  }
-  return false;
+  return slice_map_contains(&hmap->map, key);
 }
 
 // Print member entries for debugging.
@@ -2859,33 +2787,32 @@ static void print_member_entries(struct MemberEntry* members){
 
 // Print the type table contents for debugging.
 void print_type_table(struct TypeTable* hmap){
-  for (size_t i = 0; i < hmap->size; i++){
-    struct TypeEntry* cur = hmap->arr[i];
-    while (cur != NULL){
-      printf("Type: %.*s\n", (int)cur->key->len, cur->key->start);
-      switch (cur->type){
-        case STRUCT_ENTRY:
-          printf("  Kind: struct\n");
-          if (cur->data.struct_entry != NULL){
-            printf("  Alignment: %u\n", cur->data.struct_entry->alignment);
-            print_member_entries(cur->data.struct_entry->members);
-          }
-          break;
-        case UNION_ENTRY:
-          printf("  Kind: union\n");
-          if (cur->data.union_entry != NULL){
-            printf("  Alignment: %u\n", cur->data.union_entry->alignment);
-            print_member_entries(cur->data.union_entry->members);
-          }
-          break;
-        case ENUM_ENTRY:
-          printf("  Kind: enum\n");
-          break;
-        default:
-          printf("  Kind: unknown\n");
-          break;
-      }
-      cur = cur->next;
+  struct SliceMapIter it = slice_map_iter(&hmap->map);
+  void* value;
+  while (slice_map_next(&it, NULL, &value)){
+    struct TypeEntry* cur = value;
+    printf("Type: %.*s\n", (int)cur->key->len, cur->key->start);
+    switch (cur->type){
+      case STRUCT_ENTRY:
+        printf("  Kind: struct\n");
+        if (cur->data.struct_entry != NULL){
+          printf("  Alignment: %u\n", cur->data.struct_entry->alignment);
+          print_member_entries(cur->data.struct_entry->members);
+        }
+        break;
+      case UNION_ENTRY:
+        printf("  Kind: union\n");
+        if (cur->data.union_entry != NULL){
+          printf("  Alignment: %u\n", cur->data.union_entry->alignment);
+          print_member_entries(cur->data.union_entry->members);
+        }
+        break;
+      case ENUM_ENTRY:
+        printf("  Kind: enum\n");
+        break;
+      default:
+        printf("  Kind: unknown\n");
+        break;
     }
   }
 }

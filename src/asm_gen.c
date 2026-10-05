@@ -536,39 +536,37 @@ struct AsmInstr* copy_bytes_from_reg(struct Slice* func_name, enum Reg src_reg, 
 
 // Convert a high-level symbol table to an assembly-level symbol table.
 struct AsmSymbolTable* convert_symbol_table(struct SymbolTable* symbols){
-  struct AsmSymbolTable* asm_table = create_asm_symbol_table(symbols->size);
-  
-  for (size_t i = 0; i < symbols->size; i++){
-    struct SymbolEntry* cur = symbols->arr[i];
-    while (cur != NULL){
-      struct AsmType* asm_type = type_to_asm_type(cur->type);
-      bool is_static = cur->attrs != NULL &&
-                       (cur->attrs->attr_type == STATIC_ATTR ||
-                        cur->attrs->attr_type == CONST_ATTR);
-      bool is_defined = cur->attrs != NULL && cur->attrs->is_defined;
-      bool return_on_stack = false;
-      if (cur->type != NULL && cur->type->type == FUN_TYPE) {
-        struct Type* ret_type = cur->type->type_data.fun_type.return_type;
-        if (ret_type != NULL &&
-            (ret_type->type == STRUCT_TYPE || ret_type->type == UNION_TYPE)) {
-          struct TypeEntry* entry = type_table_get(global_type_table,
-            ret_type->type == STRUCT_TYPE ? ret_type->type_data.struct_type.name
-                                          : ret_type->type_data.union_type.name);
-          if (entry == NULL) {
-            asm_gen_error("symbol table", cur->key,
-                          "missing type entry for aggregate return");
-          }
-          struct StructEntry* agg_entry =
-              (entry->type == STRUCT_ENTRY) ? entry->data.struct_entry
-                                            : entry->data.union_entry;
-          struct VarClassList* classes = classify_struct(agg_entry);
-          return_on_stack = (classes->var_class == MEMORY_CLASS);
+  struct AsmSymbolTable* asm_table = create_asm_symbol_table(symbols->map.bucket_count);
+
+  struct SliceMapIter entries = slice_map_iter(&symbols->map);
+  for (struct SymbolEntry* cur = slice_map_next_value(&entries); cur != NULL;
+       cur = slice_map_next_value(&entries)) {
+    struct AsmType* asm_type = type_to_asm_type(cur->type);
+    bool is_static = cur->attrs != NULL &&
+                     (cur->attrs->attr_type == STATIC_ATTR ||
+                      cur->attrs->attr_type == CONST_ATTR);
+    bool is_defined = cur->attrs != NULL && cur->attrs->is_defined;
+    bool return_on_stack = false;
+    if (cur->type != NULL && cur->type->type == FUN_TYPE) {
+      struct Type* ret_type = cur->type->type_data.fun_type.return_type;
+      if (ret_type != NULL &&
+          (ret_type->type == STRUCT_TYPE || ret_type->type == UNION_TYPE)) {
+        struct TypeEntry* entry = type_table_get(global_type_table,
+          ret_type->type == STRUCT_TYPE ? ret_type->type_data.struct_type.name
+                                        : ret_type->type_data.union_type.name);
+        if (entry == NULL) {
+          asm_gen_error("symbol table", cur->key,
+                        "missing type entry for aggregate return");
         }
+        struct StructEntry* agg_entry =
+            (entry->type == STRUCT_ENTRY) ? entry->data.struct_entry
+                                          : entry->data.union_entry;
+        struct VarClassList* classes = classify_struct(agg_entry);
+        return_on_stack = (classes->var_class == MEMORY_CLASS);
       }
-      
-      asm_symbol_table_insert(asm_table, cur->key, asm_type, is_static, is_defined, return_on_stack);
-      cur = cur->next;
     }
+    
+    asm_symbol_table_insert(asm_table, cur->key, asm_type, is_static, is_defined, return_on_stack);
   }
   
   return asm_table;
@@ -620,31 +618,31 @@ static struct DebugLocal* collect_debug_locals(const struct PseudoMap* map, size
   if (out_count != NULL) {
     *out_count = 0;
   }
-  if (map == NULL || map->arr == NULL) {
+  if (map == NULL) {
     return NULL;
   }
   struct DebugLocal* head = NULL;
-  for (size_t i = 0; i < map->size; i++) {
-    for (struct PseudoEntry* entry = map->arr[i]; entry != NULL; entry = entry->next) {
-      if (entry->pseudo == NULL || entry->mapped == NULL) {
-        continue;
-      }
-      struct Slice* name = operand_symbol_name(entry->pseudo);
-      if (name == NULL || slice_contains_temp_marker(name)) {
-        continue;
-      }
-      if (entry->mapped->type != OPERAND_MEMORY || entry->mapped->op.memory.base != BP) {
-        continue;
-      }
-      struct DebugLocal* local = arena_alloc(sizeof(struct DebugLocal));
-      local->name = name;
-      local->offset = entry->mapped->op.memory.offset;
-      local->size = asm_type_size(entry->mapped->asm_type); // store size in bytes
-      local->next = NULL;
-      insert_debug_local_sorted(&head, local);
-      if (out_count != NULL) {
-        (*out_count)++;
-      }
+  struct SliceMapIter entries = slice_map_iter(&map->map);
+  for (struct PseudoEntry* entry = slice_map_next_value(&entries); entry != NULL;
+       entry = slice_map_next_value(&entries)) {
+    if (entry->pseudo == NULL || entry->mapped == NULL) {
+      continue;
+    }
+    struct Slice* name = operand_symbol_name(entry->pseudo);
+    if (name == NULL || slice_contains_temp_marker(name)) {
+      continue;
+    }
+    if (entry->mapped->type != OPERAND_MEMORY || entry->mapped->op.memory.base != BP) {
+      continue;
+    }
+    struct DebugLocal* local = arena_alloc(sizeof(struct DebugLocal));
+    local->name = name;
+    local->offset = entry->mapped->op.memory.offset;
+    local->size = asm_type_size(entry->mapped->asm_type); // store size in bytes
+    local->next = NULL;
+    insert_debug_local_sorted(&head, local);
+    if (out_count != NULL) {
+      (*out_count)++;
     }
   }
   return head;
@@ -2020,232 +2018,156 @@ size_t asm_type_alignment(struct AsmType* type){
   }
 }
 
-// Allocate an empty pseudo-register map.
+// Allocate an empty pseudo map; release it with destroy_pseudo_map.
 struct PseudoMap* create_pseudo_map(size_t num_buckets){
-  struct PseudoEntry** arr = malloc(num_buckets * sizeof(struct PseudoEntry*));
   struct PseudoMap* hmap = malloc(sizeof(struct PseudoMap));
-
-  if (arr == NULL || hmap == NULL) {
-    free(arr);
-    free(hmap);
+  if (hmap == NULL) {
     asm_gen_error("stack-map", NULL, "allocation failed for pseudo map");
   }
-
-  for (size_t i = 0; i < num_buckets; ++i){
-    arr[i] = NULL;
-  }
-
-  hmap->size = num_buckets;
-  hmap->arr = arr;
-
+  slice_map_init(&hmap->map, num_buckets, true);
   return hmap;
 }
 
-
-// Allocate one pseudo-register map entry with its key and value.
-struct PseudoEntry* create_pseudo_entry(struct Operand* key, struct Operand* value){
-  struct PseudoEntry* entry = malloc(sizeof(struct PseudoEntry));
-
-  entry->pseudo = key;
-  entry->mapped = value;
-  entry->next = NULL;
-
-  return entry;
-}
-
-// Update or append a pseudo mapping within one collision chain.
-void pseudo_entry_insert(struct PseudoEntry* entry, struct Operand* key, struct Operand* value){
-  if (compare_slice_to_slice(operand_symbol_name(entry->pseudo), operand_symbol_name(key))){
-    entry->mapped = value;
-  } else if (entry->next == NULL){
-    entry->next = create_pseudo_entry(key, value);
-  } else {
-    pseudo_entry_insert(entry->next, key, value);
-  }
-}
-
-
-// Insert or replace a pseudo-register mapping in the hash table.
+// Insert or replace the location a pseudo-register maps to.
 void pseudo_map_insert(struct PseudoMap* hmap, struct Operand* key, struct Operand* value){
   if (hmap == NULL || key == NULL || operand_symbol_name(key) == NULL) {
     asm_gen_error("stack-map", NULL, "invalid pseudo map insert request");
   }
-  size_t label = hash_slice(operand_symbol_name(key)) % hmap->size;
-  
-  if ((hmap->arr[label]) == NULL){
-    hmap->arr[label] = create_pseudo_entry(key, value);
-  } else {
-    pseudo_entry_insert(hmap->arr[label], key, value);
+  struct PseudoEntry* entry = slice_map_get(&hmap->map, operand_symbol_name(key));
+  if (entry == NULL) {
+    entry = arena_alloc(sizeof(struct PseudoEntry));
+    entry->pseudo = key;
+    slice_map_add(&hmap->map, operand_symbol_name(key), entry);
   }
+  entry->mapped = value;
 }
 
-// Look up a pseudo-register mapping in one entry.
-struct Operand* pseudo_entry_get(struct PseudoEntry* entry, struct Operand* key){
-  if (compare_slice_to_slice(operand_symbol_name(entry->pseudo), operand_symbol_name(key))){
-    return entry->mapped;
-  } else if (entry->next == NULL){
-    return 0;
-  } else {
-    return pseudo_entry_get(entry->next, key);
-  }
-}
-
-// Look up a pseudo-register mapping across the map's collision chains.
+// Location of a pseudo operand, or NULL for non-pseudos and unmapped names. A
+// PseudoMem key yields a derived operand at the mapped location plus its
+// offset, typed by the key.
 struct Operand* pseudo_map_get(struct PseudoMap* hmap, struct Operand* key){
   if (hmap == NULL || key == NULL) {
     asm_gen_error("stack-map", NULL, "invalid pseudo map lookup request");
   }
   if (key->type != OPERAND_PSEUDO && key->type != OPERAND_PSEUDO_MEM) {
-    // not a pseudo operand, do not replace
     return NULL;
   }
   if (operand_symbol_name(key) == NULL) {
     asm_gen_error("stack-map", NULL, "pseudo operand missing identifier");
   }
-  
-  size_t label = hash_slice(operand_symbol_name(key)) % hmap->size;
-
-  if (hmap->arr[label] == NULL){
-    return 0;
-  } else {
-    struct Operand* mapped = pseudo_entry_get(hmap->arr[label], key);
-    if (mapped == NULL) {
-      return NULL;
-    }
-    if (key->type == OPERAND_PSEUDO_MEM) {
-      struct Operand* derived = arena_alloc(sizeof(struct Operand));
-      *derived = *mapped;
-      derived->asm_type = key->asm_type;
-      if (mapped->type == OPERAND_MEMORY) {
-        derived->op.memory.offset = mapped->op.memory.offset + key->op.pseudo_mem.offset;
-      } else if (mapped->type == OPERAND_DATA) {
-        derived->op.data.offset = mapped->op.data.offset + key->op.pseudo_mem.offset;
-      }
-      return derived;
-    }
+  struct PseudoEntry* entry = slice_map_get(&hmap->map, operand_symbol_name(key));
+  if (entry == NULL || entry->mapped == NULL) {
+    return NULL;
+  }
+  struct Operand* mapped = entry->mapped;
+  if (key->type != OPERAND_PSEUDO_MEM) {
     return mapped;
   }
-}
-
-
-// Return whether one pseudo-map entry contains the requested name.
-bool pseudo_entry_contains(struct PseudoEntry* entry, struct Operand* key){
-  if (compare_slice_to_slice(operand_symbol_name(entry->pseudo), operand_symbol_name(key))){
-    return true;
-  } else if (entry->next == NULL){
-    return false;
-  } else {
-    return pseudo_entry_contains(entry->next, key);
+  struct Operand* derived = arena_alloc(sizeof(struct Operand));
+  *derived = *mapped;
+  derived->asm_type = key->asm_type;
+  if (mapped->type == OPERAND_MEMORY) {
+    derived->op.memory.offset = mapped->op.memory.offset + key->op.pseudo_mem.offset;
+  } else if (mapped->type == OPERAND_DATA) {
+    derived->op.data.offset = mapped->op.data.offset + key->op.pseudo_mem.offset;
   }
+  return derived;
 }
 
-// Return whether the pseudo map contains the requested name.
+// Return whether the pseudo map has a location for the operand's name.
 bool pseudo_map_contains(struct PseudoMap* hmap, struct Operand* key){
   if (hmap == NULL || key == NULL || operand_symbol_name(key) == NULL) {
     asm_gen_error("stack-map", NULL, "invalid pseudo map contains request");
   }
-  size_t label = hash_slice(operand_symbol_name(key)) % hmap->size;
-
-  if (hmap->arr[label] == NULL){
-    return false;
-  } else {
-    return pseudo_entry_contains(hmap->arr[label], key);
-  }
+  return slice_map_contains(&hmap->map, operand_symbol_name(key));
 }
 
-// Recursively free a pseudo-register entry and its collision chain.
-void destroy_pseudo_entry(struct PseudoEntry* entry){
-  if (entry->next != NULL) destroy_pseudo_entry(entry->next);
-  free(entry);
-}
-
-// Free all pseudo-register entries and the map's bucket storage.
+// Free the map's own storage; operands and entries are arena-owned.
 void destroy_pseudo_map(struct PseudoMap* hmap){
-  for (int i = 0; i < hmap->size; ++i){
-    if (hmap->arr[i] != NULL) destroy_pseudo_entry(hmap->arr[i]);
-  }
-  free(hmap->arr);
+  slice_map_free(&hmap->map);
   free(hmap);
 }
 
-// Allocate an empty assembly symbol table with initialized buckets.
+// Allocate an empty assembly symbol table.
 struct AsmSymbolTable* create_asm_symbol_table(size_t numBuckets){
   struct AsmSymbolTable* table = arena_alloc(sizeof(struct AsmSymbolTable));
-  table->size = numBuckets;
-  table->arr = arena_alloc(sizeof(struct AsmSymbolEntry*) * numBuckets);
-  for (size_t i = 0; i < numBuckets; i++){
-    table->arr[i] = NULL;
-  }
+  slice_map_init(&table->map, numBuckets, false);
   return table;
 }
 
-// Insert an item into asm symbol table.
-void asm_symbol_table_insert(struct AsmSymbolTable* hmap, struct Slice* key, struct AsmType* type, 
+// Add a symbol's assembly metadata; like the symbol table, an existing name
+// is kept and found first.
+void asm_symbol_table_insert(struct AsmSymbolTable* hmap, struct Slice* key, struct AsmType* type,
     bool is_static, bool is_defined, bool return_on_stack){
-  size_t label = hash_slice(key) % hmap->size;
-  
-  struct AsmSymbolEntry* newEntry = arena_alloc(sizeof(struct AsmSymbolEntry));
-  newEntry->key = key;
-  newEntry->type = type;
-  newEntry->is_static = is_static;
-  newEntry->is_defined = is_defined;
-  newEntry->return_on_stack = return_on_stack;
-  newEntry->next = NULL;
-
-  if (hmap->arr[label] == NULL){
-    hmap->arr[label] = newEntry;
-  } else {
-    struct AsmSymbolEntry* cur = hmap->arr[label];
-    while (cur->next != NULL){
-      cur = cur->next;
-    }
-    cur->next = newEntry;
-  }
+  struct AsmSymbolEntry* entry = arena_alloc(sizeof(struct AsmSymbolEntry));
+  entry->key = key;
+  entry->type = type;
+  entry->is_static = is_static;
+  entry->is_defined = is_defined;
+  entry->return_on_stack = return_on_stack;
+  slice_map_add(&hmap->map, key, entry);
 }
 
 // Look up a symbol's assembly metadata by name.
 struct AsmSymbolEntry* asm_symbol_table_get(struct AsmSymbolTable* hmap, struct Slice* key){
-  size_t label = hash_slice(key) % hmap->size;
-
-  struct AsmSymbolEntry* cur = hmap->arr[label];
-  while (cur != NULL){
-    if (compare_slice_to_slice(cur->key, key)){
-      return cur;
-    }
-    cur = cur->next;
-  }
-  return NULL;
+  return slice_map_get(&hmap->map, key);
 }
 
 // Return whether the assembly symbol table contains a name.
 bool asm_symbol_table_contains(struct AsmSymbolTable* hmap, struct Slice* key){
-  size_t label = hash_slice(key) % hmap->size;
-
-  struct AsmSymbolEntry* cur = hmap->arr[label];
-  while (cur != NULL){
-    if (compare_slice_to_slice(cur->key, key)){
-      return true;
-    }
-    cur = cur->next;
-  }
-  return false;
+  return slice_map_contains(&hmap->map, key);
 }
 
 // Dump each pseudo-register's stack offset and assigned assembly type.
 void print_pseudo_map(struct Slice* func, struct PseudoMap* hmap){
   printf("%.*s pseudo map:\n", (int)func->len, func->start);
-  for (size_t i = 0; i < hmap->size; i++){
-    struct PseudoEntry* cur = hmap->arr[i];
-    while (cur != NULL){
-      struct Slice* name = operand_symbol_name(cur->pseudo);
-      printf("  Key: %.*s\n",
-        name == NULL ? 0 : (int)name->len,
-        name == NULL ? "<null>" : name->start);
-      printf("    BP Offset: %d\n",
-        cur->mapped->type == OPERAND_MEMORY ? cur->mapped->op.memory.offset :
-        cur->mapped->type == OPERAND_DATA ? cur->mapped->op.data.offset : 0);
-      printf("    Type: ");
-      switch (cur->mapped->asm_type->type) {
+  struct SliceMapIter entries = slice_map_iter(&hmap->map);
+  for (struct PseudoEntry* cur = slice_map_next_value(&entries); cur != NULL;
+       cur = slice_map_next_value(&entries)) {
+    struct Slice* name = operand_symbol_name(cur->pseudo);
+    printf("  Key: %.*s\n",
+      name == NULL ? 0 : (int)name->len,
+      name == NULL ? "<null>" : name->start);
+    printf("    BP Offset: %d\n",
+      cur->mapped->type == OPERAND_MEMORY ? cur->mapped->op.memory.offset :
+      cur->mapped->type == OPERAND_DATA ? cur->mapped->op.data.offset : 0);
+    printf("    Type: ");
+    switch (cur->mapped->asm_type->type) {
+      case BYTE:
+        printf("BYTE\n");
+        break;
+      case DOUBLE:
+        printf("DOUBLE\n");
+        break;
+      case WORD:
+        printf("WORD\n");
+        break;
+      case LONG_WORD:
+        printf("LONG_WORD\n");
+        break;
+      case BYTE_ARRAY:
+        printf("BYTE_ARRAY(size=%zu, alignment=%zu)\n", 
+          cur->mapped->asm_type->byte_array.size, 
+          cur->mapped->asm_type->byte_array.alignment);
+        break;
+      default:
+        printf("unknown\n");
+        break;
+    }
+  }
+}
+
+// Dump assembly symbol types, linkage, and definition state.
+void print_asm_symbol_table(struct AsmSymbolTable* hmap){
+  struct SliceMapIter entries = slice_map_iter(&hmap->map);
+  for (struct AsmSymbolEntry* cur = slice_map_next_value(&entries); cur != NULL;
+       cur = slice_map_next_value(&entries)) {
+    printf("Key: %.*s\n", (int)cur->key->len, cur->key->start);
+    printf("  Type: ");
+    if (cur->type == NULL) {
+      printf("NULL\n");
+    } else {
+      switch (cur->type->type){
         case BYTE:
           printf("BYTE\n");
           break;
@@ -2259,55 +2181,16 @@ void print_pseudo_map(struct Slice* func, struct PseudoMap* hmap){
           printf("LONG_WORD\n");
           break;
         case BYTE_ARRAY:
-          printf("BYTE_ARRAY(size=%zu, alignment=%zu)\n", 
-            cur->mapped->asm_type->byte_array.size, 
-            cur->mapped->asm_type->byte_array.alignment);
+          printf("BYTE_ARRAY(size=%zu, alignment=%zu)\n", cur->type->byte_array.size, cur->type->byte_array.alignment);
           break;
         default:
-          printf("unknown\n");
+          printf("Unknown (%d)\n", (int)cur->type->type);
           break;
       }
-      cur = cur->next;
     }
-  }
-}
-
-// Dump assembly symbol types, linkage, and definition state.
-void print_asm_symbol_table(struct AsmSymbolTable* hmap){
-  for (size_t i = 0; i < hmap->size; i++){
-    struct AsmSymbolEntry* cur = hmap->arr[i];
-    while (cur != NULL){
-      printf("Key: %.*s\n", (int)cur->key->len, cur->key->start);
-      printf("  Type: ");
-      if (cur->type == NULL) {
-        printf("NULL\n");
-      } else {
-        switch (cur->type->type){
-          case BYTE:
-            printf("BYTE\n");
-            break;
-          case DOUBLE:
-            printf("DOUBLE\n");
-            break;
-          case WORD:
-            printf("WORD\n");
-            break;
-          case LONG_WORD:
-            printf("LONG_WORD\n");
-            break;
-          case BYTE_ARRAY:
-            printf("BYTE_ARRAY(size=%zu, alignment=%zu)\n", cur->type->byte_array.size, cur->type->byte_array.alignment);
-            break;
-          default:
-            printf("Unknown (%d)\n", (int)cur->type->type);
-            break;
-        }
-      }
-      printf("  Is Static: %s\n", cur->is_static ? "true" : "false");
-      printf("  Is Defined: %s\n", cur->is_defined ? "true" : "false");
-      printf("\n");
-      cur = cur->next;
-    }
+    printf("  Is Static: %s\n", cur->is_static ? "true" : "false");
+    printf("  Is Defined: %s\n", cur->is_defined ? "true" : "false");
+    printf("\n");
   }
 }
 

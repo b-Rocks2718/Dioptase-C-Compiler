@@ -1,4 +1,5 @@
 #include "dead_store_elim.h"
+#include "slice_index.h"
 #include "exit_codes.h"
 #include "slice.h"
 
@@ -8,29 +9,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Configure the pass-local hash table and the machine-independent width of a
-// liveness word. These constants keep growth policy and bit arithmetic named.
+// Initial capacity hint for the variable index, and the machine-independent
+// width of a liveness word.
 enum {
-  kInitialVariableBuckets = 256,
-  kVariableMapLoadNumerator = 3,
-  kVariableMapLoadDenominator = 4,
+  kInitialVariableCapacity = 128,
   kLiveWordBits = 64,
 };
 
-// Link one borrowed variable name to its dense liveness-bit index. Entries are
-// owned by VariableIndex and chained within one hash bucket.
-struct VariableIndexEntry {
-  struct Slice* name;
-  size_t index;
-  struct VariableIndexEntry* next;
-};
-
 // Map variable names to consecutive bit indices for one DSE invocation. The
-// table owns its buckets and entries, but the Slice names remain arena-owned.
+// Slice names remain arena-owned.
 struct VariableIndex {
-  struct VariableIndexEntry** buckets;
-  size_t bucket_count;
-  size_t count;
+  struct SliceIndex ids;
+  size_t count; // number of indexed variables (bitset width)
 };
 
 // View a fixed-width bitset of live variables. Some views own separately
@@ -69,73 +59,16 @@ static void* dse_calloc(size_t count, size_t size, const char* purpose) {
   return allocation;
 }
 
-// Initialize an empty variable index with the starting bucket count.
+// Initialize an empty variable index.
 static void variable_index_init(struct VariableIndex* index) {
-  index->bucket_count = kInitialVariableBuckets;
+  slice_index_init(&index->ids, kInitialVariableCapacity);
   index->count = 0;
-  index->buckets = dse_calloc(index->bucket_count, sizeof(*index->buckets),
-                              "creating the variable index");
 }
 
-// Release every entry and bucket owned by index and reset it to an empty state.
+// Release the index's storage and reset it to an empty state.
 static void variable_index_destroy(struct VariableIndex* index) {
-  for (size_t bucket = 0; bucket < index->bucket_count; ++bucket) {
-    struct VariableIndexEntry* entry = index->buckets[bucket];
-    while (entry != NULL) {
-      struct VariableIndexEntry* next = entry->next;
-      free(entry);
-      entry = next;
-    }
-  }
-  free(index->buckets);
-  index->buckets = NULL;
-  index->bucket_count = 0;
+  slice_index_free(&index->ids);
   index->count = 0;
-}
-
-// Find the entry for name, returning a borrowed pointer or NULL when absent.
-static struct VariableIndexEntry* variable_index_find_entry(
-    const struct VariableIndex* index, const struct Slice* name) {
-  if (name == NULL) {
-    return NULL;
-  }
-  size_t bucket = hash_slice(name) % index->bucket_count;
-  for (struct VariableIndexEntry* entry = index->buckets[bucket];
-       entry != NULL;
-       entry = entry->next) {
-    if (compare_slice_to_slice(entry->name, name)) {
-      return entry;
-    }
-  }
-  return NULL;
-}
-
-// Double the bucket array and relink existing entries without changing indices.
-static void variable_index_grow(struct VariableIndex* index) {
-  size_t new_bucket_count = index->bucket_count * 2;
-  if (new_bucket_count < index->bucket_count) {
-    fprintf(stderr,
-            "Dead-store elimination error: variable index bucket count overflow\n");
-    exit(BCC_EXIT_INTERNAL);
-  }
-
-  struct VariableIndexEntry** new_buckets =
-      dse_calloc(new_bucket_count, sizeof(*new_buckets),
-                 "growing the variable index");
-  for (size_t bucket = 0; bucket < index->bucket_count; ++bucket) {
-    struct VariableIndexEntry* entry = index->buckets[bucket];
-    while (entry != NULL) {
-      struct VariableIndexEntry* next = entry->next;
-      size_t new_bucket = hash_slice(entry->name) % new_bucket_count;
-      entry->next = new_buckets[new_bucket];
-      new_buckets[new_bucket] = entry;
-      entry = next;
-    }
-  }
-
-  free(index->buckets);
-  index->buckets = new_buckets;
-  index->bucket_count = new_bucket_count;
 }
 
 // Return name's existing bit index, or insert it and assign the next index.
@@ -144,41 +77,24 @@ static size_t variable_index_add(struct VariableIndex* index, struct Slice* name
   if (name == NULL) {
     return SIZE_MAX;
   }
-
-  struct VariableIndexEntry* existing = variable_index_find_entry(index, name);
-  if (existing != NULL) {
-    return existing->index;
-  }
-
-  if (index->count >=
-      index->bucket_count * kVariableMapLoadNumerator /
-          kVariableMapLoadDenominator) {
-    variable_index_grow(index);
-  }
-
-  struct VariableIndexEntry* entry =
-      dse_calloc(1, sizeof(*entry), "adding a liveness variable");
-  entry->name = name;
-  entry->index = index->count++;
-  size_t bucket = hash_slice(name) % index->bucket_count;
-  entry->next = index->buckets[bucket];
-  index->buckets[bucket] = entry;
-  return entry->index;
+  uint32_t id = slice_index_add(&index->ids, name, NULL);
+  index->count = index->ids.count;
+  return id;
 }
 
 // Return the previously assigned index for name. Absence is an internal pass
 // error because every operand must be collected before bitsets are allocated.
 static size_t variable_index_get(const struct VariableIndex* index,
                                  const struct Slice* name) {
-  struct VariableIndexEntry* entry = variable_index_find_entry(index, name);
-  if (entry == NULL) {
+  uint32_t id = name == NULL ? SLICE_INDEX_NONE : slice_index_get(&index->ids, name);
+  if (id == SLICE_INDEX_NONE) {
     fprintf(stderr,
             "Dead-store elimination error: liveness variable '%.*s' was not indexed\n",
             name == NULL ? 0 : (int)name->len,
             name == NULL ? "" : name->start);
     exit(BCC_EXIT_INTERNAL);
   }
-  return entry->index;
+  return id;
 }
 
 // Add val to the index when it is a variable operand.
