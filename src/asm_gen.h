@@ -80,6 +80,9 @@ struct AsmFunc {
   struct AsmInstr* body;
   struct DebugLocal* locals;
   size_t num_locals;
+  // Frame bytes below BP reserved before any pseudo gets a slot: 4 when the
+  // function returns through a caller buffer whose pointer is kept at BP-4.
+  size_t reserved_stack_bytes;
 };
 
 // Store a file-scope static variable and its initializer.
@@ -511,6 +514,11 @@ struct OperandSlots asm_operand_slots(struct AsmInstr* asm_instr);
 // Returns the total stack allocation in bytes (including reserved + padding).
 // reserved_bytes preserves ABI-mandated slots (e.g., return pointer).
 size_t create_maps(struct AsmInstr* asm_instr, size_t reserved_bytes);
+
+// Place every pseudo left after register allocation (stack slot or data
+// label), prepend the frame allocation, record debug locals, and replace the
+// pseudos in place. Runs once, after allocate_registers.
+void assign_stack_slots(struct AsmProg* prog);
 
 void replace_pseudo(struct AsmInstr* asm_instr);
 

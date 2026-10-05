@@ -21,6 +21,7 @@
 #include "optimization.h"
 #include "asm_gen.h"
 #include "codegen.h"
+#include "regalloc.h"
 #include "machine_print.h"
 #include "arena.h"
 #include "source_location.h"
@@ -664,6 +665,10 @@ int main(int argc, const char *const *const argv) {
             arena_destroy();
             return BCC_EXIT_INTERNAL;
         }
+        // Instruction selection leaves pseudos; the allocator assigns some to
+        // registers and assign_stack_slots places the rest in the frame.
+        allocate_registers(asm_prog);
+        assign_stack_slots(asm_prog);
 
         if (print_asm) {
             print_asm_symbol_table(asm_symbol_table);
