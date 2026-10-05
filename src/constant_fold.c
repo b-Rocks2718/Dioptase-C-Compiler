@@ -1,6 +1,7 @@
 #include "constant_fold.h"
 #include "arena.h"
 #include "TAC.h"
+#include "const_eval.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -38,69 +39,10 @@ static struct ConstantFoldResult constant_fold_deletion = {
     NULL
 };
 
-// Return the integer width represented by a TAC type.
-static bool constant_width_bits(const struct Type* type, size_t* bits) {
-  if (type == NULL || bits == NULL) {
-    return false;
-  }
-  size_t bytes = get_type_size((struct Type*)type);
-  if (bytes == 0 || bytes > sizeof(uint64_t)) {
-    return false;
-  }
-  *bits = bytes * CHAR_BIT;
-  return true;
-}
-
-// Build a mask containing the requested number of low-order 1's
+// Mask with the low `bits` bits set; used by Trunc/Extend, whose widths come
+// from the instruction rather than from a type.
 static uint64_t constant_mask(size_t bits) {
   return bits == 64 ? UINT64_MAX : (UINT64_C(1) << bits) - UINT64_C(1);
-}
-
-// Normalize raw constant bits to the representation of a TAC type.
-static bool normalize_constant(uint64_t value, const struct Type* type,
-                               uint64_t* result) {
-  size_t bits;
-  if (result == NULL || !constant_width_bits(type, &bits)) {
-    return false;
-  }
-
-  // mask to only `bits` low-order bits, then sign-extend if the type is signed
-  uint64_t mask = constant_mask(bits);
-  value &= mask;
-  
-  if (is_signed_type((struct Type*)type) && bits < 64) {
-    uint64_t sign_bit = UINT64_C(1) << (bits - 1);
-    if ((value & sign_bit) != 0) {
-      value |= ~mask;
-    }
-  }
-  *result = value;
-  return true;
-}
-
-// Interpret raw constant bits as a signed integer of the given width.
-static bool constant_as_signed(uint64_t value, const struct Type* type,
-                               int64_t* result) {
-  size_t bits;
-  if (result == NULL || !constant_width_bits(type, &bits)) {
-    return false;
-  }
-
-  uint64_t mask = constant_mask(bits);
-  uint64_t truncated = value & mask;
-  uint64_t sign_bit = UINT64_C(1) << (bits - 1);
-  if ((truncated & sign_bit) == 0) {
-    *result = (int64_t)truncated;
-    return true;
-  }
-
-  uint64_t magnitude = ((~truncated) & mask) + UINT64_C(1);
-  if (magnitude == (UINT64_C(1) << 63)) {
-    *result = INT64_MIN;
-  } else {
-    *result = -(int64_t)magnitude;
-  }
-  return true;
 }
 
 // Allocate a replacement instruction without exposing TAC.c internals.
@@ -119,7 +61,7 @@ static struct TACInstr* constant_instr_create(enum TACInstrType type) {
 // the final TAC body, so they must outlive the optimizer's scratch arena.
 static struct Val* constant_value_create(uint64_t value, struct Type* type) {
   uint64_t normalized;
-  if (!normalize_constant(value, type, &normalized)) {
+  if (!const_normalize(value, type, &normalized)) {
     return NULL;
   }
 
@@ -151,94 +93,21 @@ static struct TACInstr* constant_copy_create(struct Val* dst, uint64_t value) {
   return copy;
 }
 
-// Evaluate a conditional jump when both operands are constants.
-// Return value indicates whether the jump condition can be determined at compile time
+// Evaluate a conditional jump when both operands are constants of the same
+// width. Returns false when the outcome cannot be decided at compile time.
 static bool constant_cond_jump_result(const struct TACCondJump* jump,
                                       bool* result) {
-  // Validate inputs, ensure jump args are constants
-  if (jump == NULL || result == NULL || jump->src1 == NULL || jump->src2 == NULL ||
-      jump->src1->val_type != CONSTANT || jump->src2->val_type != CONSTANT ||
-      jump->src1->type == NULL || jump->src2->type == NULL) {
-    return false;
-  }
-
-  // ensure both operands have the same bit width
   size_t left_bits;
   size_t right_bits;
-  if (!constant_width_bits(jump->src1->type, &left_bits) ||
-      !constant_width_bits(jump->src2->type, &right_bits) ||
-      left_bits != right_bits) {
+  if (jump == NULL || result == NULL || jump->src1 == NULL || jump->src2 == NULL ||
+      jump->src1->val_type != CONSTANT || jump->src2->val_type != CONSTANT ||
+      !const_type_bits(jump->src1->type, &left_bits) ||
+      !const_type_bits(jump->src2->type, &right_bits) || left_bits != right_bits) {
     return false;
   }
-
-  uint64_t mask = constant_mask(left_bits);
-  uint64_t unsigned_left = jump->src1->val.const_value & mask;
-  uint64_t unsigned_right = jump->src2->val.const_value & mask;
-  int64_t signed_left;
-  int64_t signed_right;
-
-  // determine whether the jump will be taken
-  switch (jump->condition) {
-    case CondE:
-      *result = unsigned_left == unsigned_right;
-      return true;
-    case CondNE:
-      *result = unsigned_left != unsigned_right;
-      return true;
-    case CondG:
-    case CondGE:
-    case CondL:
-    case CondLE:
-      if (!constant_as_signed(jump->src1->val.const_value, jump->src1->type,
-                              &signed_left) ||
-          !constant_as_signed(jump->src2->val.const_value, jump->src2->type,
-                              &signed_right)) {
-        return false;
-      }
-      if (jump->condition == CondG) {
-        *result = signed_left > signed_right;
-      } else if (jump->condition == CondGE) {
-        *result = signed_left >= signed_right;
-      } else if (jump->condition == CondL) {
-        *result = signed_left < signed_right;
-      } else {
-        *result = signed_left <= signed_right;
-      }
-      return true;
-    case CondA:
-      *result = unsigned_left > unsigned_right;
-      return true;
-    case CondAE:
-      *result = unsigned_left >= unsigned_right;
-      return true;
-    case CondB:
-      *result = unsigned_left < unsigned_right;
-      return true;
-    case CondBE:
-      *result = unsigned_left <= unsigned_right;
-      return true;
-  }
-  return false;
-}
-
-// Evaluate an arithmetic right shift without relying on the host's
-static bool constant_arithmetic_shift_right(uint64_t value,
-                                            uint64_t shift,
-                                            const struct Type* type,
-                                            uint64_t* result) {
-  size_t bits;
-  if (result == NULL || !constant_width_bits(type, &bits) || shift >= bits) {
-    return false;
-  }
-
-  uint64_t mask = constant_mask(bits);
-  uint64_t truncated = value & mask;
-  uint64_t shifted = truncated >> shift;
-  uint64_t sign_bit = UINT64_C(1) << (bits - 1);
-  if (shift != 0 && (truncated & sign_bit) != 0) {
-    shifted |= mask ^ (mask >> shift);
-  }
-  return normalize_constant(shifted, type, result);
+  return const_eval_condition(jump->condition, jump->src1->val.const_value,
+                              jump->src1->type, jump->src2->val.const_value,
+                              jump->src2->type, result) == CONST_EVAL_OK;
 }
 
 // Fold constant expressions throughout a TAC body.
@@ -293,28 +162,15 @@ static struct ConstantFoldResult constant_fold_instr(struct TACInstr* instr) {
         return constant_fold_unchanged;
       }
 
-      switch (instr->instr.tac_unary.op) {
-        case COMPLEMENT:
-          return constant_fold_replacement(
-              constant_copy_create(dst, ~src->val.const_value));
-        case NEGATE:
-          // Unsigned subtraction computes the same two's-complement result bits
-          // without host signed-overflow UB for the minimum signed value.
-          return constant_fold_replacement(constant_copy_create(
-              dst, UINT64_C(0) - src->val.const_value));
-        case BOOL_NOT: {
-          uint64_t normalized;
-          if (!normalize_constant(src->val.const_value, src->type, &normalized)) {
-            return constant_fold_unchanged;
-          }
-          return constant_fold_replacement(
-              constant_copy_create(dst, normalized == 0));
-        }
-        case UNARY_PLUS:
-          return constant_fold_replacement(
-              constant_copy_create(dst, src->val.const_value));
+      // `!` tests the source at its own width; the other operators compute in
+      // the destination type, which matches the source for them.
+      enum UnOp op = instr->instr.tac_unary.op;
+      const struct Type* eval_type = op == BOOL_NOT ? src->type : (dst == NULL ? NULL : dst->type);
+      uint64_t value;
+      if (const_eval_unary(op, src->val.const_value, eval_type, &value) != CONST_EVAL_OK) {
+        return constant_fold_unchanged;
       }
-      return constant_fold_unchanged;
+      return constant_fold_replacement(constant_copy_create(dst, value));
     }
     case TACBINARY: {
       struct TACBinary* binary = &instr->instr.tac_binary;
@@ -342,110 +198,15 @@ static struct ConstantFoldResult constant_fold_instr(struct TACInstr* instr) {
         return constant_fold_unchanged;
       }
 
-      uint64_t unsigned_left;
-      uint64_t unsigned_right;
-      if (!normalize_constant(left->val.const_value, result_type, &unsigned_left) ||
-          !normalize_constant(right->val.const_value, result_type, &unsigned_right)) {
+      // Undefined results (division by zero, INT_MIN / -1, bad shift counts)
+      // are left for run time rather than folded.
+      uint64_t value;
+      if (const_eval_alu(binary->alu_op, left->val.const_value, left->type,
+                         right->val.const_value, right->type, result_type,
+                         &value) != CONST_EVAL_OK) {
         return constant_fold_unchanged;
       }
-
-      switch (binary->alu_op) {
-        case ALU_ADD:
-          return constant_fold_replacement(constant_copy_create(
-              binary->dst, unsigned_left + unsigned_right));
-        case ALU_SUB:
-          return constant_fold_replacement(constant_copy_create(
-              binary->dst, unsigned_left - unsigned_right));
-        case ALU_SMUL:
-        case ALU_UMUL:
-          // Low two's-complement product bits are identical for signed and
-          // unsigned multiplication; unsigned arithmetic has defined wrap.
-          return constant_fold_replacement(constant_copy_create(
-              binary->dst, unsigned_left * unsigned_right));
-        case ALU_SDIV:
-        case ALU_SMOD: {
-          int64_t signed_left;
-          int64_t signed_right;
-          size_t result_bits;
-          if (!constant_as_signed(left->val.const_value, result_type, &signed_left) ||
-              !constant_as_signed(right->val.const_value, result_type, &signed_right) ||
-              !constant_width_bits(result_type, &result_bits) || signed_right == 0) {
-            return constant_fold_unchanged;
-          }
-          int64_t minimum = result_bits == 64
-                                ? INT64_MIN
-                                : -(INT64_C(1) << (result_bits - 1));
-          if (signed_left == minimum && signed_right == -1) {
-            return constant_fold_unchanged;
-          }
-          int64_t signed_result = binary->alu_op == ALU_SDIV
-                                      ? signed_left / signed_right
-                                      : signed_left % signed_right;
-          return constant_fold_replacement(
-              constant_copy_create(binary->dst, (uint64_t)signed_result));
-        }
-        case ALU_UDIV:
-          if (unsigned_right == 0) {
-            return constant_fold_unchanged;
-          }
-          return constant_fold_replacement(constant_copy_create(
-              binary->dst, unsigned_left / unsigned_right));
-        case ALU_UMOD:
-          if (unsigned_right == 0) {
-            return constant_fold_unchanged;
-          }
-          return constant_fold_replacement(constant_copy_create(
-              binary->dst, unsigned_left % unsigned_right));
-        case ALU_AND:
-          return constant_fold_replacement(constant_copy_create(
-              binary->dst, unsigned_left & unsigned_right));
-        case ALU_OR:
-          return constant_fold_replacement(constant_copy_create(
-              binary->dst, unsigned_left | unsigned_right));
-        case ALU_XOR:
-          return constant_fold_replacement(constant_copy_create(
-              binary->dst, unsigned_left ^ unsigned_right));
-        case ALU_LSL:
-        case ALU_LSR:
-        case ALU_ASL:
-        case ALU_ASR: {
-          uint64_t shift;
-          if (right->type != NULL && is_signed_type(right->type)) {
-            int64_t signed_shift;
-            if (!constant_as_signed(right->val.const_value, right->type, &signed_shift) ||
-                signed_shift < 0) {
-              return constant_fold_unchanged;
-            }
-            shift = (uint64_t)signed_shift;
-          } else if (!normalize_constant(right->val.const_value, right->type, &shift)) {
-            return constant_fold_unchanged;
-          }
-
-          size_t result_bits;
-          if (!constant_width_bits(result_type, &result_bits) || shift >= result_bits) {
-            return constant_fold_unchanged;
-          }
-          if (binary->alu_op == ALU_LSL || binary->alu_op == ALU_ASL) {
-            return constant_fold_replacement(
-                constant_copy_create(binary->dst, unsigned_left << shift));
-          }
-          if (binary->alu_op == ALU_LSR) {
-            return constant_fold_replacement(
-                constant_copy_create(binary->dst, unsigned_left >> shift));
-          }
-
-          uint64_t shifted;
-          if (!constant_arithmetic_shift_right(left->val.const_value, shift,
-                                               result_type, &shifted)) {
-            return constant_fold_unchanged;
-          }
-          return constant_fold_replacement(
-              constant_copy_create(binary->dst, shifted));
-        }
-        case ALU_MOV:
-          return constant_fold_unchanged;
-      }
-      return constant_fold_unchanged;
+      return constant_fold_replacement(constant_copy_create(binary->dst, value));
     }
     case TACCOND_JUMP: {
       struct TACCondJump* jump = &instr->instr.tac_cond_jump;

@@ -251,6 +251,9 @@ bool is_null_pointer_constant(struct Expr* expr);
 // Returns true on success; false on invalid conversions.
 bool convert_by_assignment(struct Expr** expr, struct Type* target_type);
 
+// Apply the integer promotions: char and short types become int.
+struct Type* promote_integer_type(struct Type* type);
+
 // Compute the common arithmetic type of two types.
 // Returns the common type or NULL on incompatibility.
 struct Type* get_common_type(struct Type* type1, struct Type* type2);

@@ -1,4 +1,6 @@
 #include "TAC.h"
+#include "const_eval.h"
+#include "analysis.h"
 #include "exit_codes.h"
 #include "arena.h"
 #include "label_resolution.h"
@@ -58,7 +60,7 @@ static const char* declaration_loc(const struct Declaration* dclr) {
 // Print a TAC error with optional source location context and exit.
 // loc may be NULL; fmt is a printf-style format.
 // Source context must be initialized for locations.
-static void tac_error_at(const char* loc, const char* fmt, ...) {
+ANALYSIS_NORETURN static void tac_error_at(const char* loc, const char* fmt, ...) {
   struct SourceLocation where = source_location_from_ptr(loc);
   const char* filename = source_filename_for_ptr(loc);
   if (where.line == 0) {
@@ -334,59 +336,23 @@ static enum BinOp compound_to_binop(enum BinOp op) {
 }
 
 // Map a relational operator to a TAC condition, using signedness.
-// Returns the TAC condition used for a successful comparison.
+// op must be relational; anything else is an internal error.
 static enum TACCondition relation_to_cond(enum BinOp op, struct Type* type) {
-  bool is_signed = is_signed_type(type);
-  switch (op) {
-    case BOOL_EQ:
-      return CondE;
-    case BOOL_NEQ:
-      return CondNE;
-    case BOOL_GE:
-      return is_signed ? CondG : CondA;
-    case BOOL_GEQ:
-      return is_signed ? CondGE : CondAE;
-    case BOOL_LE:
-      return is_signed ? CondL : CondB;
-    case BOOL_LEQ:
-      return is_signed ? CondLE : CondBE;
-    default:
-      tac_error_at(NULL, "invalid relational operator in relation_to_cond");
-      return -1;
+  enum TACCondition cond;
+  if (!binop_condition(op, type, &cond)) {
+    tac_error_at(NULL, "invalid relational operator in relation_to_cond");
   }
+  return cond;
 }
 
-// Map a binary operator to an ALU op, using signedness.
-// Returns the ALU op used
-static enum TACCondition binop_to_aluop(enum BinOp op, struct Type* type) {
-  bool is_signed = is_signed_type(type);
-  switch (op) {
-    case ADD_OP:
-      return ALU_ADD;
-    case SUB_OP:
-      return ALU_SUB;
-    case MUL_OP:
-      return is_signed ? ALU_SMUL : ALU_UMUL;
-    case DIV_OP:
-      return is_signed ? ALU_SDIV : ALU_UDIV;
-    case MOD_OP:
-      return is_signed ? ALU_SMOD : ALU_UMOD;
-    case BIT_AND:
-      return ALU_AND;
-    case BIT_OR:
-      return ALU_OR;
-    case BIT_XOR:
-      return ALU_XOR;
-    case BIT_SHL:
-      return is_signed ? ALU_ASL : ALU_LSL;
-    case BIT_SHR:
-      return is_signed ? ALU_ASR : ALU_LSR;
-    case COMMA_OP:
-      return ALU_MOV;
-    default:
-      tac_error_at(NULL, "invalid binary operator in binop_to_aluop");
-      return -1;
+// Map an arithmetic/bitwise operator to an ALU op, using signedness.
+// op must have an ALU equivalent; anything else is an internal error.
+static enum ALUOp binop_to_aluop(enum BinOp op, struct Type* type) {
+  enum ALUOp alu_op;
+  if (!binop_alu_op(op, type, &alu_op)) {
+    tac_error_at(NULL, "invalid binary operator in binop_to_aluop");
   }
+  return alu_op;
 }
 
 // Emit TAC for signed division/modulo when the LHS is a narrower unsigned type.

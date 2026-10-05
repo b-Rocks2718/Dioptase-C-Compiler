@@ -1,4 +1,5 @@
 #include "TAC.h"
+#include "const_eval.h"
 #include "analysis.h"
 #include "slice.h"
 
@@ -756,138 +757,60 @@ static void tac_assign_val(struct TacInterpreter* interp,
                 tac_normalize_scalar(value, dst->type));
 }
 
-// Determine the result of a TAC conditional jump.
-// Returns true if the condition is satisfied.
-static bool tac_condition_true(enum TACCondition cond, uint64_t left, uint64_t right) {
-  switch (cond) {
-    case CondE:
-      return left == right;
-    case CondNE:
-      return left != right;
-    case CondG:
-      return (int64_t)left > (int64_t)right;
-    case CondGE:
-      return (int64_t)left >= (int64_t)right;
-    case CondL:
-      return (int64_t)left < (int64_t)right;
-    case CondLE:
-      return (int64_t)left <= (int64_t)right;
-    case CondA:
-      return left > right;
-    case CondAE:
-      return left >= right;
-    case CondB:
-      return left < right;
-    case CondBE:
-      return left <= right;
+// Report an arithmetic result C leaves undefined; the interpreted program has
+// undefined behavior, so execution cannot continue.
+ANALYSIS_NORETURN static void tac_arith_error(enum ConstEvalStatus status,
+                                              const char* what, bool remainder) {
+  switch (status) {
+    case CONST_EVAL_DIV_BY_ZERO:
+      tac_interp_error("%s by zero in %s", remainder ? "modulo" : "division", what);
+    case CONST_EVAL_SIGNED_OVERFLOW:
+      tac_interp_error("signed %s overflow (minimum value by -1) in %s",
+                       remainder ? "remainder" : "division", what);
+    case CONST_EVAL_BAD_SHIFT:
+      tac_interp_error("shift count is negative or not less than the operand width in %s", what);
     default:
-      tac_interp_error("unknown TAC condition %d", (int)cond);
-      return false;
+      tac_interp_error("operand type has no integer width in %s", what);
   }
 }
 
-// Apply a unary operator to a value.
-// Returns the result of the unary operation.
+// Determine the result of a TAC conditional jump.
+// Returns true if the condition is satisfied.
+static bool tac_condition_true(enum TACCondition cond, uint64_t left,
+                               const struct Type* left_type, uint64_t right,
+                               const struct Type* right_type) {
+  bool taken;
+  enum ConstEvalStatus status =
+      const_eval_condition(cond, left, left_type, right, right_type, &taken);
+  if (status != CONST_EVAL_OK) {
+    tac_interp_error("cannot evaluate TAC condition %d on operand type kinds %d and %d",
+                     (int)cond, left_type == NULL ? -1 : (int)left_type->type,
+                     right_type == NULL ? -1 : (int)right_type->type);
+  }
+  return taken;
+}
+
+// Apply a unary operator to a value of `type` (the source type for `!`, whose
+// result is always 0 or 1; otherwise the destination type).
 static uint64_t tac_apply_unary(enum UnOp op, uint64_t value, const struct Type* type) {
-  uint64_t result = 0;
-  switch (op) {
-    case COMPLEMENT:
-      result = ~value;
-      break;
-    case NEGATE:
-      if (type != NULL && is_signed_type((struct Type*)type)) {
-        result = (uint64_t)(-((int64_t)value));
-      } else {
-        result = (uint64_t)(0 - value);
-      }
-      break;
-    case BOOL_NOT:
-      result = (value == 0) ? 1u : 0u;
-      break;
-    case UNARY_PLUS:
-      result = value;
-      break;
-    default:
-      tac_interp_error("unsupported unary operator %d", (int)op);
-      return 0;
+  uint64_t result;
+  enum ConstEvalStatus status = const_eval_unary(op, value, type, &result);
+  if (status != CONST_EVAL_OK) {
+    tac_interp_error("unsupported unary operator %d or operand type", (int)op);
   }
   return result;
 }
 
-// Apply a binary operator to two values.
-// Returns the result of the binary operation.
+// Apply a binary operator to typed operands, producing a value of result_type.
 static uint64_t tac_apply_binary(enum ALUOp op,
-                                 uint64_t left,
-                                 uint64_t right) {
-  uint64_t result = 0;
-  switch (op) {
-    case ALU_ADD:
-      result = left + right;
-      break;
-    case ALU_SUB:
-      result = left - right;
-      break;
-    case ALU_SMUL:
-      result = (uint64_t)(((int64_t)left) * ((int64_t)right));
-      break;
-    case ALU_UMUL:
-      result = left * right;
-      break;
-    case ALU_SDIV:
-      if ((int64_t)right == 0) {
-        tac_interp_error("division by zero in TACBINARY");
-      }
-      result = (uint64_t)(((int64_t)left) / ((int64_t)right));
-      break;
-    case ALU_UDIV:
-      if (right == 0) {
-        tac_interp_error("division by zero in TACBINARY");
-      }
-      result = left / right;
-      break;
-    case ALU_SMOD:
-      if ((int64_t)right == 0) {
-        tac_interp_error("modulo by zero in TACBINARY");
-      }
-      result = (uint64_t)(((int64_t)left) % ((int64_t)right));
-      break;
-    case ALU_UMOD:
-      if (right == 0) {
-        tac_interp_error("modulo by zero in TACBINARY");
-      }
-      result = left % right;
-      break;
-    case ALU_AND:
-      result = left & right;
-      break;
-    case ALU_OR:
-      result = left | right;
-      break;
-    case ALU_XOR:
-      result = left ^ right;
-      break;
-    case ALU_LSR: {
-      uint64_t shift = right;
-      result = left >> shift;
-      break;
-    }
-    case ALU_LSL:
-    case ALU_ASL: {
-      uint64_t shift = right;
-      result = left << shift;
-      break;
-    }
-    case ALU_ASR: {
-      uint64_t shift = right;
-      result = (uint64_t)(((int64_t)left) >> shift);
-      break;
-    }
-    case ALU_MOV:
-      result = right;
-      break;
-    default:
-      tac_interp_error("unsupported binary operator %d", (int)op);
-      return 0;
+                                 uint64_t left, const struct Type* left_type,
+                                 uint64_t right, const struct Type* right_type,
+                                 const struct Type* result_type) {
+  uint64_t result;
+  enum ConstEvalStatus status =
+      const_eval_alu(op, left, left_type, right, right_type, result_type, &result);
+  if (status != CONST_EVAL_OK) {
+    tac_arith_error(status, "TACBINARY", op == ALU_SMOD || op == ALU_UMOD);
   }
   return result;
 }
@@ -1016,7 +939,8 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
         uint64_t src = tac_eval_val(interp, &frame, pc->instr.tac_unary.src);
         const struct Type* un_type =
             (pc->instr.tac_unary.dst != NULL) ? pc->instr.tac_unary.dst->type : NULL;
-        if (un_type == NULL && pc->instr.tac_unary.src != NULL) {
+        if ((un_type == NULL || pc->instr.tac_unary.op == BOOL_NOT) &&
+            pc->instr.tac_unary.src != NULL) {
           un_type = pc->instr.tac_unary.src->type;
         }
         uint64_t result = tac_apply_unary(pc->instr.tac_unary.op, src, un_type);
@@ -1026,7 +950,10 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
       case TACBINARY: {
         uint64_t left = tac_eval_val(interp, &frame, pc->instr.tac_binary.src1);
         uint64_t right = tac_eval_val(interp, &frame, pc->instr.tac_binary.src2);
-        uint64_t result = tac_apply_binary(pc->instr.tac_binary.alu_op, left, right);
+        uint64_t result = tac_apply_binary(pc->instr.tac_binary.alu_op,
+                                           left, pc->instr.tac_binary.src1->type,
+                                           right, pc->instr.tac_binary.src2->type,
+                                           pc->instr.tac_binary.dst->type);
         tac_assign_val(interp, &frame, pc->instr.tac_binary.dst, result);
         break;
       }
@@ -1041,8 +968,8 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
         uint64_t left = tac_eval_val(interp, &frame, pc->instr.tac_cond_jump.src1);
         uint64_t right = tac_eval_val(interp, &frame, pc->instr.tac_cond_jump.src2);
         if (tac_condition_true(pc->instr.tac_cond_jump.condition,
-                               left,
-                               right)) {
+                               left, pc->instr.tac_cond_jump.src1->type,
+                               right, pc->instr.tac_cond_jump.src2->type)) {
           pc = tac_find_label(&frame, pc->instr.tac_cond_jump.label);
           continue;
         }
