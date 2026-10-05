@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stddef.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -229,560 +230,456 @@ static bool remove_temp_asm(const char* path) {
     return false;
 }
 
+// Pipeline stages in execution order. A diagnostic flag prints one stage's
+// result; the compiler stops after the latest stage any flag asks for, unless
+// a full compile (STAGE_OUTPUT) is requested.
+enum Stage {
+  STAGE_PREPROCESS,
+  STAGE_LEX,
+  STAGE_PARSE,
+  STAGE_RESOLVE,
+  STAGE_LABELS,
+  STAGE_TYPES,
+  STAGE_TAC,
+  STAGE_ASM,
+  STAGE_INTERP,
+  STAGE_OUTPUT, // machine code, then the assembler/linker unless -s
+};
+
+// Diagnostics selectable on the command line.
+enum Diagnostic {
+  DIAG_PREPROCESS,
+  DIAG_TOKENS,
+  DIAG_AST,
+  DIAG_IDENTS,
+  DIAG_LABELS,
+  DIAG_TYPES,
+  DIAG_TAC,
+  DIAG_CFG,
+  DIAG_CALL_GRAPH,
+  DIAG_ASM,
+  DIAG_INTERP,
+  DIAG_COUNT,
+};
+
+// Command-line spelling of each diagnostic and the stage whose result it shows.
+static const struct {
+  const char* name;
+  enum Diagnostic diagnostic;
+  enum Stage stage;
+} kDiagnosticFlags[] = {
+  {"-preprocess", DIAG_PREPROCESS, STAGE_PREPROCESS},
+  {"-tokens", DIAG_TOKENS, STAGE_LEX},
+  {"-ast", DIAG_AST, STAGE_PARSE},
+  {"-idents", DIAG_IDENTS, STAGE_RESOLVE},
+  {"-labels", DIAG_LABELS, STAGE_LABELS},
+  {"-types", DIAG_TYPES, STAGE_TYPES},
+  {"-tac", DIAG_TAC, STAGE_TAC},
+  {"-cfg", DIAG_CFG, STAGE_TAC},
+  {"-cg", DIAG_CALL_GRAPH, STAGE_TAC},
+  {"-asm", DIAG_ASM, STAGE_ASM},
+  {"-interp", DIAG_INTERP, STAGE_INTERP},
+};
+
+// Individual optimization switches; -opt turns on every one of them.
+static const struct {
+  const char* name;
+  size_t offset; // of the bool in struct OptimizationOptions
+} kOptimizationFlags[] = {
+  {"-constant-fold", offsetof(struct OptimizationOptions, constant_fold)},
+  {"-dead-code", offsetof(struct OptimizationOptions, dead_code_elim)},
+  {"-copy-prop", offsetof(struct OptimizationOptions, copy_prop)},
+  {"-dead-store", offsetof(struct OptimizationOptions, dead_store_elim)},
+  {"-tail-call", offsetof(struct OptimizationOptions, tail_call_opt)},
+  {"-inline", offsetof(struct OptimizationOptions, inline_opt)},
+  {"-peephole", offsetof(struct OptimizationOptions, peephole_opt)},
+  {"-reg-alloc", offsetof(struct OptimizationOptions, reg_alloc)},
+};
+
+#define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+
+// Everything the command line selects.
+struct CommandLine {
+  bool diagnostics[DIAG_COUNT];
+  enum Stage last_stage; // stop after this stage
+  bool emit_asm_file;    // -s: write assembly instead of assembling
+  bool emit_binary;      // -bin: binary instead of hex output
+  bool emit_debug_info;  // -g
+  bool kernel_mode;      // -kernel
+  const char* filename;
+  const char* output_path;
+  const char* crt_dir;   // -crt
+  const char** defines;  // -D values, heap array owned by the caller
+  int num_defines;
+  struct OptimizationOptions optimization;
+};
+
+// Print the usage line to stderr.
+static void print_usage(const char* argv0) {
+  fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-cg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv0);
+}
+
+// Report a command-line error and exit with BCC_EXIT_INPUT.
+static void command_line_error(struct CommandLine* cl, const char* argv0, const char* message,
+                               const char* detail, bool usage) {
+  if (message != NULL) {
+    fprintf(stderr, message, detail);
+  }
+  if (usage) {
+    print_usage(argv0);
+  }
+  free(cl->defines);
+  exit(BCC_EXIT_INPUT);
+}
+
+// Turn on the switch for a named optimization; false if name is not one.
+static bool set_optimization_flag(struct OptimizationOptions* options, const char* name) {
+  for (size_t i = 0; i < ARRAY_LEN(kOptimizationFlags); i++) {
+    if (strcmp(name, kOptimizationFlags[i].name) == 0) {
+      *(bool*)((char*)options + kOptimizationFlags[i].offset) = true;
+      return true;
+    }
+  }
+  if (strcmp(name, "-opt") == 0) {
+    for (size_t i = 0; i < ARRAY_LEN(kOptimizationFlags); i++) {
+      *(bool*)((char*)options + kOptimizationFlags[i].offset) = true;
+    }
+    return true;
+  }
+  return false;
+}
+
+// Parse argv into cl, exiting with BCC_EXIT_INPUT on errors.
+static void parse_command_line(int argc, const char* const* argv, struct CommandLine* cl) {
+  memset(cl, 0, sizeof(*cl));
+  cl->defines = malloc(argc * sizeof(char*));
+  bool output_path_set = false;
+  bool any_diagnostic = false;
+  enum Stage last_diagnostic_stage = STAGE_PREPROCESS;
+
+  for (int i = 1; i < argc; ++i) {
+    const char* arg = argv[i];
+    bool matched = false;
+    for (size_t d = 0; d < ARRAY_LEN(kDiagnosticFlags); d++) {
+      if (strcmp(arg, kDiagnosticFlags[d].name) == 0) {
+        cl->diagnostics[kDiagnosticFlags[d].diagnostic] = true;
+        any_diagnostic = true;
+        if (kDiagnosticFlags[d].stage > last_diagnostic_stage) {
+          last_diagnostic_stage = kDiagnosticFlags[d].stage;
+        }
+        matched = true;
+        break;
+      }
+    }
+    if (matched || set_optimization_flag(&cl->optimization, arg)) {
+      continue;
+    }
+    if (strcmp(arg, "-s") == 0) {
+      cl->emit_asm_file = true;
+    } else if (strcmp(arg, "-bin") == 0) {
+      cl->emit_binary = true;
+    } else if (strcmp(arg, "-g") == 0) {
+      cl->emit_debug_info = true;
+    } else if (strcmp(arg, "-kernel") == 0) {
+      cl->kernel_mode = true;
+    } else if (strcmp(arg, "-crt") == 0) {
+      if (i + 1 >= argc) {
+        command_line_error(cl, argv[0], "option -crt requires a CRT directory path\n", NULL, false);
+      }
+      cl->crt_dir = argv[++i];
+    } else if (strcmp(arg, "-o") == 0) {
+      if (i + 1 >= argc) {
+        command_line_error(cl, argv[0], "option -o requires an output file path\n", NULL, false);
+      }
+      cl->output_path = argv[++i];
+      output_path_set = true;
+    } else if (strncmp(arg, "-D", 2) == 0) {
+      if (arg[2] == '\0') {
+        command_line_error(cl, argv[0],
+                           "Invalid -D definition (expected -DNAME or -DNAME=value)\n", NULL, false);
+      }
+      cl->defines[cl->num_defines++] = arg + 2;
+    } else if (arg[0] == '-') {
+      command_line_error(cl, argv[0], "unknown option: %s\n", arg, true);
+    } else if (cl->filename == NULL) {
+      cl->filename = arg;
+    } else {
+      command_line_error(cl, argv[0], NULL, NULL, true);
+    }
+  }
+
+  if (cl->filename == NULL) {
+    command_line_error(cl, argv[0], NULL, NULL, true);
+  }
+  if (cl->kernel_mode && cl->crt_dir != NULL) {
+    command_line_error(cl, argv[0], "option -crt is only valid for user-mode links\n", NULL, false);
+  }
+  if (!output_path_set) {
+    cl->output_path = cl->emit_asm_file ? kDefaultAsmOutputPath
+                      : cl->emit_binary ? kDefaultBinOutputPath
+                                        : kDefaultHexOutputPath;
+  }
+  // Diagnostics normally stop after the latest stage they show. An explicit -s
+  // still requests a file, so it carries the compile through machine assembly.
+  cl->last_stage = (!any_diagnostic || cl->emit_asm_file) ? STAGE_OUTPUT : last_diagnostic_stage;
+}
+
+// Resources owned by one compilation after preprocessing succeeds.
+struct Compilation {
+  struct PreprocessResult preprocessed;
+  struct TokenArray* tokens;
+  bool arena_live;
+};
+
+// Release a compilation's resources and return status as the exit code.
+static int finish(struct Compilation* c, int status) {
+  if (c->arena_live) {
+    arena_destroy();
+  }
+  if (c->tokens != NULL) {
+    destroy_token_array(c->tokens);
+  }
+  destroy_preprocess_result(&c->preprocessed);
+  return status;
+}
+
+// Print each function's control-flow graph (-cfg).
+static void print_cfg_graphs(const struct TACProg* tac_prog) {
+  bool printed_function = false;
+  for (const struct TopLevel* top = tac_prog->head; top != NULL; top = top->next) {
+    if (top->type != FUNC) {
+      continue;
+    }
+    if (printed_function) {
+      printf("\n");
+    }
+    printf("Function ");
+    print_slice(top->top.tac_func.name);
+    printf("\n");
+    print_cfg(build_cfg(top->top.tac_func.body.head));
+    printed_function = true;
+  }
+  if (!printed_function) {
+    printf("CFG: no function definitions\n");
+  }
+}
+
+// Write machine code and, unless -s was given, assemble and link it into the
+// requested output. Returns BCC_EXIT_OK or BCC_EXIT_OUTPUT.
+static int emit_output(const struct CommandLine* cl, struct MachineProg* machine_prog) {
+  const char* asm_output_path = cl->output_path;
+  char* asm_output_path_alloc = NULL;
+  if (!cl->emit_asm_file) {
+    asm_output_path_alloc = make_temp_asm_path(cl->output_path);
+    if (asm_output_path_alloc == NULL) {
+      return BCC_EXIT_OUTPUT;
+    }
+    asm_output_path = asm_output_path_alloc;
+  }
+
+  if (!write_machine_prog_to_file(machine_prog, asm_output_path)) {
+    fprintf(stderr, "ASM generation failed: unable to write %s\n", asm_output_path);
+    free(asm_output_path_alloc);
+    return BCC_EXIT_OUTPUT;
+  }
+  if (cl->emit_asm_file) {
+    return BCC_EXIT_OK;
+  }
+
+  int status = BCC_EXIT_OK;
+  char* assembler_path = select_assembler_path();
+  char* crt_dir = NULL;
+  if (assembler_path == NULL) {
+    fprintf(stderr,
+            "Compiler Error: unable to find assembler. Set %s or %s so basm can be located.\n",
+            kAssemblerEnvVar, kRepoRootEnvVar);
+    status = BCC_EXIT_OUTPUT;
+  } else if (!cl->kernel_mode &&
+             (crt_dir = cl->crt_dir != NULL ? duplicate_string(cl->crt_dir)
+                                            : select_default_crt_dir()) == NULL) {
+    fprintf(stderr,
+            "Compiler Error: unable to resolve a user CRT directory. "
+            "Pass -crt <dir> or set %s.\n",
+            kRepoRootEnvVar);
+    status = BCC_EXIT_OUTPUT;
+  } else if (!run_assembler(assembler_path, asm_output_path, cl->output_path, cl->kernel_mode,
+                            crt_dir, cl->emit_binary, cl->emit_debug_info)) {
+    status = BCC_EXIT_OUTPUT;
+  }
+  free(assembler_path);
+  free(crt_dir);
+  remove_temp_asm(asm_output_path);
+  free(asm_output_path_alloc);
+  return status;
+}
+
 // Run the requested compiler stages and emit the selected diagnostics or output.
 int main(int argc, const char *const *const argv) {
+  struct CommandLine cl;
+  parse_command_line(argc, argv, &cl);
+  const bool* show = cl.diagnostics;
 
-    bool print_tokens = false;
-    bool print_ast = false;
-    bool print_preprocess = false;
-    bool print_idents = false;
-    bool print_labels = false;
-    bool print_types = false;
-    bool print_tac = false;
-    bool print_cfg_graphs = false;
-    bool print_call_graph_flag = false;
-    bool print_asm = false;
-    bool interpret_tac = false;
-    bool kernel_mode = false;
-    bool emit_binary = false;
+  // Map the source file into memory.
+  int fd = open(cl.filename, O_RDONLY);
+  if (fd < 0) {
+    perror("open");
+    free(cl.defines);
+    exit(BCC_EXIT_INPUT);
+  }
+  struct stat file_stats;
+  if (fstat(fd, &file_stats) != 0) {
+    perror("fstat");
+    exit(BCC_EXIT_INPUT);
+  }
+  char const* text = (char const*)mmap(0, file_stats.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (text == MAP_FAILED) {
+    perror("mmap");
+    exit(BCC_EXIT_INPUT);
+  }
 
-    const char *filename = NULL;
-    const char *output_path = NULL;
-    const char *crt_dir_option = NULL;
+  struct Compilation c;
+  memset(&c, 0, sizeof(c));
+  if (!preprocess(text, cl.filename, cl.num_defines, cl.defines, &c.preprocessed)) {
+    free(cl.defines);
+    return BCC_EXIT_INPUT;
+  }
+  free(cl.defines);
+  set_source_context_with_map(cl.filename, c.preprocessed.text, &c.preprocessed.map);
+  if (show[DIAG_PREPROCESS]) {
+    size_t len = strlen(c.preprocessed.text);
+    fputs(c.preprocessed.text, stdout);
+    if (len > 0 && c.preprocessed.text[len - 1] != '\n') {
+      fputc('\n', stdout);
+    }
+  }
+  if (cl.last_stage == STAGE_PREPROCESS) {
+    return finish(&c, BCC_EXIT_OK);
+  }
 
-    bool output_path_set = false;
-    bool emit_debug_info = false;
-    bool emit_asm_file = false;
+  c.tokens = lex(c.preprocessed.text);
+  if (c.tokens == NULL) {
+    return finish(&c, BCC_EXIT_INPUT);
+  }
+  if (show[DIAG_TOKENS]) {
+    print_token_array(c.tokens);
+  }
+  if (cl.last_stage == STAGE_LEX) {
+    return finish(&c, BCC_EXIT_OK);
+  }
 
-    const char **cli_defines = malloc(argc * sizeof(char*));
-    int num_defines = 0;
+  arena_init(16384);
+  c.arena_live = true;
+  struct Program* prog = parse_prog(c.tokens);
+  if (prog == NULL) {
+    return finish(&c, BCC_EXIT_PARSE);
+  }
+  // The AST keeps only payload slices and source pointers, not tokens, so
+  // the token entries can go now; their slices live until the final cleanup.
+  token_array_release_tokens(c.tokens);
+  if (show[DIAG_AST]) {
+    print_prog(prog);
+  }
+  if (cl.last_stage == STAGE_PARSE) {
+    return finish(&c, BCC_EXIT_OK);
+  }
 
-    struct OptimizationOptions optimization_options = {false};
+  if (!resolve_prog(prog)) {
+    fprintf(stderr, "Identifier resolution failed\n");
+    return finish(&c, BCC_EXIT_RESOLVE);
+  }
+  if (show[DIAG_IDENTS]) {
+    print_prog(prog);
+  }
+  if (cl.last_stage == STAGE_RESOLVE) {
+    return finish(&c, BCC_EXIT_OK);
+  }
 
-    for (int i = 1; i < argc; ++i) {
-        const char *arg = argv[i];
-        if (strcmp(arg, "-tokens") == 0) {
-            print_tokens = true;
-            continue;
-        }
-        if (strcmp(arg, "-preprocess") == 0) {
-            print_preprocess = true;
-            continue;
-        }
-        if (strcmp(arg, "-ast") == 0) {
-            print_ast = true;
-            continue;
-        }
-        if (strcmp(arg, "-idents") == 0) {
-            print_idents = true;
-            continue;
-        }
-        if (strcmp(arg, "-labels") == 0) {
-            print_labels = true;
-            continue;
-        }
-        if (strcmp(arg, "-types") == 0) {
-            print_types = true;
-            continue;
-        }
-        if (strcmp(arg, "-tac") == 0) {
-            print_tac = true;
-            continue;
-        }
-        if (strcmp(arg, "-cfg") == 0) {
-            print_cfg_graphs = true;
-            continue;
-        }
-        if (strcmp(arg, "-cg") == 0) {
-            print_call_graph_flag = true;
-            continue;
-        }
-        if (strcmp(arg, "-asm") == 0) {
-            print_asm = true;
-            continue;
-        }
-        if (strcmp(arg, "-interp") == 0) {
-            interpret_tac = true;
-            continue;
-        }
-        if (strcmp(arg, "-s") == 0) {
-            emit_asm_file = true;
-            continue;
-        }
-        if (strcmp(arg, "-bin") == 0) {
-            emit_binary = true;
-            continue;
-        }
-        if (strcmp(arg, "-g") == 0) {
-            emit_debug_info = true;
-            continue;
-        }
-        if (strcmp(arg, "-constant-fold") == 0) {
-            optimization_options.constant_fold = true;
-            continue;
-        }
-        if (strcmp(arg, "-dead-code") == 0) {
-            optimization_options.dead_code_elim = true;
-            continue;
-        }
-        if (strcmp(arg, "-copy-prop") == 0) {
-            optimization_options.copy_prop = true;
-            continue;
-        }
-        if (strcmp(arg, "-dead-store") == 0) {
-            optimization_options.dead_store_elim = true;
-            continue;
-        }
-        if (strcmp(arg, "-tail-call") == 0) {
-            optimization_options.tail_call_opt = true;
-            continue;
-        }
-        if (strcmp(arg, "-inline") == 0) {
-            optimization_options.inline_opt = true;
-            continue;
-        }
-        if (strcmp(arg, "-peephole") == 0) {
-            optimization_options.peephole_opt = true;
-            continue;
-        }
-        if (strcmp(arg, "-reg-alloc") == 0) {
-            optimization_options.reg_alloc = true;
-            continue;
-        }
-        if (strcmp(arg, "-opt") == 0) {
-            optimization_options.constant_fold = true;
-            optimization_options.dead_code_elim = true;
-            optimization_options.copy_prop = true;
-            optimization_options.dead_store_elim = true;
-            optimization_options.tail_call_opt = true;
-            optimization_options.inline_opt = true;
-            optimization_options.peephole_opt = true;
-            optimization_options.reg_alloc = true;
-            continue;
-        }
-        if (strcmp(arg, "-kernel") == 0) {
-            kernel_mode = true;
-            continue;
-        }
-        if (strcmp(arg, "-crt") == 0) {
-            if (i + 1 >= argc) {
-                fprintf(stderr, "option -crt requires a CRT directory path\n");
-                free(cli_defines);
-                exit(BCC_EXIT_INPUT);
-            }
-            crt_dir_option = argv[++i];
-            continue;
-        }
-        if (strcmp(arg, "-o") == 0) {
-            if (i + 1 >= argc) {
-                fprintf(stderr, "option -o requires an output file path\n");
-                free(cli_defines);
-                exit(BCC_EXIT_INPUT);
-            }
-            output_path = argv[++i];
-            output_path_set = true;
-            continue;
-        }
-        if (strncmp(arg, "-D", 2) == 0) {
-            const char *def = arg + 2;
-            if (def[0] == '\0') {
-                fprintf(stderr, "Invalid -D definition (expected -DNAME or -DNAME=value)\n");
-                free(cli_defines);
-                exit(BCC_EXIT_INPUT);
-            }
-            cli_defines[num_defines++] = def;
-            continue;
-        }
-        if (arg[0] == '-') {
-            fprintf(stderr, "unknown option: %s\n", arg);
-            fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-cg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
-            free(cli_defines);
-            exit(BCC_EXIT_INPUT);
-        }
-        if (filename == NULL) {
-            filename = arg;
-            continue;
-        }
+  if (!label_loops(prog)) {
+    fprintf(stderr, "Loop labeling failed\n");
+    return finish(&c, BCC_EXIT_LABELS);
+  }
+  if (show[DIAG_LABELS]) {
+    print_prog(prog);
+  }
+  if (cl.last_stage == STAGE_LABELS) {
+    return finish(&c, BCC_EXIT_OK);
+  }
 
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-cg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
-        free(cli_defines);
-        exit(BCC_EXIT_INPUT);
+  if (!typecheck_program(prog)) {
+    fprintf(stderr, "Typechecking failed\n");
+    return finish(&c, BCC_EXIT_TYPES);
+  }
+  if (show[DIAG_TYPES]) {
+    print_symbol_table(global_symbol_table);
+    print_prog(prog);
+  }
+  if (cl.last_stage == STAGE_TYPES) {
+    return finish(&c, BCC_EXIT_OK);
+  }
+
+  struct TACProg* tac_prog = prog_to_TAC(prog, cl.emit_debug_info, cl.optimization.tail_call_opt);
+  if (tac_prog == NULL) {
+    fprintf(stderr, "TAC lowering failed\n");
+    return finish(&c, BCC_EXIT_INTERNAL);
+  }
+  optimize(tac_prog, cl.optimization);
+  if (show[DIAG_TAC]) {
+    print_symbol_table(global_symbol_table);
+    print_tac_prog(tac_prog);
+  }
+  if (show[DIAG_CFG]) {
+    print_cfg_graphs(tac_prog);
+  }
+  if (show[DIAG_CALL_GRAPH]) {
+    struct CallGraph call_graph = build_call_graph(tac_prog);
+    print_call_graph(&call_graph);
+  }
+  if (cl.last_stage == STAGE_TAC) {
+    return finish(&c, BCC_EXIT_OK);
+  }
+
+  // Assembly is built for a full compile or for -asm; the interpreter alone
+  // runs on TAC.
+  if (cl.last_stage == STAGE_OUTPUT || show[DIAG_ASM]) {
+    // Always emit section directives so kernel/user outputs share layout markers.
+    struct AsmProg* asm_prog = prog_to_asm(tac_prog, true);
+    if (asm_prog == NULL) {
+      fprintf(stderr, "ASM generation failed: asm_gen returned NULL\n");
+      return finish(&c, BCC_EXIT_INTERNAL);
+    }
+    // Instruction selection leaves pseudos; the allocator assigns some to
+    // registers and assign_stack_slots places the rest in the frame.
+    allocate_registers(asm_prog);
+    assign_stack_slots(asm_prog);
+    if (show[DIAG_ASM]) {
+      print_asm_symbol_table(asm_symbol_table);
+      print_asm_prog(asm_prog);
+    }
+    if (cl.last_stage == STAGE_ASM) {
+      return finish(&c, BCC_EXIT_OK);
     }
 
-    if (filename == NULL) {
-        fprintf(stderr, "usage: %s [-preprocess] [-tokens] [-ast] [-idents] [-labels] [-types] [-tac] [-cfg] [-cg] [-asm] [-interp] [-s] [-bin] [-g] [-kernel] [-crt <dir>] [-o <file>] [-DNAME[=value]] <file name>\n", argv[0]);
-        free(cli_defines);
-        exit(BCC_EXIT_INPUT);
+    if (cl.last_stage == STAGE_OUTPUT) {
+      struct MachineProg* machine_prog = prog_to_machine(asm_prog);
+      if (machine_prog == NULL) {
+        fprintf(stderr, "ASM generation failed: codegen returned NULL\n");
+        return finish(&c, BCC_EXIT_INTERNAL);
+      }
+      int status = emit_output(&cl, machine_prog);
+      if (status != BCC_EXIT_OK) {
+        return finish(&c, status);
+      }
     }
+  }
 
-    if (kernel_mode && crt_dir_option != NULL) {
-        fprintf(stderr, "option -crt is only valid for user-mode links\n");
-        free(cli_defines);
-        exit(BCC_EXIT_INPUT);
+  if (show[DIAG_INTERP]) {
+    int interp_result = tac_interpret_prog(tac_prog);
+    const char* result_to_stderr = getenv(kTacInterpResultStderrEnv);
+    if (result_to_stderr != NULL && result_to_stderr[0] != '\0') {
+      fprintf(stderr, "%d\n", interp_result);
+    } else {
+      printf("%d\n", interp_result);
     }
-
-    if (!output_path_set) {
-        if (emit_asm_file) {
-            output_path = kDefaultAsmOutputPath;
-        } else if (emit_binary) {
-            output_path = kDefaultBinOutputPath;
-        } else {
-            output_path = kDefaultHexOutputPath;
-        }
-    }
-
-    // open the file
-    int fd = open(filename,O_RDONLY);
-    if (fd < 0) {
-        perror("open");
-        free(cli_defines);
-        exit(BCC_EXIT_INPUT);
-    }
-
-    // determine its size (std::filesystem::get_size?)
-    struct stat file_stats;
-    int rc = fstat(fd,&file_stats);
-    if (rc != 0) {
-        perror("fstat");
-        exit(BCC_EXIT_INPUT);
-    }
-
-    // map the file in my address space
-    char const* text = (char const *)mmap(
-        0,
-        file_stats.st_size,
-        PROT_READ,
-        MAP_PRIVATE,
-        fd,
-        0);
-    if (text == MAP_FAILED) {
-        perror("mmap");
-        exit(BCC_EXIT_INPUT);
-    }
-
-    struct PreprocessResult preprocessed = {0};
-    if (!preprocess(text, filename, num_defines, cli_defines, &preprocessed)) {
-        free(cli_defines);
-        return BCC_EXIT_INPUT;
-    }
-    free(cli_defines);
-    size_t preprocessed_len = strlen(preprocessed.text);
-    set_source_context_with_map(filename, preprocessed.text, &preprocessed.map);
-
-    if (print_preprocess) {
-        fputs(preprocessed.text, stdout);
-        if (preprocessed_len > 0 && preprocessed.text[preprocessed_len - 1] != '\n') {
-            fputc('\n', stdout);
-        }
-    }
-    const bool any_stage_flag =
-        print_preprocess || print_tokens || print_ast || print_idents ||
-        print_labels || print_types || print_tac || print_cfg_graphs ||
-        print_call_graph_flag || print_asm || interpret_tac;
-    // Diagnostic flags normally stop after the latest requested stage. An
-    // explicit -s still requests a file, so it must carry the compilation
-    // through machine assembly after printing any selected diagnostics.
-    const bool run_full = !any_stage_flag || emit_asm_file;
-    const bool stop_after_preprocess =
-        !run_full && print_preprocess &&
-        !(print_tokens || print_ast || print_idents || print_labels ||
-          print_types || print_tac || print_cfg_graphs || print_call_graph_flag || print_asm || interpret_tac);
-
-    if (stop_after_preprocess) {
-        destroy_preprocess_result(&preprocessed);
-        return 0;
-    }
-
-    struct TokenArray* tokens = lex(preprocessed.text);
-    if (tokens == NULL) {
-       destroy_preprocess_result(&preprocessed);
-       return BCC_EXIT_INPUT;
-    }
-
-    if (print_tokens) {
-        print_token_array(tokens);
-    }
-    const bool stop_after_tokens =
-        !run_full && print_tokens &&
-        !(print_ast || print_idents || print_labels ||
-          print_types || print_tac || print_cfg_graphs || print_call_graph_flag || print_asm || interpret_tac);
-    if (stop_after_tokens) {
-        destroy_preprocess_result(&preprocessed);
-        destroy_token_array(tokens);
-        return 0;
-    }
-
-    arena_init(16384);
-    struct Program* prog = parse_prog(tokens);
-    if (prog == NULL) {
-       destroy_preprocess_result(&preprocessed);
-       destroy_token_array(tokens);
-       arena_destroy();
-       return BCC_EXIT_PARSE;
-    };
-    // The AST keeps only payload slices and source pointers, not tokens, so
-    // the token entries can go now; their slices live until the final cleanup.
-    token_array_release_tokens(tokens);
-
-    if (print_ast)  {
-        print_prog(prog);
-    }
-    const bool stop_after_ast =
-        !run_full && print_ast &&
-        !(print_idents || print_labels ||
-          print_types || print_tac || print_cfg_graphs || print_call_graph_flag || print_asm || interpret_tac);
-    if (stop_after_ast) {
-        destroy_preprocess_result(&preprocessed);
-        destroy_token_array(tokens);
-        arena_destroy();
-        return 0;
-    }
-
-    // perform identifier resolution
-    if (!resolve_prog(prog)) {
-        fprintf(stderr, "Identifier resolution failed\n");
-        destroy_preprocess_result(&preprocessed);
-        destroy_token_array(tokens);
-        arena_destroy();
-        return BCC_EXIT_RESOLVE;
-    } else  if (print_idents) {
-        print_prog(prog);
-    }
-    const bool stop_after_idents =
-        !run_full && print_idents &&
-        !(print_labels || print_types || print_tac || print_cfg_graphs || print_call_graph_flag ||
-          print_asm || interpret_tac);
-    if (stop_after_idents) {
-        destroy_preprocess_result(&preprocessed);
-        destroy_token_array(tokens);
-        arena_destroy();
-        return 0;
-    }
-
-    if (!label_loops(prog)) {
-        fprintf(stderr, "Loop labeling failed\n");
-        destroy_preprocess_result(&preprocessed);
-        destroy_token_array(tokens);
-        arena_destroy();
-        return BCC_EXIT_LABELS;
-    } else if (print_labels) {
-        print_prog(prog);
-    }
-    const bool stop_after_labels =
-        !run_full && print_labels &&
-        !(print_types || print_tac || print_cfg_graphs || print_call_graph_flag || print_asm || interpret_tac);
-    if (stop_after_labels) {
-        destroy_preprocess_result(&preprocessed);
-        destroy_token_array(tokens);
-        arena_destroy();
-        return 0;
-    }
-
-    if (!typecheck_program(prog)) {
-        fprintf(stderr, "Typechecking failed\n");
-        destroy_preprocess_result(&preprocessed);
-        destroy_token_array(tokens);
-        arena_destroy();
-        return BCC_EXIT_TYPES;
-    } else if (print_types) {
-        print_symbol_table(global_symbol_table);
-        print_prog(prog);
-    }
-    const bool stop_after_types =
-        !run_full && print_types &&
-        !(print_tac || print_cfg_graphs || print_call_graph_flag || print_asm || interpret_tac);
-    if (stop_after_types) {
-        destroy_preprocess_result(&preprocessed);
-        destroy_token_array(tokens);
-        arena_destroy();
-        return 0;
-    }
-
-    struct TACProg* tac_prog = NULL;
-    struct AsmProg* asm_prog = NULL;
-
-    if (run_full || print_tac || print_cfg_graphs || print_call_graph_flag || print_asm || interpret_tac) {
-        tac_prog = prog_to_TAC(prog, emit_debug_info, optimization_options.tail_call_opt);
-
-        optimize(tac_prog, optimization_options);
-
-        if (tac_prog == NULL) {
-            fprintf(stderr, "TAC lowering failed\n");
-            destroy_preprocess_result(&preprocessed);
-            destroy_token_array(tokens);
-            arena_destroy();
-            return BCC_EXIT_INTERNAL;
-        }
-
-        if (print_tac) {
-            print_symbol_table(global_symbol_table);
-            print_tac_prog(tac_prog);
-        }
-
-        if (print_cfg_graphs) {
-            bool printed_function = false;
-            for (const struct TopLevel* top = tac_prog->head;
-                 top != NULL;
-                 top = top->next) {
-                if (top->type != FUNC) {
-                    continue;
-                }
-                if (printed_function) {
-                    printf("\n");
-                }
-                printf("Function ");
-                print_slice(top->top.tac_func.name);
-                printf("\n");
-                print_cfg(build_cfg(top->top.tac_func.body.head));
-                printed_function = true;
-            }
-            if (!printed_function) {
-                printf("CFG: no function definitions\n");
-            }
-        }
-        if (print_call_graph_flag) {
-            struct CallGraph call_graph = build_call_graph(tac_prog);
-            print_call_graph(&call_graph);
-        }
-        const bool stop_after_tac =
-            !run_full && (print_tac || print_cfg_graphs || print_call_graph_flag) &&
-            !(print_asm || interpret_tac);
-        if (stop_after_tac) {
-            destroy_preprocess_result(&preprocessed);
-            destroy_token_array(tokens);
-            arena_destroy();
-            return 0;
-        }
-    }
-
-    if (run_full || print_asm) {
-        // Always emit section directives so kernel/user outputs share layout markers.
-        asm_prog = prog_to_asm(tac_prog, true);
-        if (asm_prog == NULL) {
-            fprintf(stderr, "ASM generation failed: asm_gen returned NULL\n");
-            destroy_preprocess_result(&preprocessed);
-            destroy_token_array(tokens);
-            arena_destroy();
-            return BCC_EXIT_INTERNAL;
-        }
-        // Instruction selection leaves pseudos; the allocator assigns some to
-        // registers and assign_stack_slots places the rest in the frame.
-        allocate_registers(asm_prog);
-        assign_stack_slots(asm_prog);
-
-        if (print_asm) {
-            print_asm_symbol_table(asm_symbol_table);
-            print_asm_prog(asm_prog);
-        }
-        const bool stop_after_asm =
-            !run_full && print_asm && !interpret_tac;
-        if (stop_after_asm) {
-            destroy_preprocess_result(&preprocessed);
-            destroy_token_array(tokens);
-            arena_destroy();
-            return 0;
-        }
-    }
-
-    if (run_full) {
-        struct MachineProg* machine_prog = prog_to_machine(asm_prog);
-        if (machine_prog == NULL) {
-            fprintf(stderr, "ASM generation failed: codegen returned NULL\n");
-            destroy_preprocess_result(&preprocessed);
-            destroy_token_array(tokens);
-            arena_destroy();
-            return BCC_EXIT_INTERNAL;
-        }
-
-        const char* asm_output_path = output_path;
-        char* asm_output_path_alloc = NULL;
-        if (!emit_asm_file) {
-            asm_output_path_alloc = make_temp_asm_path(output_path);
-            if (asm_output_path_alloc == NULL) {
-                destroy_preprocess_result(&preprocessed);
-                destroy_token_array(tokens);
-                arena_destroy();
-                return BCC_EXIT_OUTPUT;
-            }
-            asm_output_path = asm_output_path_alloc;
-        }
-
-        if (!write_machine_prog_to_file(machine_prog, asm_output_path)) {
-            fprintf(stderr, "ASM generation failed: unable to write %s\n", asm_output_path);
-            free(asm_output_path_alloc);
-            destroy_preprocess_result(&preprocessed);
-            destroy_token_array(tokens);
-            arena_destroy();
-            return BCC_EXIT_OUTPUT;
-        }
-
-        if (!emit_asm_file) {
-            char* assembler_path = select_assembler_path();
-            char* crt_dir = NULL;
-            if (assembler_path == NULL) {
-                fprintf(stderr,
-                        "Compiler Error: unable to find assembler. Set %s or %s so basm can be located.\n",
-                        kAssemblerEnvVar,
-                        kRepoRootEnvVar);
-                remove_temp_asm(asm_output_path);
-                free(asm_output_path_alloc);
-                destroy_preprocess_result(&preprocessed);
-                destroy_token_array(tokens);
-                arena_destroy();
-                return BCC_EXIT_OUTPUT;
-            }
-            if (!kernel_mode) {
-                crt_dir = (crt_dir_option != NULL)
-                    ? duplicate_string(crt_dir_option)
-                    : select_default_crt_dir();
-                if (crt_dir == NULL) {
-                    fprintf(stderr,
-                            "Compiler Error: unable to resolve a user CRT directory. "
-                            "Pass -crt <dir> or set %s.\n",
-                            kRepoRootEnvVar);
-                    free(assembler_path);
-                    remove_temp_asm(asm_output_path);
-                    free(asm_output_path_alloc);
-                    destroy_preprocess_result(&preprocessed);
-                    destroy_token_array(tokens);
-                    arena_destroy();
-                    return BCC_EXIT_OUTPUT;
-                }
-            }
-            bool assembled = run_assembler(assembler_path,
-                                           asm_output_path,
-                                           output_path,
-                                           kernel_mode,
-                                           crt_dir,
-                                           emit_binary,
-                                           emit_debug_info);
-            free(assembler_path);
-            free(crt_dir);
-            if (!assembled) {
-                remove_temp_asm(asm_output_path);
-                free(asm_output_path_alloc);
-                destroy_preprocess_result(&preprocessed);
-                destroy_token_array(tokens);
-                arena_destroy();
-                return BCC_EXIT_OUTPUT;
-            }
-            remove_temp_asm(asm_output_path);
-        }
-        free(asm_output_path_alloc);
-    }
-    if (interpret_tac) {
-        int interp_result = tac_interpret_prog(tac_prog);
-        const char* result_to_stderr = getenv(kTacInterpResultStderrEnv);
-        if (result_to_stderr != NULL && result_to_stderr[0] != '\0') {
-            fprintf(stderr, "%d\n", interp_result);
-        } else {
-            printf("%d\n", interp_result);
-        }
-    }
-    
-    arena_destroy();
-    destroy_token_array(tokens);
-    destroy_preprocess_result(&preprocessed);
-    
-    return 0;
+  }
+  return finish(&c, BCC_EXIT_OK);
 }
