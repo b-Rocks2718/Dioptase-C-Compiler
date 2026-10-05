@@ -1886,14 +1886,9 @@ size_t create_maps(struct AsmInstr* asm_instr, size_t reserved_bytes) {
   size_t stack_bytes = reserved_bytes;
 
   for (struct AsmInstr* instr = asm_instr; instr != NULL; instr = instr->next) {
-    size_t op_count = 0;
-    struct Operand** ops = get_ops(instr, &op_count);
-    if (ops == NULL) {
-      continue;
-    }
-
-    for (size_t i = 0; i < op_count; i++) {
-      struct Operand* opr = ops[i];
+    struct OperandSlots slots = asm_operand_slots(instr);
+    for (size_t i = 0; i < slots.count; i++) {
+      struct Operand* opr = *slots.slot[i].field;
       if (opr == NULL) {
         continue;
       }
@@ -1940,217 +1935,97 @@ size_t create_maps(struct AsmInstr* asm_instr, size_t reserved_bytes) {
   return stack_bytes;
 }
 
-// Return the operand values associated with a TAC operation.
-struct Operand** get_ops(struct AsmInstr* asm_instr, size_t* out_count) {
-  size_t src_count = 0;
-  struct Operand** srcs = get_srcs(asm_instr, &src_count);
-  struct Operand* dst = get_dst(asm_instr);
-
-  size_t total_count = src_count + (dst != NULL ? 1 : 0);
-  struct Operand** ops = arena_alloc(total_count * sizeof(struct Operand*));
-
-  size_t index = 0;
-  if (dst != NULL) {
-    ops[index++] = dst;
-  }
-  for (size_t i = 0; i < src_count; i++) {
-    ops[index++] = srcs[i];
-  }
-
-  *out_count = total_count;
-  return ops;
+// Append one operand field to a slot list.
+static void add_slot(struct OperandSlots* slots, struct Operand** field, enum OperandRole role) {
+  slots->slot[slots->count].field = field;
+  slots->slot[slots->count].role = role;
+  slots->count++;
 }
 
-// Return the source operands selected for an assembly instruction.
-struct Operand** get_srcs(struct AsmInstr* asm_instr, size_t* out_count) {
+struct OperandSlots asm_operand_slots(struct AsmInstr* asm_instr) {
+  struct OperandSlots slots = { .count = 0 };
+  union AsmInstrVariant* in = &asm_instr->instr;
   switch (asm_instr->type) {
     case ASM_MOV:
-      *out_count = 1;
-      struct Operand** srcs_mov = arena_alloc(sizeof(struct Operand*));
-      srcs_mov[0] = asm_instr->instr.asm_mov.src;
-      return srcs_mov;
+      add_slot(&slots, &in->asm_mov.dst, OPERAND_DEF);
+      add_slot(&slots, &in->asm_mov.src, OPERAND_USE);
+      break;
     case ASM_VOLATILE_READ:
-      *out_count = 1;
-      struct Operand** srcs_vread = arena_alloc(sizeof(struct Operand*));
-      srcs_vread[0] = asm_instr->instr.asm_volatile_read.src;
-      return srcs_vread;
+      add_slot(&slots, &in->asm_volatile_read.dst, OPERAND_DEF);
+      add_slot(&slots, &in->asm_volatile_read.src, OPERAND_USE);
+      break;
     case ASM_VOLATILE_WRITE:
-      *out_count = 1;
-      struct Operand** srcs_vwrite = arena_alloc(sizeof(struct Operand*));
-      srcs_vwrite[0] = asm_instr->instr.asm_volatile_write.src;
-      return srcs_vwrite;
+      add_slot(&slots, &in->asm_volatile_write.dst, OPERAND_DEF);
+      add_slot(&slots, &in->asm_volatile_write.src, OPERAND_USE);
+      break;
     case ASM_UNARY:
-      *out_count = 1;
-      struct Operand** srcs_unary = arena_alloc(sizeof(struct Operand*));
-      srcs_unary[0] = asm_instr->instr.asm_unary.src;
-      return srcs_unary;
+      add_slot(&slots, &in->asm_unary.dst, OPERAND_DEF);
+      add_slot(&slots, &in->asm_unary.src, OPERAND_USE);
+      break;
     case ASM_BINARY:
-      *out_count = 2;
-      struct Operand** srcs_binary = arena_alloc(2 * sizeof(struct Operand*));
-      srcs_binary[0] = asm_instr->instr.asm_binary.src1;
-      srcs_binary[1] = asm_instr->instr.asm_binary.src2;
-      return srcs_binary;
+      add_slot(&slots, &in->asm_binary.dst, OPERAND_DEF);
+      add_slot(&slots, &in->asm_binary.src1, OPERAND_USE);
+      add_slot(&slots, &in->asm_binary.src2, OPERAND_USE);
+      break;
     case ASM_CMP:
-      *out_count = 2;
-      struct Operand** srcs_cmp = arena_alloc(2 * sizeof(struct Operand*));
-      srcs_cmp[0] = asm_instr->instr.asm_cmp.src1;
-      srcs_cmp[1] = asm_instr->instr.asm_cmp.src2;
-      return srcs_cmp;
+      add_slot(&slots, &in->asm_cmp.src1, OPERAND_USE);
+      add_slot(&slots, &in->asm_cmp.src2, OPERAND_USE);
+      break;
     case ASM_PUSH:
-      *out_count = 1;
-      struct Operand** srcs_push = arena_alloc(sizeof(struct Operand*));
-      srcs_push[0] = asm_instr->instr.asm_push.src;
-      return srcs_push;
-    case ASM_GET_ADDRESS:
-      *out_count = 1;
-      struct Operand** srcs_getaddr = arena_alloc(sizeof(struct Operand*));
-      srcs_getaddr[0] = asm_instr->instr.asm_get_address.src;
-      return srcs_getaddr;
-    case ASM_LOAD:
-      *out_count = 1;
-      struct Operand** srcs_load = arena_alloc(sizeof(struct Operand*));
-      srcs_load[0] = asm_instr->instr.asm_load.src;
-      return srcs_load;
-    case ASM_VOLATILE_LOAD:
-      *out_count = 1;
-      struct Operand** srcs_vload = arena_alloc(sizeof(struct Operand*));
-      srcs_vload[0] = asm_instr->instr.asm_volatile_load.src;
-      return srcs_vload;
-    case ASM_STORE:
-      *out_count = 2;
-      struct Operand** srcs_store = arena_alloc(2 * sizeof(struct Operand*));
-      srcs_store[0] = asm_instr->instr.asm_store.src;
-      // Store uses dst as the address operand.
-      srcs_store[1] = asm_instr->instr.asm_store.dst;
-      return srcs_store;
-    case ASM_VOLATILE_STORE:
-      *out_count = 2;
-      struct Operand** srcs_vstore = arena_alloc(2 * sizeof(struct Operand*));
-      srcs_vstore[0] = asm_instr->instr.asm_volatile_store.src;
-      srcs_vstore[1] = asm_instr->instr.asm_volatile_store.dst;
-      return srcs_vstore;
-    case ASM_TRUNC:
-      *out_count = 1;
-      struct Operand** srcs_trunc = arena_alloc(sizeof(struct Operand*));
-      srcs_trunc[0] = asm_instr->instr.asm_trunc.src;
-      return srcs_trunc;
-    case ASM_EXTEND:
-      *out_count = 1;
-      struct Operand** srcs_extend = arena_alloc(sizeof(struct Operand*));
-      srcs_extend[0] = asm_instr->instr.asm_extend.src;
-      return srcs_extend;
+      add_slot(&slots, &in->asm_push.src, OPERAND_USE);
+      break;
     case ASM_INDIRECT_CALL:
-      *out_count = 1;
-      struct Operand** srcs_indirect_call = arena_alloc(sizeof(struct Operand*));
-      srcs_indirect_call[0] = asm_instr->instr.asm_indirect_call.src;
-      return srcs_indirect_call;
+      add_slot(&slots, &in->asm_indirect_call.src, OPERAND_USE);
+      break;
     case ASM_TAIL_CALL_INDIRECT:
-      *out_count = 1;
-      struct Operand** srcs_tail_call_indirect = arena_alloc(sizeof(struct Operand*));
-      srcs_tail_call_indirect[0] = asm_instr->instr.asm_tail_call_indirect.src;
-      return srcs_tail_call_indirect;
-    default:
-      *out_count = 0;
-      return NULL;
-  }
-}
-
-// Return the destination operand selected for an assembly instruction.
-struct Operand* get_dst(struct AsmInstr* asm_instr) {
-  switch (asm_instr->type) {
-    case ASM_MOV:
-      return asm_instr->instr.asm_mov.dst;
-    case ASM_VOLATILE_READ:
-      return asm_instr->instr.asm_volatile_read.dst;
-    case ASM_VOLATILE_WRITE:
-      return asm_instr->instr.asm_volatile_write.dst;
-    case ASM_UNARY:
-      return asm_instr->instr.asm_unary.dst;
-    case ASM_BINARY:
-      return asm_instr->instr.asm_binary.dst;
+      add_slot(&slots, &in->asm_tail_call_indirect.src, OPERAND_USE);
+      break;
     case ASM_GET_ADDRESS:
-      return asm_instr->instr.asm_get_address.dst;
+      add_slot(&slots, &in->asm_get_address.dst, OPERAND_DEF);
+      add_slot(&slots, &in->asm_get_address.src, OPERAND_ADDRESS);
+      break;
     case ASM_LOAD:
-      return asm_instr->instr.asm_load.dst;
+      add_slot(&slots, &in->asm_load.dst, OPERAND_DEF);
+      add_slot(&slots, &in->asm_load.src, OPERAND_USE);
+      break;
     case ASM_VOLATILE_LOAD:
-      return asm_instr->instr.asm_volatile_load.dst;
+      add_slot(&slots, &in->asm_volatile_load.dst, OPERAND_DEF);
+      add_slot(&slots, &in->asm_volatile_load.src, OPERAND_USE);
+      break;
+    case ASM_STORE:
+      add_slot(&slots, &in->asm_store.src, OPERAND_USE);
+      add_slot(&slots, &in->asm_store.dst, OPERAND_USE);
+      break;
+    case ASM_VOLATILE_STORE:
+      add_slot(&slots, &in->asm_volatile_store.src, OPERAND_USE);
+      add_slot(&slots, &in->asm_volatile_store.dst, OPERAND_USE);
+      break;
     case ASM_TRUNC:
-      return asm_instr->instr.asm_trunc.dst;
+      add_slot(&slots, &in->asm_trunc.dst, OPERAND_DEF);
+      add_slot(&slots, &in->asm_trunc.src, OPERAND_USE);
+      break;
     case ASM_EXTEND:
-      return asm_instr->instr.asm_extend.dst;
-    default:
-      return NULL;
+      add_slot(&slots, &in->asm_extend.dst, OPERAND_DEF);
+      add_slot(&slots, &in->asm_extend.src, OPERAND_USE);
+      break;
+    case ASM_CALL:
+    case ASM_TAIL_CALL:
+    case ASM_JUMP:
+    case ASM_COND_JUMP:
+    case ASM_LABEL:
+    case ASM_RET:
+    case ASM_BOUNDARY:
+      break;
   }
+  return slots;
 }
 
-// Expand a pseudo-instruction into concrete assembly instructions.
+// Replace every pseudo operand in a body with its mapped stack or data location.
 void replace_pseudo(struct AsmInstr* asm_instr) {
   for (struct AsmInstr* instr = asm_instr; instr != NULL; instr = instr->next) {
-    switch (instr->type) {
-      case ASM_MOV:
-        replace_operand_if_pseudo(&instr->instr.asm_mov.dst);
-        replace_operand_if_pseudo(&instr->instr.asm_mov.src);
-        break;
-      case ASM_VOLATILE_READ:
-        replace_operand_if_pseudo(&instr->instr.asm_volatile_read.dst);
-        replace_operand_if_pseudo(&instr->instr.asm_volatile_read.src);
-        break;
-      case ASM_VOLATILE_WRITE:
-        replace_operand_if_pseudo(&instr->instr.asm_volatile_write.dst);
-        replace_operand_if_pseudo(&instr->instr.asm_volatile_write.src);
-        break;
-      case ASM_UNARY:
-        replace_operand_if_pseudo(&instr->instr.asm_unary.dst);
-        replace_operand_if_pseudo(&instr->instr.asm_unary.src);
-        break;
-      case ASM_BINARY:
-        replace_operand_if_pseudo(&instr->instr.asm_binary.dst);
-        replace_operand_if_pseudo(&instr->instr.asm_binary.src1);
-        replace_operand_if_pseudo(&instr->instr.asm_binary.src2);
-        break;
-      case ASM_CMP:
-        replace_operand_if_pseudo(&instr->instr.asm_cmp.src1);
-        replace_operand_if_pseudo(&instr->instr.asm_cmp.src2);
-        break;
-      case ASM_PUSH:
-        replace_operand_if_pseudo(&instr->instr.asm_push.src);
-        break;
-      case ASM_INDIRECT_CALL:
-        replace_operand_if_pseudo(&instr->instr.asm_indirect_call.src);
-        break;
-      case ASM_TAIL_CALL_INDIRECT:
-        replace_operand_if_pseudo(&instr->instr.asm_tail_call_indirect.src);
-        break;
-      case ASM_GET_ADDRESS:
-        replace_operand_if_pseudo(&instr->instr.asm_get_address.dst);
-        replace_operand_if_pseudo(&instr->instr.asm_get_address.src);
-        break;
-      case ASM_LOAD:
-        replace_operand_if_pseudo(&instr->instr.asm_load.dst);
-        replace_operand_if_pseudo(&instr->instr.asm_load.src);
-        break;
-      case ASM_VOLATILE_LOAD:
-        replace_operand_if_pseudo(&instr->instr.asm_volatile_load.dst);
-        replace_operand_if_pseudo(&instr->instr.asm_volatile_load.src);
-        break;
-      case ASM_STORE:
-        replace_operand_if_pseudo(&instr->instr.asm_store.dst);
-        replace_operand_if_pseudo(&instr->instr.asm_store.src);
-        break;
-      case ASM_VOLATILE_STORE:
-        replace_operand_if_pseudo(&instr->instr.asm_volatile_store.dst);
-        replace_operand_if_pseudo(&instr->instr.asm_volatile_store.src);
-        break;
-      case ASM_TRUNC:
-        replace_operand_if_pseudo(&instr->instr.asm_trunc.dst);
-        replace_operand_if_pseudo(&instr->instr.asm_trunc.src);
-        break;
-      case ASM_EXTEND:
-        replace_operand_if_pseudo(&instr->instr.asm_extend.dst);
-        replace_operand_if_pseudo(&instr->instr.asm_extend.src);
-        break;
-      default:
-        break;
+    struct OperandSlots slots = asm_operand_slots(instr);
+    for (size_t i = 0; i < slots.count; i++) {
+      replace_operand_if_pseudo(slots.slot[i].field);
     }
   }
 }

@@ -606,7 +606,7 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
     }
     case ASM_STORE:
     case ASM_VOLATILE_STORE: {
-      // get_srcs orders the value first (scratch A) and the address second (scratch B).
+      // The slot order puts the value first (scratch A) and the address second (scratch B).
       const struct Operand* store_src = cur->type == ASM_VOLATILE_STORE
           ? cur->instr.asm_volatile_store.src
           : cur->instr.asm_store.src;
@@ -618,21 +618,28 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
   }
 }
 
-// Lower an instruction through the fixed scratch template: load sources into
-// scratch A (and B), emit the operation, then write scratch A to the destination.
+// Lower an instruction through the fixed scratch template: load the operands
+// it reads into scratch A (and B), emit the operation, then write scratch A to
+// the operand it writes.
 static void lower_via_scratch(struct Emitter* e, struct AsmInstr* cur) {
-  size_t src_count = 0;
-  struct Operand** srcs = get_srcs(cur, &src_count);
-  if (src_count >= 1) {
-    load_operand(e, srcs[0], kScratchRegA, R0);
-  }
-  if (src_count >= 2) {
-    load_operand(e, srcs[1], kScratchRegB, kScratchRegA);
+  struct OperandSlots slots = asm_operand_slots(cur);
+  struct Operand* dst = NULL;
+  size_t loaded = 0;
+  for (size_t i = 0; i < slots.count; i++) {
+    struct Operand* opr = *slots.slot[i].field;
+    if (slots.slot[i].role == OPERAND_DEF) {
+      dst = opr;
+    } else if (loaded == 0) {
+      load_operand(e, opr, kScratchRegA, R0);
+      loaded++;
+    } else {
+      load_operand(e, opr, kScratchRegB, kScratchRegA);
+      loaded++;
+    }
   }
 
   emit_scratch_op(e, cur);
 
-  struct Operand* dst = get_dst(cur);
   if (dst != NULL) {
     store_operand(e, dst, kScratchRegA);
   }

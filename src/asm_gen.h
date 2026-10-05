@@ -475,11 +475,37 @@ struct Operand* make_pseudo(struct Slice* var_name, struct AsmType* asm_type);
 
 struct Operand* make_pseudo_mem(struct Slice* var_name, struct AsmType* asm_type, int offset);
 
-struct Operand** get_ops(struct AsmInstr* asm_instr, size_t* out_count);
+// How an instruction accesses one of its operand fields.
+enum OperandRole {
+  OPERAND_DEF,     // written
+  OPERAND_USE,     // read
+  OPERAND_ADDRESS, // only its address is taken (GetAddress source); its value
+                   // is neither read nor written, but it must live in memory
+};
 
-struct Operand** get_srcs(struct AsmInstr* asm_instr, size_t* out_count);
+// One operand field of an ASM instruction. `field` points into the
+// instruction, so passes can read the operand or replace it in place.
+struct OperandSlot {
+  struct Operand** field;
+  enum OperandRole role;
+};
 
-struct Operand* get_dst(struct AsmInstr* asm_instr);
+// Largest operand count of any ASM instruction (Binary: dst, src1, src2).
+#define ASM_MAX_OPERAND_SLOTS 3
+
+// Every operand field of one ASM instruction.
+struct OperandSlots {
+  struct OperandSlot slot[ASM_MAX_OPERAND_SLOTS];
+  size_t count;
+};
+
+// The single description of each ASM instruction's operand fields; every pass
+// that walks operands (stack-slot assignment, pseudo replacement, codegen,
+// register allocation) derives from it. Order: the written operand first, then
+// the others in evaluation order. Store and VolatileStore have no written
+// operand: their `dst` is the address, a use listed after the stored value.
+// Instructions without operands (labels, jumps, calls, ret) have count 0.
+struct OperandSlots asm_operand_slots(struct AsmInstr* asm_instr);
 
 // Build stack slot mappings for pseudo operands.
 // Returns the total stack allocation in bytes (including reserved + padding).
