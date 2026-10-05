@@ -625,6 +625,25 @@ static bool strip_comments(const char* prog, size_t prog_len, const char* filena
     return false;
   }
 
+  // C11 5.1.1.2p2: a file's final newline must not be preceded by a backslash.
+  // Splicing it would silently drop a trailing backslash (undefined behavior,
+  // which gcc accepts with a warning); reject it instead.
+  size_t trailing = 0;
+  if (prog_len >= 2 && prog[prog_len - 1] == '\n' && prog[prog_len - 2] == '\\') {
+    trailing = 2;
+  } else if (prog_len >= 3 && prog[prog_len - 1] == '\n' && prog[prog_len - 2] == '\r' &&
+             prog[prog_len - 3] == '\\') {
+    trailing = 3;
+  }
+  if (trailing != 0) {
+    size_t line = 1;
+    for (size_t i = 0; i < prog_len - trailing; i++) {
+      if (prog[i] == '\n') line++;
+    }
+    preprocessor_error_at(filename, line, "backslash-newline at end of file");
+    return false;
+  }
+
   struct SourceCursor cur = {prog, 0, 1, 1, 0};
   cursor_skip_splices(&cur);
   bool in_string = false;
