@@ -569,7 +569,10 @@ enum CaseLabelType {
 // Store a case-label kind and its constant/default data.
 struct CaseLabel {
   enum CaseLabelType type;
-  int data;
+  // The case value in the switch's promoted type: sign-extended from 32 bits
+  // for int-sized switches (the bit pattern is reinterpreted when lowered),
+  // the full value for long switches.
+  int64_t data;
 };
 
 // Link case labels in a switch statement.
@@ -693,6 +696,9 @@ enum TypeSpecifierType {
   ENUM_SPEC,
   CONST_SPEC,
   VOLATILE_SPEC,
+  // Parsed only so type_spec_to_type can reject it: without typedefs, a
+  // specifier-list `restrict` always qualifies a non-pointer type.
+  RESTRICT_SPEC,
 };
 
 // Store a type-specifier kind and optional named tag.
@@ -713,10 +719,13 @@ struct StorageClassList {
   struct StorageClassList* next;
 };
 
-// Distinguish type-specifier and storage-class declaration prefixes.
+// Distinguish type-specifier, storage-class, and function-specifier
+// declaration prefixes. INLINE_PREFIX carries no payload because `inline` is
+// accepted on functions but otherwise ignored.
 enum DclrPrefixType {
   STORAGE_PREFIX,
-  TYPE_PREFIX
+  TYPE_PREFIX,
+  INLINE_PREFIX
 };
 
 // Select type-specifier or storage-class prefix data.
@@ -785,5 +794,41 @@ bool compare_types(struct Type* a, struct Type* b);
 
 // Compare two types without requiring their outermost const qualifiers to match.
 bool compare_types_ignore_top_qualifiers(struct Type* a, struct Type* b);
+
+// ---------------------------------------------------------------------------
+// Generic AST traversal
+// ---------------------------------------------------------------------------
+
+// What a visitor callback wants done with the node it was given.
+enum AstWalkAction {
+  AST_WALK_CHILDREN, // descend into the node's children
+  AST_WALK_SKIP,     // do not descend (the callback walked them itself, or
+                     // they need no visit)
+  AST_WALK_STOP,     // abort the whole walk (an error was reported)
+};
+
+// Callbacks for the ast_walk_* functions. Either callback may be NULL, which
+// means "always descend". ctx is for the caller's state.
+struct AstVisitor {
+  enum AstWalkAction (*on_stmt)(struct AstVisitor* v, struct Statement* stmt);
+  enum AstWalkAction (*on_expr)(struct AstVisitor* v, struct Expr* expr);
+  void* ctx;
+};
+
+// Pre-order walk in source order over statements, expressions, statement
+// expressions nested in expressions, and local declaration initializers. Every
+// pass that must find all statements of a kind (gotos, cases, loops) uses this
+// walk so a new node kind only needs to be added here. Each function returns
+// false if a callback stopped the walk; NULL nodes are skipped.
+bool ast_walk_block(struct AstVisitor* v, struct Block* block);
+bool ast_walk_stmt(struct AstVisitor* v, struct Statement* stmt);
+bool ast_walk_expr(struct AstVisitor* v, struct Expr* expr);
+bool ast_walk_initializer(struct AstVisitor* v, struct Initializer* init);
+bool ast_walk_for_init(struct AstVisitor* v, struct ForInit* init);
+
+// Walk a statement's children without calling on_stmt for the statement
+// itself, for callbacks that need to act after the children (save state,
+// walk children, restore) and then return AST_WALK_SKIP.
+bool ast_walk_stmt_children(struct AstVisitor* v, struct Statement* stmt);
 
 #endif // AST_H

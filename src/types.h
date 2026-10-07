@@ -51,16 +51,28 @@ struct ArrayType {
 // Reference a named struct tag in the type system.
 struct StructType {
   struct Slice* name;
+  // Set once identifier resolution has renamed the tag to its unique name.
+  // Function types share parameter Type objects with their declarator's
+  // parameter list, so resolution can reach the same tag twice.
+  bool name_resolved;
 };
 
 // Reference a named union tag in the type system.
 struct UnionType {
   struct Slice* name;
+  // Set once identifier resolution has renamed the tag to its unique name.
+  // Function types share parameter Type objects with their declarator's
+  // parameter list, so resolution can reach the same tag twice.
+  bool name_resolved;
 };
 
 // Reference a named enum tag in the type system.
 struct EnumType {
   struct Slice* name;
+  // Set once identifier resolution has renamed the tag to its unique name.
+  // Function types share parameter Type objects with their declarator's
+  // parameter list, so resolution can reach the same tag twice.
+  bool name_resolved;
 };
 
 // Select the concrete payload associated with a TypeType value.

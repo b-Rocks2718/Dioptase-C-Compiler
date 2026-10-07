@@ -1,6 +1,7 @@
 #ifndef ASM_GEN_H
 #define ASM_GEN_H
 
+#include "slice_map.h"
 #include "AST.h"
 #include "analysis.h"
 #include "typechecking.h"
@@ -34,20 +35,18 @@ struct AsmType {
 };
 
 // Store an ASM symbol's type, linkage, definition state, and value.
-struct AsmSymbolEntry{
+struct AsmSymbolEntry {
   struct Slice* key;
   struct AsmType* type; // for data
   bool is_static;  // for data
   bool is_defined; // for functions
   bool return_on_stack; // for functions
-
-  struct AsmSymbolEntry* next;
 };
 
 // Own the bucket array used for ASM symbol lookup.
+// Iterate with slice_map_iter(&table->map); values are AsmSymbolEntry*.
 struct AsmSymbolTable{
-  size_t size;
-  struct AsmSymbolEntry** arr;
+  struct SliceMap map;
 };
 
 // Own the linked list of top-level ASM declarations.
@@ -80,6 +79,9 @@ struct AsmFunc {
   struct AsmInstr* body;
   struct DebugLocal* locals;
   size_t num_locals;
+  // Frame bytes below BP reserved before any pseudo gets a slot: 4 when the
+  // function returns through a caller buffer whose pointer is kept at BP-4.
+  size_t reserved_stack_bytes;
 };
 
 // Store a file-scope static variable and its initializer.
@@ -160,18 +162,6 @@ struct AsmMov {
   struct Operand* src;
 };
 
-// Read a volatile object. Same operands as a move; the read is a side effect.
-struct AsmVolatileRead {
-  struct Operand* dst;
-  struct Operand* src;
-};
-
-// Write a volatile object. Same operands as a move; the write is a side effect.
-struct AsmVolatileWrite {
-  struct Operand* dst;
-  struct Operand* src;
-};
-
 // Store unary operation, destination, and source operands.
 struct AsmUnary {
   enum UnOp op;
@@ -248,20 +238,8 @@ struct AsmLoad {
   struct Operand* src;
 };
 
-// Load through a pointer to a volatile object.
-struct AsmVolatileLoad {
-  struct Operand* dst;
-  struct Operand* src;
-};
-
 // Store destination address and source value for a store.
 struct AsmStore {
-  struct Operand* dst;
-  struct Operand* src;
-};
-
-// Store through a pointer to a volatile object.
-struct AsmVolatileStore {
   struct Operand* dst;
   struct Operand* src;
 };
@@ -288,8 +266,10 @@ struct AsmExtend {
 // Select the concrete ASM instruction payload identified by AsmInstrType.
 union AsmInstrVariant {
   struct AsmMov asm_mov;
-  struct AsmVolatileRead asm_volatile_read;
-  struct AsmVolatileWrite asm_volatile_write;
+  // The volatile forms share the plain forms' operand layout; only their
+  // opcode differs, so later passes cannot treat them as ordinary copies.
+  struct AsmMov asm_volatile_read;
+  struct AsmMov asm_volatile_write;
   struct AsmUnary asm_unary;
   struct AsmBinary asm_binary;
   struct AsmCmp asm_cmp;
@@ -303,9 +283,9 @@ union AsmInstrVariant {
   struct AsmLabel asm_label;
   struct AsmGetAddress asm_get_address;
   struct AsmLoad asm_load;
-  struct AsmVolatileLoad asm_volatile_load;
+  struct AsmLoad asm_volatile_load;
   struct AsmStore asm_store;
-  struct AsmVolatileStore asm_volatile_store;
+  struct AsmStore asm_volatile_store;
   struct AsmBoundary asm_boundary;
   struct AsmTrunc asm_trunc;
   struct AsmExtend asm_extend;
@@ -422,13 +402,13 @@ struct Operand {
 struct PseudoEntry {
   struct Operand* pseudo;
   struct Operand* mapped;
-  struct PseudoEntry* next;
 };
 
 // Own the bucket array used for pseudo-register mappings.
+// Keyed by the pseudo's name; values are PseudoEntry*. Heap-backed and
+// destroyed per function by destroy_pseudo_map.
 struct PseudoMap{
-  size_t size;
-  struct PseudoEntry** arr;
+  struct SliceMap map;
 };
 
 // Classify variables for the purpose of register allocation according to the ABI.
@@ -475,16 +455,47 @@ struct Operand* make_pseudo(struct Slice* var_name, struct AsmType* asm_type);
 
 struct Operand* make_pseudo_mem(struct Slice* var_name, struct AsmType* asm_type, int offset);
 
-struct Operand** get_ops(struct AsmInstr* asm_instr, size_t* out_count);
+// How an instruction accesses one of its operand fields.
+enum OperandRole {
+  OPERAND_DEF,     // written
+  OPERAND_USE,     // read
+  OPERAND_ADDRESS, // only its address is taken (GetAddress source); its value
+                   // is neither read nor written, but it must live in memory
+};
 
-struct Operand** get_srcs(struct AsmInstr* asm_instr, size_t* out_count);
+// One operand field of an ASM instruction. `field` points into the
+// instruction, so passes can read the operand or replace it in place.
+struct OperandSlot {
+  struct Operand** field;
+  enum OperandRole role;
+};
 
-struct Operand* get_dst(struct AsmInstr* asm_instr);
+// Largest operand count of any ASM instruction (Binary: dst, src1, src2).
+#define ASM_MAX_OPERAND_SLOTS 3
+
+// Every operand field of one ASM instruction.
+struct OperandSlots {
+  struct OperandSlot slot[ASM_MAX_OPERAND_SLOTS];
+  size_t count;
+};
+
+// The single description of each ASM instruction's operand fields; every pass
+// that walks operands (stack-slot assignment, pseudo replacement, codegen,
+// register allocation) derives from it. Order: the written operand first, then
+// the others in evaluation order. Store and VolatileStore have no written
+// operand: their `dst` is the address, a use listed after the stored value.
+// Instructions without operands (labels, jumps, calls, ret) have count 0.
+struct OperandSlots asm_operand_slots(struct AsmInstr* asm_instr);
 
 // Build stack slot mappings for pseudo operands.
 // Returns the total stack allocation in bytes (including reserved + padding).
 // reserved_bytes preserves ABI-mandated slots (e.g., return pointer).
 size_t create_maps(struct AsmInstr* asm_instr, size_t reserved_bytes);
+
+// Place every pseudo left after register allocation (stack slot or data
+// label), prepend the frame allocation, record debug locals, and replace the
+// pseudos in place. Runs once, after allocate_registers.
+void assign_stack_slots(struct AsmProg* prog);
 
 void replace_pseudo(struct AsmInstr* asm_instr);
 

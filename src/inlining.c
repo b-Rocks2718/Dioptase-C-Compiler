@@ -1,4 +1,5 @@
 #include "inlining.h"
+#include "exit_codes.h"
 #include "TAC.h"
 #include "unique_name.h"
 #include "label_map.h"
@@ -54,7 +55,7 @@ static struct Slice* replace_var_name(struct Slice* name,
             "Inlining error: no symbol-table entry for TAC variable %.*s\n",
             name == NULL ? 0 : (int)name->len,
             name == NULL ? "<null>" : name->start);
-    exit(EXIT_FAILURE);
+    exit(BCC_EXIT_INTERNAL);
   }
   if (preserve_symbol_name(entry)) {
     label_map_insert(var_map, name, name);
@@ -65,7 +66,7 @@ static struct Slice* replace_var_name(struct Slice* name,
             "Inlining error: TAC variable %.*s has unsupported symbol "
             "attributes\n",
             (int)name->len, name->start);
-    exit(EXIT_FAILURE);
+    exit(BCC_EXIT_INTERNAL);
   }
 
   struct Slice* unique_name = make_unique(name, "inline");
@@ -103,7 +104,7 @@ static struct Val* replace_args(const struct Val* args, size_t num_args,
     fprintf(stderr,
             "Inlining error: call has %zu arguments but no argument array\n",
             num_args);
-    exit(EXIT_FAILURE);
+    exit(BCC_EXIT_INTERNAL);
   }
 
   struct Val* replaced = arena_alloc(sizeof(*replaced) * num_args);
@@ -111,7 +112,7 @@ static struct Val* replace_args(const struct Val* args, size_t num_args,
     fprintf(stderr,
             "Inlining error: unable to allocate %zu copied call arguments\n",
             num_args);
-    exit(EXIT_FAILURE);
+    exit(BCC_EXIT_INTERNAL);
   }
   for (size_t i = 0; i < num_args; i++) {
     replaced[i] = args[i];
@@ -120,146 +121,68 @@ static struct Val* replace_args(const struct Val* args, size_t num_args,
   return replaced;
 }
 
+// Rename every variable operand and label of an inlined instruction so the
+// callee's names cannot collide with the caller's.
 static void replace_identifiers_and_labels(struct TACInstr* instr,
     struct LabelMap* var_map, struct LabelMap* label_map) {
   switch (instr->type) {
-    case TACRETURN: {
-      // should not happen, as returns are replaced with jumps to the end label
-      fprintf(stderr, "Error: unexpected return instruction during inlining\n");
-      exit(EXIT_FAILURE);
-    }
-    case TACUNARY: {
-      instr->instr.tac_unary.src = replace_val(instr->instr.tac_unary.src, var_map);
-      instr->instr.tac_unary.dst = replace_val(instr->instr.tac_unary.dst, var_map);
-      break;
-    }
-    case TACBINARY: {
-      instr->instr.tac_binary.src1 = replace_val(instr->instr.tac_binary.src1, var_map);
-      instr->instr.tac_binary.src2 = replace_val(instr->instr.tac_binary.src2, var_map);
-      instr->instr.tac_binary.dst = replace_val(instr->instr.tac_binary.dst, var_map);
-      break;
-    }
-    case TACCOND_JUMP: {
-      instr->instr.tac_cond_jump.src1 = replace_val(instr->instr.tac_cond_jump.src1, var_map);
-      instr->instr.tac_cond_jump.src2 = replace_val(instr->instr.tac_cond_jump.src2, var_map);
+    case TACRETURN:
+      // Returns are replaced with jumps to the inlined body's end label first.
+      fprintf(stderr, "Inlining error: unexpected return instruction while renaming an inlined body\n");
+      exit(BCC_EXIT_INTERNAL);
+    case TACTAIL_CALL:
+    case TACTAIL_CALL_INDIRECT:
+      fprintf(stderr, "Inlining error: functions containing tail calls are never inlined\n");
+      exit(BCC_EXIT_INTERNAL);
+    case TACCOND_JUMP:
       instr->instr.tac_cond_jump.label =
           replace_label_name(instr->instr.tac_cond_jump.label, label_map);
       break;
-    }
-    case TACJUMP: {
-      instr->instr.tac_jump.label =
-          replace_label_name(instr->instr.tac_jump.label, label_map);
+    case TACJUMP:
+      instr->instr.tac_jump.label = replace_label_name(instr->instr.tac_jump.label, label_map);
       break;
-    }
-    case TACLABEL: {
-      instr->instr.tac_label.label =
-          replace_label_name(instr->instr.tac_label.label, label_map);
+    case TACLABEL:
+      instr->instr.tac_label.label = replace_label_name(instr->instr.tac_label.label, label_map);
       break;
-    }
-    case TACCOPY: {
-      instr->instr.tac_copy.src = replace_val(instr->instr.tac_copy.src, var_map);
-      instr->instr.tac_copy.dst = replace_val(instr->instr.tac_copy.dst, var_map);
+    default:
       break;
-    }
-    case TACVOLATILE_READ: {
-      instr->instr.tac_copy.src = replace_val(instr->instr.tac_copy.src, var_map);
-      instr->instr.tac_copy.dst = replace_val(instr->instr.tac_copy.dst, var_map);
-      break;
-    }
-    case TACVOLATILE_WRITE: {
-      instr->instr.tac_copy.src = replace_val(instr->instr.tac_copy.src, var_map);
-      instr->instr.tac_copy.dst = replace_val(instr->instr.tac_copy.dst, var_map);
-      break;
-    }
-    case TACVOLATILE_LOAD: {
-      instr->instr.tac_load.src_ptr = replace_val(instr->instr.tac_load.src_ptr, var_map);
-      instr->instr.tac_load.dst = replace_val(instr->instr.tac_load.dst, var_map);
-      break;
-    }
-    case TACVOLATILE_STORE: {
-      instr->instr.tac_store.src = replace_val(instr->instr.tac_store.src, var_map);
-      instr->instr.tac_store.dst_ptr = replace_val(instr->instr.tac_store.dst_ptr, var_map);
-      break;
-    }
-    case TACVOLATILE_COPY_TO_OFFSET: {
-      instr->instr.tac_copy_to_offset.src = replace_val(instr->instr.tac_copy_to_offset.src, var_map);
-      instr->instr.tac_copy_to_offset.dst =
-          replace_var_name(instr->instr.tac_copy_to_offset.dst, var_map);
-      break;
-    }
-    case TACVOLATILE_COPY_FROM_OFFSET: {
-      instr->instr.tac_copy_from_offset.src =
-          replace_var_name(instr->instr.tac_copy_from_offset.src, var_map);
-      instr->instr.tac_copy_from_offset.dst = replace_val(instr->instr.tac_copy_from_offset.dst, var_map);
-      break;
-    }
-    case TACCALL: {
-      if (instr->instr.tac_call.dst != NULL){
-        instr->instr.tac_call.dst = replace_val(instr->instr.tac_call.dst, var_map);
-      }
-      instr->instr.tac_call.args =
-          replace_args(instr->instr.tac_call.args,
-                       instr->instr.tac_call.num_args, var_map);
-      break;
-    }
-    case TACCALL_INDIRECT: {
-      if (instr->instr.tac_call_indirect.dst != NULL){
-        instr->instr.tac_call_indirect.dst = replace_val(instr->instr.tac_call_indirect.dst, var_map);
-      }
-      instr->instr.tac_call_indirect.func = replace_val(instr->instr.tac_call_indirect.func, var_map);
-      instr->instr.tac_call_indirect.args =
-          replace_args(instr->instr.tac_call_indirect.args,
-                       instr->instr.tac_call_indirect.num_args, var_map);
-      break;
-    }
-    case TACTAIL_CALL:
-    case TACTAIL_CALL_INDIRECT: {
-      // for now we do not inline functions containing tail calls
-      fprintf(stderr, "Tail calls should not be inlined.\n");
-      exit(EXIT_FAILURE);
-    }
-    case TACGET_ADDRESS: {
-      instr->instr.tac_get_address.dst = replace_val(instr->instr.tac_get_address.dst, var_map);
-      instr->instr.tac_get_address.src = replace_val(instr->instr.tac_get_address.src, var_map);
-      break;
-    }
-    case TACLOAD: {
-      instr->instr.tac_load.src_ptr = replace_val(instr->instr.tac_load.src_ptr, var_map);
-      instr->instr.tac_load.dst = replace_val(instr->instr.tac_load.dst, var_map);
-      break;
-    }
-    case TACSTORE: {
-      instr->instr.tac_store.src = replace_val(instr->instr.tac_store.src, var_map);
-      instr->instr.tac_store.dst_ptr = replace_val(instr->instr.tac_store.dst_ptr, var_map);
-      break;
-    }
-    case TACCOPY_TO_OFFSET: {
-      instr->instr.tac_copy_to_offset.src = replace_val(instr->instr.tac_copy_to_offset.src, var_map);
-      instr->instr.tac_copy_to_offset.dst =
-          replace_var_name(instr->instr.tac_copy_to_offset.dst, var_map);
-      break;
-    }
-    case TACCOPY_FROM_OFFSET: {
-      instr->instr.tac_copy_from_offset.src =
-          replace_var_name(instr->instr.tac_copy_from_offset.src, var_map);
-      instr->instr.tac_copy_from_offset.dst = replace_val(instr->instr.tac_copy_from_offset.dst, var_map);
-      break;
-    }
-    case TACBOUNDARY: {
-      // no change needed
-      break;
-    }
-    case TACTRUNC: {
-      instr->instr.tac_trunc.src = replace_val(instr->instr.tac_trunc.src, var_map);
-      instr->instr.tac_trunc.dst = replace_val(instr->instr.tac_trunc.dst, var_map);
-      break;
-    }
-    case TACEXTEND: {
-      instr->instr.tac_extend.src = replace_val(instr->instr.tac_extend.src, var_map);
-      instr->instr.tac_extend.dst = replace_val(instr->instr.tac_extend.dst, var_map);
-      break;
+  }
+
+  struct TACOperands ops = tac_instr_operands(instr);
+  for (size_t i = 0; i < ops.count; i++) {
+    struct TACOperand* op = &ops.op[i];
+    switch (op->kind) {
+      case TAC_OPERAND_VAL:
+        if (*op->val != NULL) {
+          *op->val = replace_val(*op->val, var_map);
+        }
+        break;
+      case TAC_OPERAND_ARGS:
+        *op->args = replace_args(*op->args, op->num_args, var_map);
+        break;
+      case TAC_OPERAND_NAME:
+        *op->name = replace_var_name(*op->name, var_map);
+        break;
     }
   }
+}
+
+// Return whether an inlined `return ret_src` must be copied into call_dst.
+// A void return (NULL source) has nothing to copy. A constant returned into a
+// struct or union result is skipped too: C forbids returning a constant from
+// an aggregate-returning function, so it can only be the `Return Const(0)`
+// that func_to_TAC appends for falling off the function's end. Reaching that
+// leaves the result indeterminate, and ASM generation cannot copy a scalar
+// constant into an aggregate.
+static bool should_copy_return(const struct Val* ret_src,
+                               const struct Val* call_dst) {
+  if (ret_src == NULL) {
+    return false;
+  }
+  bool aggregate_dst = call_dst->type != NULL &&
+                       (call_dst->type->type == STRUCT_TYPE ||
+                        call_dst->type->type == UNION_TYPE);
+  return !(aggregate_dst && ret_src->val_type == CONSTANT);
 }
 
 // Inline a single callsite within the caller function.
@@ -311,10 +234,12 @@ static struct TACInstr* inline_callsite(
   for (struct TACInstr* callee_instr = callee->body.head; callee_instr != NULL; callee_instr = callee_instr->next) {
     if (callee_instr->type == TACRETURN) {
       // replace return with copy into call result and jump to end label
-      if (call_instr->instr.tac_call.dst != NULL){
+      struct Val* ret_src =
+          replace_val(callee_instr->instr.tac_return.src, var_map);
+      if (call_instr->instr.tac_call.dst != NULL &&
+          should_copy_return(ret_src, call_instr->instr.tac_call.dst)){
         struct TACInstr* ret_copy = tac_instr_create(TACCOPY);
-        ret_copy->instr.tac_copy.src =
-            replace_val(callee_instr->instr.tac_return.src, var_map);
+        ret_copy->instr.tac_copy.src = ret_src;
         ret_copy->instr.tac_copy.dst = call_instr->instr.tac_call.dst;
         // insert the copy instruction before the call instruction in the caller's body
         ret_copy->next = call_instr;
@@ -376,7 +301,7 @@ static struct TACInstr* inline_callsite(
     // return, not a call
 
     fprintf(stderr, "Error: function should end with a return, not a call\n");
-    exit(EXIT_FAILURE);
+    exit(BCC_EXIT_INTERNAL);
   }
   // no change to count, we added end label and removed the call
 
@@ -416,11 +341,8 @@ static void perform_inlining_for_node(struct CallGraph* cg, struct CallGraphNode
 
 // Perform function inlining on the given call graph.
 void perform_inlining(struct CallGraph* cg) {
-  for (int i = 0; i < NUM_INLINE_ITERS; i++) {
-    // iterate multiple times to allow for nested inlining opportunities
-    for (struct CallGraphEntry* entry = cg->nodes.head; entry != NULL; entry = entry->next) {
-      struct CallGraphNode* node = entry->node;
-      perform_inlining_for_node(cg, node);
-    }
+  for (struct CallGraphEntry* entry = cg->nodes.head; entry != NULL; entry = entry->next) {
+    struct CallGraphNode* node = entry->node;
+    perform_inlining_for_node(cg, node);
   }
 }

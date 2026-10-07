@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 #include "token_array.h"
+#include "exit_codes.h"
 
 // Slices per payload chunk (16 bytes each on 64-bit hosts, so 16 KiB chunks).
 enum { kSliceChunkCapacity = 1024 };
@@ -14,7 +15,7 @@ struct TokenArray* create_token_array(size_t capacity){
     fprintf(stderr,
             "Lexer memory error: unable to allocate a token array for %zu tokens\n",
             capacity);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
 
   arr->capacity = capacity;
@@ -34,7 +35,7 @@ void token_array_append(struct TokenArray* arr, const struct Token* value){
       fprintf(stderr,
               "Lexer memory error: unable to grow the token array from %zu to %zu tokens\n",
               arr->capacity, new_capacity);
-      exit(1);
+      exit(BCC_EXIT_INTERNAL);
     }
     arr->tokens = grown;
     arr->capacity = new_capacity;

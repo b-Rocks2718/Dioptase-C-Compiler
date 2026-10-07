@@ -418,19 +418,17 @@ static void tac_exec_collect_statics(struct TACProg* prog) {
   }
   struct TopLevel* statics_head = NULL;
   struct TopLevel* statics_tail = NULL;
-  for (size_t i = 0; i < global_symbol_table->size; i++) {
-    for (struct SymbolEntry* entry = global_symbol_table->arr[i];
-         entry != NULL;
-         entry = entry->next) {
-      struct TopLevel* top_level = symbol_to_TAC(entry);
-      if (top_level != NULL) {
-        if (statics_head == NULL) {
-          statics_head = top_level;
-          statics_tail = top_level;
-        } else {
-          statics_tail->next = top_level;
-          statics_tail = top_level;
-        }
+  struct SliceMapIter symbols = slice_map_iter(&global_symbol_table->map);
+  for (struct SymbolEntry* entry = slice_map_next_value(&symbols); entry != NULL;
+       entry = slice_map_next_value(&symbols)) {
+    struct TopLevel* top_level = symbol_to_TAC(entry);
+    if (top_level != NULL) {
+      if (statics_head == NULL) {
+        statics_head = top_level;
+        statics_tail = top_level;
+      } else {
+        statics_tail->next = top_level;
+        statics_tail = top_level;
       }
     }
   }

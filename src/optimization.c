@@ -1,4 +1,6 @@
 #include "optimization.h"
+#include "slice_index.h"
+#include "exit_codes.h"
 #include "arena.h"
 #include "TAC.h"
 #include "cfg.h"
@@ -23,52 +25,14 @@ static bool has_body_optimization(struct OptimizationOptions options) {
          options.dead_store_elim;
 }
 
-// Minimum slot count for NameSet; keep tables at most half full.
-enum { kNameSetMinSlots = 16, kNameSetSlotsPerName = 2 };
-
-// Fixed-capacity open-addressing set of names compared by content. Used to
-// build duplicate-free name lists in linear time instead of rescanning the
-// list for every insertion. Owns only its slot array; names stay arena-owned.
-struct NameSet {
-  struct Slice** slots;
-  size_t slot_count; // power of two, >= kNameSetSlotsPerName * max_names
-};
-
-// Create a set able to hold max_names names.
-static struct NameSet name_set_create(size_t max_names) {
-  struct NameSet set;
-  set.slot_count = kNameSetMinSlots;
-  while (set.slot_count < max_names * kNameSetSlotsPerName) {
-    set.slot_count *= 2;
-  }
-  set.slots = calloc(set.slot_count, sizeof(*set.slots));
-  if (set.slots == NULL) {
-    fprintf(stderr,
-            "Optimizer error: unable to allocate a %zu-slot name set for "
-            "collecting static and aliased variables\n",
-            set.slot_count);
-    exit(1);
-  }
-  return set;
-}
-
-// Insert name. Returns true if it was not already present.
-static bool name_set_insert(struct NameSet* set, struct Slice* name) {
-  size_t mask = set->slot_count - 1;
-  size_t slot = hash_slice(name) & mask;
-  while (set->slots[slot] != NULL) {
-    if (compare_slice_to_slice(set->slots[slot], name)) {
-      return false;
-    }
-    slot = (slot + 1) & mask;
-  }
-  set->slots[slot] = name;
-  return true;
-}
-
 // Append name to list unless it is NULL or already in seen.
-static void add_unique_name(struct SliceList* list, struct NameSet* seen, struct Slice* name) {
-  if (name != NULL && name_set_insert(seen, name)) {
+static void add_unique_name(struct SliceList* list, struct SliceIndex* seen, struct Slice* name) {
+  if (name == NULL) {
+    return;
+  }
+  bool added = false;
+  slice_index_add(seen, name, &added);
+  if (added) {
     slice_list_add(list, name);
   }
 }
@@ -89,7 +53,8 @@ struct SliceList get_aliased_vars(struct TACInstr* body,
     }
   }
 
-  struct NameSet seen = name_set_create(max_names);
+  struct SliceIndex seen;
+  slice_index_init(&seen, max_names);
   struct SliceList list = {NULL, NULL};
   for (struct SliceListNode* node = static_vars.head; node != NULL; node = node->next) {
     add_unique_name(&list, &seen, node->slice);
@@ -103,7 +68,7 @@ struct SliceList get_aliased_vars(struct TACInstr* body,
       }
     }
   }
-  free(seen.slots);
+  slice_index_free(&seen);
   return list;
 }
 
@@ -121,27 +86,24 @@ struct SliceList get_static_vars(void) {
   }
 
   size_t max_names = 0;
-  for (size_t i = 0; i < global_symbol_table->size; i++) {
-    for (struct SymbolEntry* entry = global_symbol_table->arr[i];
-         entry != NULL;
-         entry = entry->next) {
-      if (is_static_entry(entry)) {
-        max_names++;
-      }
+  struct SliceMapIter counting = slice_map_iter(&global_symbol_table->map);
+  for (struct SymbolEntry* entry = slice_map_next_value(&counting); entry != NULL;
+       entry = slice_map_next_value(&counting)) {
+    if (is_static_entry(entry)) {
+      max_names++;
     }
   }
 
-  struct NameSet seen = name_set_create(max_names);
-  for (size_t i = 0; i < global_symbol_table->size; i++) {
-    for (struct SymbolEntry* entry = global_symbol_table->arr[i];
-         entry != NULL;
-         entry = entry->next) {
-      if (is_static_entry(entry)) {
-        add_unique_name(&list, &seen, entry->key);
-      }
+  struct SliceIndex seen;
+  slice_index_init(&seen, max_names);
+  struct SliceMapIter collecting = slice_map_iter(&global_symbol_table->map);
+  for (struct SymbolEntry* entry = slice_map_next_value(&collecting); entry != NULL;
+       entry = slice_map_next_value(&collecting)) {
+    if (is_static_entry(entry)) {
+      add_unique_name(&list, &seen, entry->key);
     }
   }
-  free(seen.slots);
+  slice_index_free(&seen);
   return list;
 }
 
@@ -157,60 +119,6 @@ struct OptimizerArenas {
   struct Arena* iteration[2]; // alternating per-iteration storage
 };
 
-static struct TACInstrList optimize_body(
-    struct TACInstrList body,
-    struct OptimizationOptions options,
-    struct SliceList static_vars,
-    struct OptimizerArenas* arenas);
-
-// Run the enabled body optimizations on every function until each TAC body
-// reaches a fixed point. Translation-unit static names are collected once and
-// reused, while address-taken names are invariant for each function.
-void optimize(struct TACProg* prog, struct OptimizationOptions options) {
-  if (prog == NULL || !(has_body_optimization(options) || options.inline_opt)) {
-    return;
-  }
-
-  // Static storage duration is a translation-unit property. Reuse this set
-  // across every function instead of rescanning the symbol table per function.
-  struct SliceList static_vars = get_static_vars();
-
-  struct OptimizerArenas arenas = {
-      arena_create(kOptimizerScratchBlockSize),
-      {arena_create(kOptimizerScratchBlockSize), arena_create(kOptimizerScratchBlockSize)},
-  };
-  for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
-    if (top->type == FUNC) {
-      top->top.tac_func.body =
-          optimize_body(top->top.tac_func.body, options, static_vars, &arenas);
-    }
-  }
-
-  if (!options.inline_opt) {
-    arena_free(arenas.function);
-    arena_free(arenas.iteration[0]);
-    arena_free(arenas.iteration[1]);
-    return;
-  }
-
-  // do inlining optimizations
-  struct CallGraph call_graph = build_call_graph(prog);
-
-  perform_inlining(&call_graph);
-
-  // after inlining, re-run the optimization passes
-  for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
-    if (top->type == FUNC) {
-      top->top.tac_func.body =
-          optimize_body(top->top.tac_func.body, options, static_vars, &arenas);
-    }
-  }
-
-  arena_free(arenas.function);
-  arena_free(arenas.iteration[0]);
-  arena_free(arenas.iteration[1]);
-}
-
 // Copy body into the compilation arena. Operand pointers are shared with the
 // source instructions; those operands are already compilation-lifetime data.
 static struct TACInstrList copy_body_persistent(struct TACInstrList body) {
@@ -223,7 +131,7 @@ static struct TACInstrList copy_body_persistent(struct TACInstrList body) {
               "Optimizer error: unable to allocate %zu bytes while copying an "
               "optimized TAC body into compilation storage\n",
               sizeof(struct TACInstr));
-      exit(1);
+      exit(BCC_EXIT_INTERNAL);
     }
     *instr_copy = *instr;
     instr_copy->next = NULL;
@@ -299,4 +207,54 @@ static struct TACInstrList optimize_body(
   arena_reset(arenas->iteration[0]);
   arena_reset(arenas->iteration[1]);
   return result;
+}
+
+// Run the enabled body optimizations on every function until each TAC body
+// reaches a fixed point. Translation-unit static names are collected once and
+// reused, while address-taken names are invariant for each function.
+void optimize(struct TACProg* prog, struct OptimizationOptions options) {
+  if (prog == NULL || !(has_body_optimization(options) || options.inline_opt)) {
+    return;
+  }
+
+  // Static storage duration is a translation-unit property. Reuse this set
+  // across every function instead of rescanning the symbol table per function.
+  struct SliceList static_vars = get_static_vars();
+
+  struct OptimizerArenas arenas = {
+      arena_create(kOptimizerScratchBlockSize),
+      {arena_create(kOptimizerScratchBlockSize), arena_create(kOptimizerScratchBlockSize)},
+  };
+  for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
+    if (top->type == FUNC) {
+      top->top.tac_func.body =
+          optimize_body(top->top.tac_func.body, options, static_vars, &arenas);
+    }
+  }
+
+  if (!options.inline_opt) {
+    arena_free(arenas.function);
+    arena_free(arenas.iteration[0]);
+    arena_free(arenas.iteration[1]);
+    return;
+  }
+
+  // do inlining optimizations
+  struct CallGraph call_graph = build_call_graph(prog);
+
+  for (int i = 0; i < NUM_INLINE_ITERS; i++) {
+    perform_inlining(&call_graph);
+
+    // after each inlining pass, re-run the optimization passes
+    for (struct TopLevel* top = prog->head; top != NULL; top = top->next) {
+      if (top->type == FUNC) {
+        top->top.tac_func.body =
+            optimize_body(top->top.tac_func.body, options, static_vars, &arenas);
+      }
+    }
+  }
+
+  arena_free(arenas.function);
+  arena_free(arenas.iteration[0]);
+  arena_free(arenas.iteration[1]);
 }

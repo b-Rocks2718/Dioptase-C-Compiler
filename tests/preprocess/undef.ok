@@ -1,0 +1,5 @@
+ 
+
+int a = 1 + (2);
+int b = VALUE + F(2);
+int c = 3;

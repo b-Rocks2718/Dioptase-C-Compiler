@@ -1,4 +1,7 @@
 #include "dead_store_elim.h"
+#include "slice_index.h"
+#include "checked_alloc.h"
+#include "exit_codes.h"
 #include "slice.h"
 
 #include <limits.h>
@@ -7,29 +10,18 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Configure the pass-local hash table and the machine-independent width of a
-// liveness word. These constants keep growth policy and bit arithmetic named.
+// Initial capacity hint for the variable index, and the machine-independent
+// width of a liveness word.
 enum {
-  kInitialVariableBuckets = 256,
-  kVariableMapLoadNumerator = 3,
-  kVariableMapLoadDenominator = 4,
+  kInitialVariableCapacity = 128,
   kLiveWordBits = 64,
 };
 
-// Link one borrowed variable name to its dense liveness-bit index. Entries are
-// owned by VariableIndex and chained within one hash bucket.
-struct VariableIndexEntry {
-  struct Slice* name;
-  size_t index;
-  struct VariableIndexEntry* next;
-};
-
 // Map variable names to consecutive bit indices for one DSE invocation. The
-// table owns its buckets and entries, but the Slice names remain arena-owned.
+// Slice names remain arena-owned.
 struct VariableIndex {
-  struct VariableIndexEntry** buckets;
-  size_t bucket_count;
-  size_t count;
+  struct SliceIndex ids;
+  size_t count; // number of indexed variables (bitset width)
 };
 
 // View a fixed-width bitset of live variables. Some views own separately
@@ -49,92 +41,17 @@ struct BlockQueue {
   size_t count;
 };
 
-// Allocate zeroed pass-local storage or terminate with a contextual diagnostic.
-// The caller owns the returned allocation and releases it with free.
-static void* dse_calloc(size_t count, size_t size, const char* purpose) {
-  if (count != 0 && size > SIZE_MAX / count) {
-    fprintf(stderr,
-            "Dead-store elimination error: allocation size overflow while %s\n",
-            purpose);
-    exit(1);
-  }
-  void* allocation = calloc(count, size);
-  if (allocation == NULL && count != 0 && size != 0) {
-    fprintf(stderr,
-            "Dead-store elimination error: unable to allocate %zu bytes while %s\n",
-            count * size, purpose);
-    exit(1);
-  }
-  return allocation;
-}
 
-// Initialize an empty variable index with the starting bucket count.
+// Initialize an empty variable index.
 static void variable_index_init(struct VariableIndex* index) {
-  index->bucket_count = kInitialVariableBuckets;
+  slice_index_init(&index->ids, kInitialVariableCapacity);
   index->count = 0;
-  index->buckets = dse_calloc(index->bucket_count, sizeof(*index->buckets),
-                              "creating the variable index");
 }
 
-// Release every entry and bucket owned by index and reset it to an empty state.
+// Release the index's storage and reset it to an empty state.
 static void variable_index_destroy(struct VariableIndex* index) {
-  for (size_t bucket = 0; bucket < index->bucket_count; ++bucket) {
-    struct VariableIndexEntry* entry = index->buckets[bucket];
-    while (entry != NULL) {
-      struct VariableIndexEntry* next = entry->next;
-      free(entry);
-      entry = next;
-    }
-  }
-  free(index->buckets);
-  index->buckets = NULL;
-  index->bucket_count = 0;
+  slice_index_free(&index->ids);
   index->count = 0;
-}
-
-// Find the entry for name, returning a borrowed pointer or NULL when absent.
-static struct VariableIndexEntry* variable_index_find_entry(
-    const struct VariableIndex* index, const struct Slice* name) {
-  if (name == NULL) {
-    return NULL;
-  }
-  size_t bucket = hash_slice(name) % index->bucket_count;
-  for (struct VariableIndexEntry* entry = index->buckets[bucket];
-       entry != NULL;
-       entry = entry->next) {
-    if (compare_slice_to_slice(entry->name, name)) {
-      return entry;
-    }
-  }
-  return NULL;
-}
-
-// Double the bucket array and relink existing entries without changing indices.
-static void variable_index_grow(struct VariableIndex* index) {
-  size_t new_bucket_count = index->bucket_count * 2;
-  if (new_bucket_count < index->bucket_count) {
-    fprintf(stderr,
-            "Dead-store elimination error: variable index bucket count overflow\n");
-    exit(1);
-  }
-
-  struct VariableIndexEntry** new_buckets =
-      dse_calloc(new_bucket_count, sizeof(*new_buckets),
-                 "growing the variable index");
-  for (size_t bucket = 0; bucket < index->bucket_count; ++bucket) {
-    struct VariableIndexEntry* entry = index->buckets[bucket];
-    while (entry != NULL) {
-      struct VariableIndexEntry* next = entry->next;
-      size_t new_bucket = hash_slice(entry->name) % new_bucket_count;
-      entry->next = new_buckets[new_bucket];
-      new_buckets[new_bucket] = entry;
-      entry = next;
-    }
-  }
-
-  free(index->buckets);
-  index->buckets = new_buckets;
-  index->bucket_count = new_bucket_count;
 }
 
 // Return name's existing bit index, or insert it and assign the next index.
@@ -143,41 +60,24 @@ static size_t variable_index_add(struct VariableIndex* index, struct Slice* name
   if (name == NULL) {
     return SIZE_MAX;
   }
-
-  struct VariableIndexEntry* existing = variable_index_find_entry(index, name);
-  if (existing != NULL) {
-    return existing->index;
-  }
-
-  if (index->count >=
-      index->bucket_count * kVariableMapLoadNumerator /
-          kVariableMapLoadDenominator) {
-    variable_index_grow(index);
-  }
-
-  struct VariableIndexEntry* entry =
-      dse_calloc(1, sizeof(*entry), "adding a liveness variable");
-  entry->name = name;
-  entry->index = index->count++;
-  size_t bucket = hash_slice(name) % index->bucket_count;
-  entry->next = index->buckets[bucket];
-  index->buckets[bucket] = entry;
-  return entry->index;
+  uint32_t id = slice_index_add(&index->ids, name, NULL);
+  index->count = index->ids.count;
+  return id;
 }
 
 // Return the previously assigned index for name. Absence is an internal pass
 // error because every operand must be collected before bitsets are allocated.
 static size_t variable_index_get(const struct VariableIndex* index,
                                  const struct Slice* name) {
-  struct VariableIndexEntry* entry = variable_index_find_entry(index, name);
-  if (entry == NULL) {
+  uint32_t id = name == NULL ? SLICE_INDEX_NONE : slice_index_get(&index->ids, name);
+  if (id == SLICE_INDEX_NONE) {
     fprintf(stderr,
             "Dead-store elimination error: liveness variable '%.*s' was not indexed\n",
             name == NULL ? 0 : (int)name->len,
             name == NULL ? "" : name->start);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
-  return entry->index;
+  return id;
 }
 
 // Add val to the index when it is a variable operand.
@@ -199,85 +99,20 @@ static void variable_index_add_args(struct VariableIndex* index,
 // Add all variable operands read or written by one TAC instruction.
 static void collect_instruction_variables(struct VariableIndex* index,
                                           struct TACInstr* instr) {
-  switch (instr->type) {
-    case TACRETURN:
-      variable_index_add_val(index, instr->instr.tac_return.src);
-      break;
-    case TACUNARY:
-      variable_index_add_val(index, instr->instr.tac_unary.dst);
-      variable_index_add_val(index, instr->instr.tac_unary.src);
-      break;
-    case TACBINARY:
-      variable_index_add_val(index, instr->instr.tac_binary.dst);
-      variable_index_add_val(index, instr->instr.tac_binary.src1);
-      variable_index_add_val(index, instr->instr.tac_binary.src2);
-      break;
-    case TACCOND_JUMP:
-      variable_index_add_val(index, instr->instr.tac_cond_jump.src1);
-      variable_index_add_val(index, instr->instr.tac_cond_jump.src2);
-      break;
-    case TACCOPY:
-    case TACVOLATILE_READ:
-    case TACVOLATILE_WRITE:
-      variable_index_add_val(index, instr->instr.tac_copy.dst);
-      variable_index_add_val(index, instr->instr.tac_copy.src);
-      break;
-    case TACCALL:
-      variable_index_add_val(index, instr->instr.tac_call.dst);
-      variable_index_add_args(index, instr->instr.tac_call.args,
-                              instr->instr.tac_call.num_args);
-      break;
-    case TACCALL_INDIRECT:
-      variable_index_add_val(index, instr->instr.tac_call_indirect.func);
-      variable_index_add_val(index, instr->instr.tac_call_indirect.dst);
-      variable_index_add_args(index, instr->instr.tac_call_indirect.args,
-                              instr->instr.tac_call_indirect.num_args);
-      break;
-    case TACTAIL_CALL:
-      variable_index_add_args(index, instr->instr.tac_tail_call.args,
-                              instr->instr.tac_tail_call.num_args);
-      break;
-    case TACTAIL_CALL_INDIRECT:
-      variable_index_add_val(index, instr->instr.tac_tail_call_indirect.func);
-      variable_index_add_args(index, instr->instr.tac_tail_call_indirect.args,
-                              instr->instr.tac_tail_call_indirect.num_args);
-      break;
-    case TACGET_ADDRESS:
-      variable_index_add_val(index, instr->instr.tac_get_address.dst);
-      variable_index_add_val(index, instr->instr.tac_get_address.src);
-      break;
-    case TACLOAD:
-    case TACVOLATILE_LOAD:
-      variable_index_add_val(index, instr->instr.tac_load.dst);
-      variable_index_add_val(index, instr->instr.tac_load.src_ptr);
-      break;
-    case TACSTORE:
-    case TACVOLATILE_STORE:
-      variable_index_add_val(index, instr->instr.tac_store.dst_ptr);
-      variable_index_add_val(index, instr->instr.tac_store.src);
-      break;
-    case TACCOPY_TO_OFFSET:
-    case TACVOLATILE_COPY_TO_OFFSET:
-      variable_index_add(index, instr->instr.tac_copy_to_offset.dst);
-      variable_index_add_val(index, instr->instr.tac_copy_to_offset.src);
-      break;
-    case TACCOPY_FROM_OFFSET:
-    case TACVOLATILE_COPY_FROM_OFFSET:
-      variable_index_add_val(index, instr->instr.tac_copy_from_offset.dst);
-      variable_index_add(index, instr->instr.tac_copy_from_offset.src);
-      break;
-    case TACTRUNC:
-      variable_index_add_val(index, instr->instr.tac_trunc.dst);
-      variable_index_add_val(index, instr->instr.tac_trunc.src);
-      break;
-    case TACEXTEND:
-      variable_index_add_val(index, instr->instr.tac_extend.dst);
-      variable_index_add_val(index, instr->instr.tac_extend.src);
-      break;
-    case TACJUMP:
-    case TACLABEL:
-    case TACBOUNDARY:
-      break;
+  struct TACOperands ops = tac_instr_operands(instr);
+  for (size_t i = 0; i < ops.count; ++i) {
+    struct TACOperand* op = &ops.op[i];
+    switch (op->kind) {
+      case TAC_OPERAND_VAL:
+        variable_index_add_val(index, *op->val);
+        break;
+      case TAC_OPERAND_ARGS:
+        variable_index_add_args(index, *op->args, op->num_args);
+        break;
+      case TAC_OPERAND_NAME:
+        variable_index_add(index, *op->name);
+        break;
+    }
   }
 }
 
@@ -306,7 +141,7 @@ static void collect_cfg_variables(struct VariableIndex* index,
 static struct LiveSet live_set_allocate(size_t word_count, const char* purpose) {
   struct LiveSet set;
   set.word_count = word_count;
-  set.words = dse_calloc(word_count, sizeof(*set.words), purpose);
+  set.words = checked_calloc(word_count, sizeof(*set.words), "Dead-store elimination", purpose);
   return set;
 }
 
@@ -452,96 +287,59 @@ static bool instruction_is_dead(struct TACInstr* instr,
           "Dead-store elimination error: unsupported TAC instruction type %d "
           "while testing liveness\n",
           instr->type);
-  exit(1);
+  exit(BCC_EXIT_INTERNAL);
 }
 
-// Apply the backward liveness transfer function for one instruction.
+// Return whether an instruction may read any aliased variable through memory:
+// a callee can read anything whose address escaped, and a load can read
+// whatever its pointer designates.
+static bool reads_aliased_memory(const struct TACInstr* instr) {
+  switch (instr->type) {
+    case TACCALL:
+    case TACCALL_INDIRECT:
+    case TACTAIL_CALL:
+    case TACTAIL_CALL_INDIRECT:
+    case TACLOAD:
+    case TACVOLATILE_LOAD:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// Apply the backward liveness transfer function for one instruction: full
+// definitions are killed before uses are added, so `x = x + 1` keeps x live.
+// A partial write (CopyToOffset) kills nothing, and taking an address
+// (GetAddress) reads nothing; aliased variables are handled separately.
 static void transfer_instruction(struct TACInstr* instr,
                                  struct LiveSet live,
                                  struct LiveSet aliased,
                                  const struct VariableIndex* index) {
-  switch (instr->type) {
-    case TACRETURN:
-      live_set_add_val(live, index, instr->instr.tac_return.src);
-      break;
-    case TACBINARY:
-      live_set_remove_val(live, index, instr->instr.tac_binary.dst);
-      live_set_add_val(live, index, instr->instr.tac_binary.src1);
-      live_set_add_val(live, index, instr->instr.tac_binary.src2);
-      break;
-    case TACUNARY:
-      live_set_remove_val(live, index, instr->instr.tac_unary.dst);
-      live_set_add_val(live, index, instr->instr.tac_unary.src);
-      break;
-    case TACCOND_JUMP:
-      live_set_add_val(live, index, instr->instr.tac_cond_jump.src1);
-      live_set_add_val(live, index, instr->instr.tac_cond_jump.src2);
-      break;
-    case TACCOPY:
-    case TACVOLATILE_READ:
-    case TACVOLATILE_WRITE:
-      live_set_remove_val(live, index, instr->instr.tac_copy.dst);
-      live_set_add_val(live, index, instr->instr.tac_copy.src);
-      break;
-    case TACCALL:
-      live_set_remove_val(live, index, instr->instr.tac_call.dst);
-      live_set_add_args(live, index, instr->instr.tac_call.args,
-                        instr->instr.tac_call.num_args);
-      live_set_union(live, aliased);
-      break;
-    case TACCALL_INDIRECT:
-      live_set_remove_val(live, index, instr->instr.tac_call_indirect.dst);
-      live_set_add_val(live, index, instr->instr.tac_call_indirect.func);
-      live_set_add_args(live, index, instr->instr.tac_call_indirect.args,
-                        instr->instr.tac_call_indirect.num_args);
-      live_set_union(live, aliased);
-      break;
-    case TACTAIL_CALL:
-      live_set_add_args(live, index, instr->instr.tac_tail_call.args,
-                        instr->instr.tac_tail_call.num_args);
-      live_set_union(live, aliased);
-      break;
-    case TACTAIL_CALL_INDIRECT:
-      live_set_add_val(live, index, instr->instr.tac_tail_call_indirect.func);
-      live_set_add_args(live, index, instr->instr.tac_tail_call_indirect.args,
-                        instr->instr.tac_tail_call_indirect.num_args);
-      live_set_union(live, aliased);
-      break;
-    case TACGET_ADDRESS:
-      live_set_remove_val(live, index, instr->instr.tac_get_address.dst);
-      break;
-    case TACLOAD:
-    case TACVOLATILE_LOAD:
-      live_set_remove_val(live, index, instr->instr.tac_load.dst);
-      live_set_add_val(live, index, instr->instr.tac_load.src_ptr);
-      live_set_union(live, aliased);
-      break;
-    case TACSTORE:
-    case TACVOLATILE_STORE:
-      live_set_add_val(live, index, instr->instr.tac_store.src);
-      live_set_add_val(live, index, instr->instr.tac_store.dst_ptr);
-      break;
-    case TACCOPY_TO_OFFSET:
-    case TACVOLATILE_COPY_TO_OFFSET:
-      live_set_add_val(live, index, instr->instr.tac_copy_to_offset.src);
-      break;
-    case TACCOPY_FROM_OFFSET:
-    case TACVOLATILE_COPY_FROM_OFFSET:
-      live_set_remove_val(live, index, instr->instr.tac_copy_from_offset.dst);
-      live_set_add(live, index, instr->instr.tac_copy_from_offset.src);
-      break;
-    case TACTRUNC:
-      live_set_remove_val(live, index, instr->instr.tac_trunc.dst);
-      live_set_add_val(live, index, instr->instr.tac_trunc.src);
-      break;
-    case TACEXTEND:
-      live_set_remove_val(live, index, instr->instr.tac_extend.dst);
-      live_set_add_val(live, index, instr->instr.tac_extend.src);
-      break;
-    case TACJUMP:
-    case TACLABEL:
-    case TACBOUNDARY:
-      break;
+  struct TACOperands ops = tac_instr_operands(instr);
+  for (size_t i = 0; i < ops.count; ++i) {
+    if (ops.op[i].role == TAC_DEF && ops.op[i].kind == TAC_OPERAND_VAL) {
+      live_set_remove_val(live, index, *ops.op[i].val);
+    }
+  }
+  for (size_t i = 0; i < ops.count; ++i) {
+    struct TACOperand* op = &ops.op[i];
+    if (op->role != TAC_USE) {
+      continue;
+    }
+    switch (op->kind) {
+      case TAC_OPERAND_VAL:
+        live_set_add_val(live, index, *op->val);
+        break;
+      case TAC_OPERAND_ARGS:
+        live_set_add_args(live, index, *op->args, op->num_args);
+        break;
+      case TAC_OPERAND_NAME:
+        live_set_add(live, index, *op->name);
+        break;
+    }
+  }
+  if (reads_aliased_memory(instr)) {
+    live_set_union(live, aliased);
   }
 }
 
@@ -576,7 +374,7 @@ static unsigned cfg_node_index(const struct CFG* cfg, const struct CFGNode* node
           "Dead-store elimination error: CFG edge references a node outside "
           "the current graph (stale index %u, graph has %u nodes)\n",
           node->index, cfg->num_nodes);
-  exit(1);
+  exit(BCC_EXIT_INTERNAL);
 }
 
 // Return a non-owning LiveSet view for one block in the contiguous live array.
@@ -605,7 +403,7 @@ static void meet_successors(const struct CFG* cfg,
         fprintf(stderr,
                 "Dead-store elimination error: CFG entry node appears as a "
                 "successor\n");
-        exit(1);
+        exit(BCC_EXIT_INTERNAL);
       case CFG_EXIT:
         live_set_union(result, static_vars);
         break;
@@ -637,10 +435,10 @@ static void transfer_block(struct CFGNode* node,
 
 // Allocate an empty queue capable of holding each CFG node exactly once.
 static void block_queue_init(struct BlockQueue* queue, size_t capacity) {
-  queue->items = dse_calloc(capacity, sizeof(*queue->items),
-                            "creating the liveness work queue");
-  queue->queued = dse_calloc(capacity, sizeof(*queue->queued),
-                             "tracking queued CFG blocks");
+  queue->items = checked_calloc(capacity, sizeof(*queue->items),
+                            "Dead-store elimination", "creating the liveness work queue");
+  queue->queued = checked_calloc(capacity, sizeof(*queue->queued),
+                             "Dead-store elimination", "tracking queued CFG blocks");
   queue->capacity = capacity;
   queue->head = 0;
   queue->count = 0;
@@ -668,7 +466,7 @@ static void block_queue_push(struct BlockQueue* queue, unsigned block_index) {
             "Dead-store elimination error: liveness work queue exceeded %zu "
             "CFG nodes\n",
             queue->capacity);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   size_t tail = (queue->head + queue->count) % queue->capacity;
   queue->items[tail] = block_index;
@@ -682,7 +480,7 @@ static unsigned block_queue_pop(struct BlockQueue* queue) {
     fprintf(stderr,
             "Dead-store elimination error: attempted to pop an empty liveness "
             "work queue\n");
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   unsigned block_index = queue->items[queue->head];
   queue->head = (queue->head + 1) % queue->capacity;
@@ -731,7 +529,7 @@ static void find_live_variables(struct CFG* cfg,
           fprintf(stderr,
                   "Dead-store elimination error: CFG exit node appears as a "
                   "predecessor\n");
-          exit(1);
+          exit(BCC_EXIT_INTERNAL);
         }
         block_queue_push(&queue, cfg_node_index(cfg, predecessor->node));
       }
@@ -767,8 +565,8 @@ static void eliminate_dead_instructions(struct CFG* cfg,
          instr = instr->next) {
       instruction_count += 1;
     }
-    bool* dead = dse_calloc(instruction_count, sizeof(*dead),
-                            "marking dead instructions");
+    bool* dead = checked_calloc(instruction_count, sizeof(*dead),
+                            "Dead-store elimination", "marking dead instructions");
 
     reverse_block_body(&block->body);
     size_t reverse_index = instruction_count;
@@ -835,9 +633,9 @@ struct CFG* dead_store_elim(struct CFG* cfg,
   live_set_add_slice_list(aliased_set, &index, aliased_vars);
 
   uint64_t* block_live_words =
-      dse_calloc((size_t)cfg->num_nodes * word_count,
+      checked_calloc((size_t)cfg->num_nodes * word_count,
                  sizeof(*block_live_words),
-                 "storing CFG live-in sets");
+                 "Dead-store elimination", "storing CFG live-in sets");
 
   find_live_variables(cfg, block_live_words, static_set, aliased_set, &index);
   eliminate_dead_instructions(cfg, block_live_words, static_set, aliased_set,

@@ -1,0 +1,1 @@
+Preprocessor error at tests/preprocess_invalid/undef_missing_name.c:1: invalid #undef directive

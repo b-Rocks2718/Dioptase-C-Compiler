@@ -1,0 +1,1 @@
+Preprocessor error at tests/preprocess_invalid/function_macro_bad_paste.c:2: pasting "/" and "/" in macro "F" does not give a valid preprocessing token

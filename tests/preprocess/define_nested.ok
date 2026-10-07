@@ -1,0 +1,4 @@
+int a[41];
+char *name = "SIZE";
+int x = SELF;
+int y = FIRST;

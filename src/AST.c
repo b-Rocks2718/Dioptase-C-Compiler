@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "AST.h"
+#include "exit_codes.h"
 #include "arena.h"
 #include "slice.h"
 
@@ -223,7 +224,7 @@ void print_expr(struct Expr* expr, int tabs){
       break;
     default:
       printf("unknown_expr %u\n", expr->type);
-      exit(1);
+      exit(BCC_EXIT_INTERNAL);
       break;
   }
   if (expr->value_type == NULL){
@@ -510,7 +511,7 @@ void print_case_list(struct CaseList* case_list, int tabs){
   if (case_list == NULL) return;
   switch (case_list->case_label.type){
     case INT_CASE:
-      printf("IntCase %d", case_list->case_label.data);
+      printf("IntCase %lld", (long long)case_list->case_label.data);
       break;
     case DEFAULT_CASE:
       printf("DefaultCase");
@@ -999,4 +1000,194 @@ bool compare_types(struct Type* a, struct Type* b) {
 // Compare two types without requiring their outermost const or volatile qualifiers to match.
 bool compare_types_ignore_top_qualifiers(struct Type* a, struct Type* b) {
   return compare_types_rec(a, b, false);
+}
+
+// ---------------------------------------------------------------------------
+// Generic AST traversal
+// ---------------------------------------------------------------------------
+
+// Report an AST node kind the walker does not know; the parser never builds one.
+static void ast_walk_bad_node(const char* what, int kind) {
+  fprintf(stderr, "AST walker error: unknown %s kind %d; add it to the walker in AST.c\n",
+          what, kind);
+  exit(BCC_EXIT_INTERNAL);
+}
+
+bool ast_walk_initializer(struct AstVisitor* v, struct Initializer* init) {
+  if (init == NULL) {
+    return true;
+  }
+  switch (init->init_type) {
+    case SINGLE_INIT:
+      return ast_walk_expr(v, init->init.single_init);
+    case COMPOUND_INIT:
+      for (struct InitializerList* item = init->init.compound_init; item != NULL; item = item->next) {
+        if (!ast_walk_initializer(v, item->init)) {
+          return false;
+        }
+      }
+      return true;
+  }
+  ast_walk_bad_node("initializer", (int)init->init_type);
+  return false;
+}
+
+bool ast_walk_for_init(struct AstVisitor* v, struct ForInit* init) {
+  if (init == NULL) {
+    return true;
+  }
+  switch (init->type) {
+    case DCLR_INIT:
+      for (struct VarDclrList* var = init->init.dclr_init; var != NULL; var = var->next) {
+        if (!ast_walk_initializer(v, var->dclr.init)) {
+          return false;
+        }
+      }
+      return true;
+    case EXPR_INIT:
+      return ast_walk_expr(v, init->init.expr_init);
+  }
+  ast_walk_bad_node("for initializer", (int)init->type);
+  return false;
+}
+
+bool ast_walk_block(struct AstVisitor* v, struct Block* block) {
+  for (struct Block* item = block; item != NULL; item = item->next) {
+    switch (item->item->type) {
+      case STMT_ITEM:
+        if (!ast_walk_stmt(v, item->item->item.stmt)) {
+          return false;
+        }
+        break;
+      case DCLR_ITEM: {
+        // Only variable initializers can contain code; nested function,
+        // struct, union, and enum declarations contain no statements.
+        struct Declaration* dclr = item->item->item.dclr;
+        if (dclr->type == VAR_DCLR && !ast_walk_initializer(v, dclr->dclr.var_dclr.init)) {
+          return false;
+        }
+        break;
+      }
+      default:
+        ast_walk_bad_node("block item", (int)item->item->type);
+    }
+  }
+  return true;
+}
+
+bool ast_walk_stmt_children(struct AstVisitor* v, struct Statement* stmt) {
+  union StatementVariant* s = &stmt->statement;
+  switch (stmt->type) {
+    case RETURN_STMT:
+      return ast_walk_expr(v, s->ret_stmt.expr);
+    case EXPR_STMT:
+      return ast_walk_expr(v, s->expr_stmt.expr);
+    case IF_STMT:
+      return ast_walk_expr(v, s->if_stmt.condition) &&
+             ast_walk_stmt(v, s->if_stmt.if_stmt) &&
+             ast_walk_stmt(v, s->if_stmt.else_stmt);
+    case LABELED_STMT:
+      return ast_walk_stmt(v, s->labeled_stmt.stmt);
+    case COMPOUND_STMT:
+      return ast_walk_block(v, s->compound_stmt.block);
+    case WHILE_STMT:
+      return ast_walk_expr(v, s->while_stmt.condition) &&
+             ast_walk_stmt(v, s->while_stmt.statement);
+    case DO_WHILE_STMT:
+      return ast_walk_stmt(v, s->do_while_stmt.statement) &&
+             ast_walk_expr(v, s->do_while_stmt.condition);
+    case FOR_STMT:
+      return ast_walk_for_init(v, s->for_stmt.init) &&
+             ast_walk_expr(v, s->for_stmt.condition) &&
+             ast_walk_expr(v, s->for_stmt.end) &&
+             ast_walk_stmt(v, s->for_stmt.statement);
+    case SWITCH_STMT:
+      return ast_walk_expr(v, s->switch_stmt.condition) &&
+             ast_walk_stmt(v, s->switch_stmt.statement);
+    case CASE_STMT:
+      return ast_walk_expr(v, s->case_stmt.expr) &&
+             ast_walk_stmt(v, s->case_stmt.statement);
+    case DEFAULT_STMT:
+      return ast_walk_stmt(v, s->default_stmt.statement);
+    case GOTO_STMT:
+    case BREAK_STMT:
+    case CONTINUE_STMT:
+    case NULL_STMT:
+      return true;
+  }
+  ast_walk_bad_node("statement", (int)stmt->type);
+  return false;
+}
+
+bool ast_walk_stmt(struct AstVisitor* v, struct Statement* stmt) {
+  if (stmt == NULL) {
+    return true;
+  }
+  enum AstWalkAction action = v->on_stmt != NULL ? v->on_stmt(v, stmt) : AST_WALK_CHILDREN;
+  if (action == AST_WALK_STOP) {
+    return false;
+  }
+  return action == AST_WALK_SKIP || ast_walk_stmt_children(v, stmt);
+}
+
+bool ast_walk_expr(struct AstVisitor* v, struct Expr* expr) {
+  if (expr == NULL) {
+    return true;
+  }
+  enum AstWalkAction action = v->on_expr != NULL ? v->on_expr(v, expr) : AST_WALK_CHILDREN;
+  if (action == AST_WALK_STOP) {
+    return false;
+  }
+  if (action == AST_WALK_SKIP) {
+    return true;
+  }
+  union ExprVariant* e = &expr->expr;
+  switch (expr->type) {
+    case BINARY:
+      return ast_walk_expr(v, e->bin_expr.left) && ast_walk_expr(v, e->bin_expr.right);
+    case ASSIGN:
+      return ast_walk_expr(v, e->assign_expr.left) && ast_walk_expr(v, e->assign_expr.right);
+    case POST_ASSIGN:
+      return ast_walk_expr(v, e->post_assign_expr.expr);
+    case CONDITIONAL:
+      return ast_walk_expr(v, e->conditional_expr.condition) &&
+             ast_walk_expr(v, e->conditional_expr.left) &&
+             ast_walk_expr(v, e->conditional_expr.right);
+    case UNARY:
+      return ast_walk_expr(v, e->un_expr.expr);
+    case FUNCTION_CALL:
+      if (!ast_walk_expr(v, e->fun_call_expr.func)) {
+        return false;
+      }
+      for (struct ArgList* arg = e->fun_call_expr.args; arg != NULL; arg = arg->next) {
+        if (!ast_walk_expr(v, arg->arg)) {
+          return false;
+        }
+      }
+      return true;
+    case CAST:
+      return ast_walk_expr(v, e->cast_expr.expr);
+    case ADDR_OF:
+      return ast_walk_expr(v, e->addr_of_expr.expr);
+    case DEREFERENCE:
+      return ast_walk_expr(v, e->deref_expr.expr);
+    case SUBSCRIPT:
+      return ast_walk_expr(v, e->subscript_expr.array) &&
+             ast_walk_expr(v, e->subscript_expr.index);
+    case SIZEOF_EXPR:
+      return ast_walk_expr(v, e->sizeof_expr.expr);
+    case STMT_EXPR:
+      return ast_walk_block(v, e->stmt_expr.block);
+    case DOT_EXPR:
+      return ast_walk_expr(v, e->dot_expr.struct_expr);
+    case ARROW_EXPR:
+      return ast_walk_expr(v, e->arrow_expr.pointer_expr);
+    case LIT:
+    case VAR:
+    case STRING:
+    case SIZEOF_T_EXPR:
+      return true;
+  }
+  ast_walk_bad_node("expression", (int)expr->type);
+  return false;
 }

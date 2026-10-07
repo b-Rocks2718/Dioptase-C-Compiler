@@ -2,11 +2,14 @@
 #include "arena.h"
 #include "source_location.h"
 #include "unique_name.h"
+#include "const_eval.h"
+#include "label_resolution.h"
 
 #include <inttypes.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 // Implement typechecking and symbol table utilities.
 // Annotates expressions with types and validates declarations.
@@ -450,12 +453,9 @@ bool typecheck_enum(struct EnumDclr* enum_dclr){
     return false;
   }
 
-  struct TypeEntry* enum_entry = arena_alloc(sizeof(struct TypeEntry));
-  enum_entry->key = enum_dclr->name;
-  enum_entry->type = ENUM_ENTRY;
-  enum_entry->next = NULL;
-
+  // An enum entry only records that the tag is defined; it has no layout.
   union TypeEntryVariant entry_data;
+  memset(&entry_data, 0, sizeof(entry_data));
   type_table_insert(global_type_table, enum_dclr->name, ENUM_ENTRY, entry_data);
 
   return true;
@@ -501,17 +501,41 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
   }
 
   decay_param_array_types(func_dclr);
-  struct SymbolEntry* entry = symbol_table_get(global_symbol_table, func_dclr->name);
+  // A function declarator has FUN_TYPE itself; inspect its return type for
+  // the forbidden array result, including on redeclarations.
+  if (func_dclr->type->type == FUN_TYPE &&
+      func_dclr->type->type_data.fun_type.return_type->type == ARRAY_TYPE) {
+    type_error_at(func_dclr->name->start,
+                  "function %.*s cannot have array return type",
+                  (int)func_dclr->name->len, func_dclr->name->start);
+    return false;
+  }
 
-  if (entry == NULL) {
-    // ensure return type is not array
-    if (func_dclr->type->type == ARRAY_TYPE) {
+  // C11 6.9.1p3 and 6.7.6.3p4: a definition needs a void or complete return
+  // type and complete parameter types (after array decay). Declarations alone
+  // may name incomplete struct/union types.
+  if (func_dclr->body != NULL && func_dclr->type->type == FUN_TYPE) {
+    struct Type* ret_type = func_dclr->type->type_data.fun_type.return_type;
+    if (ret_type->type != VOID_TYPE && !is_complete_type(ret_type)) {
       type_error_at(func_dclr->name->start,
-                    "function %.*s cannot have array return type",
+                    "function %.*s is defined with an incomplete return type",
                     (int)func_dclr->name->len, func_dclr->name->start);
       return false;
     }
+    for (struct ParamList* param = func_dclr->params; param != NULL; param = param->next) {
+      if (!is_complete_type(param->param.type)) {
+        type_error_at(param->param.source_name->start,
+                      "parameter %.*s of function %.*s has incomplete type",
+                      (int)param->param.source_name->len, param->param.source_name->start,
+                      (int)func_dclr->name->len, func_dclr->name->start);
+        return false;
+      }
+    }
+  }
 
+  struct SymbolEntry* entry = symbol_table_get(global_symbol_table, func_dclr->name);
+
+  if (entry == NULL) {
     // First declaration/definition of this function.
     struct IdentAttr* attrs = arena_alloc(sizeof(struct IdentAttr));
     attrs->attr_type = FUN_ATTR;
@@ -578,6 +602,71 @@ bool typecheck_func(struct FunctionDclr* func_dclr) {
   return true;
 }
 
+// The innermost switch whose body is being type checked. Case and default
+// labels are collected here; the list is newest first, which is the order TAC
+// emits the case comparisons in.
+struct SwitchContext {
+  struct SwitchStmt* stmt;
+  struct Type* case_type; // the controlling expression's promoted type
+  struct CaseList* cases;
+};
+static struct SwitchContext* current_switch = NULL;
+
+// Type check a case label: its expression must be an integer constant
+// expression (C11 6.8.4.2p3); its value is converted to the switch's promoted
+// controlling type, must not repeat an earlier case, and names the case label.
+static bool typecheck_case(struct Statement* stmt) {
+  struct CaseStmt* case_stmt = &stmt->statement.case_stmt;
+  if (current_switch == NULL) {
+    type_error_at(stmt->loc, "case label outside switch");
+    return false;
+  }
+  if (!typecheck_convert_expr(&case_stmt->expr)) {
+    return false;
+  }
+  uint64_t value;
+  if (!is_arithmetic_type(case_stmt->expr->value_type) || !eval_const(case_stmt->expr, &value)) {
+    type_error_at(stmt->loc, "case label is not an integer constant expression");
+    return false;
+  }
+  if (!const_normalize(value, current_switch->case_type, &value)) {
+    type_error_at(stmt->loc, "cannot convert case label to the switch's type");
+    return false;
+  }
+  // Int-sized switches store the 32-bit pattern sign-extended (unsigned values
+  // are reinterpreted in the switch's type when lowered); long switches keep
+  // the full value so distinct 64-bit cases stay distinct.
+  size_t case_bits = get_type_size(current_switch->case_type) * 8;
+  int64_t case_value = case_bits <= 32 ? (int64_t)(int32_t)(uint32_t)value : (int64_t)value;
+  for (struct CaseList* it = current_switch->cases; it != NULL; it = it->next) {
+    if (it->case_label.type == INT_CASE && it->case_label.data == case_value) {
+      type_error_at(stmt->loc, "duplicate case value %lld in switch", (long long)case_value);
+      return false;
+    }
+  }
+  struct CaseList* entry = arena_alloc(sizeof(struct CaseList));
+  entry->case_label.type = INT_CASE;
+  entry->case_label.data = case_value;
+  entry->next = current_switch->cases;
+  current_switch->cases = entry;
+  case_stmt->label = make_case_label(current_switch->stmt->label, case_value);
+  return true;
+}
+
+// Type check a controlling expression of an if, while, do-while, or for
+// statement; it must have scalar type (C11 6.8.4.1p1, 6.8.5p2). `statement`
+// names the construct in the error message.
+static bool typecheck_condition(struct Expr** condition, const char* statement) {
+  if (!typecheck_convert_expr(condition)) {
+    return false;
+  }
+  if (!is_scalar_type((*condition)->value_type)) {
+    type_error_at((*condition)->loc, "%s condition must have scalar type", statement);
+    return false;
+  }
+  return true;
+}
+
 // Typecheck and register each function parameter.
 // Returns true on success; false on any type error.
 bool typecheck_params(struct ParamList* params) {
@@ -594,6 +683,15 @@ bool typecheck_params(struct ParamList* params) {
     if (!is_valid_type_specifier(cur->param.type)) {
       type_error_at(cur->param.source_name->start,
                     "invalid type specifier for function parameter %.*s",
+                    (int)cur->param.source_name->len, cur->param.source_name->start);
+      return false;
+    }
+
+    // `(void)` alone is parsed as an empty list, so any void-typed parameter
+    // here names an object of type void.
+    if (cur->param.type->type == VOID_TYPE) {
+      type_error_at(cur->param.source_name->start,
+                    "function parameter %.*s cannot have type void",
                     (int)cur->param.source_name->len, cur->param.source_name->start);
       return false;
     }
@@ -681,20 +779,7 @@ bool typecheck_stmt(struct Statement* stmt) {
       break;
     }
     case IF_STMT: {
-      if (!typecheck_convert_expr(&stmt->statement.if_stmt.condition)) {
-        return false;
-      }
-
-      if (!is_scalar_type(stmt->statement.if_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.if_stmt.condition->loc,
-                      "if condition must have scalar type");
-        return false;
-      }
-
-      if (!is_arithmetic_type(stmt->statement.if_stmt.condition->value_type) &&
-          !is_pointer_type(stmt->statement.if_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.if_stmt.condition->loc,
-                      "if condition must have scalar type");
+      if (!typecheck_condition(&stmt->statement.if_stmt.condition, "if")) {
         return false;
       }
 
@@ -719,20 +804,7 @@ bool typecheck_stmt(struct Statement* stmt) {
       break;
     }
     case WHILE_STMT: {
-      if (!typecheck_convert_expr(&stmt->statement.while_stmt.condition)) {
-        return false;
-      }
-
-      if (!is_scalar_type(stmt->statement.while_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.while_stmt.condition->loc,
-                      "while condition must have scalar type");
-        return false;
-      }
-
-      if (!is_arithmetic_type(stmt->statement.while_stmt.condition->value_type) &&
-          !is_pointer_type(stmt->statement.while_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.while_stmt.condition->loc,
-                      "while condition must have scalar type");
+      if (!typecheck_condition(&stmt->statement.while_stmt.condition, "while")) {
         return false;
       }
 
@@ -745,20 +817,7 @@ bool typecheck_stmt(struct Statement* stmt) {
       if (!typecheck_stmt(stmt->statement.do_while_stmt.statement)) {
         return false;
       }
-      if (!typecheck_convert_expr(&stmt->statement.do_while_stmt.condition)) {
-        return false;
-      }
-
-      if (!is_scalar_type(stmt->statement.do_while_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.do_while_stmt.condition->loc,
-                      "do-while condition must have scalar type");
-        return false;
-      }
-
-      if (!is_arithmetic_type(stmt->statement.do_while_stmt.condition->value_type) &&
-          !is_pointer_type(stmt->statement.do_while_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.do_while_stmt.condition->loc,
-                      "do-while condition must have scalar type");
+      if (!typecheck_condition(&stmt->statement.do_while_stmt.condition, "do-while")) {
         return false;
       }
 
@@ -770,7 +829,7 @@ bool typecheck_stmt(struct Statement* stmt) {
         return false;
       }
       if (stmt->statement.for_stmt.condition != NULL) {
-        if (!typecheck_convert_expr(&stmt->statement.for_stmt.condition)) {
+        if (!typecheck_condition(&stmt->statement.for_stmt.condition, "for")) {
           return false;
         }
       }
@@ -785,23 +844,34 @@ bool typecheck_stmt(struct Statement* stmt) {
       break;
     }
     case SWITCH_STMT: {
-      if (!typecheck_convert_expr(&stmt->statement.switch_stmt.condition)) {
+      struct SwitchStmt* switch_stmt = &stmt->statement.switch_stmt;
+      if (!typecheck_convert_expr(&switch_stmt->condition)) {
         return false;
       }
 
-      if (!is_arithmetic_type(stmt->statement.switch_stmt.condition->value_type)) {
-        type_error_at(stmt->statement.switch_stmt.condition->loc,
+      if (!is_arithmetic_type(switch_stmt->condition->value_type)) {
+        type_error_at(switch_stmt->condition->loc,
                       "switch condition must have arithmetic type");
         return false;
       }
 
-      if (!typecheck_stmt(stmt->statement.switch_stmt.statement)) {
+      // Cases in the body (including inside statement expressions) attach to
+      // this switch until it ends.
+      struct SwitchContext context = {
+        switch_stmt, promote_integer_type(switch_stmt->condition->value_type), NULL,
+      };
+      struct SwitchContext* enclosing = current_switch;
+      current_switch = &context;
+      bool body_ok = typecheck_stmt(switch_stmt->statement);
+      current_switch = enclosing;
+      if (!body_ok) {
         return false;
       }
+      switch_stmt->cases = context.cases;
       break;
     }
     case CASE_STMT: {
-      if (!typecheck_convert_expr(&stmt->statement.case_stmt.expr)) {
+      if (!typecheck_case(stmt)) {
         return false;
       }
       if (!typecheck_stmt(stmt->statement.case_stmt.statement)) {
@@ -810,6 +880,21 @@ bool typecheck_stmt(struct Statement* stmt) {
       break;
     }
     case DEFAULT_STMT: {
+      if (current_switch == NULL) {
+        type_error_at(stmt->loc, "default label outside switch");
+        return false;
+      }
+      for (struct CaseList* it = current_switch->cases; it != NULL; it = it->next) {
+        if (it->case_label.type == DEFAULT_CASE) {
+          type_error_at(stmt->loc, "duplicate default label in switch");
+          return false;
+        }
+      }
+      struct CaseList* entry = arena_alloc(sizeof(struct CaseList));
+      entry->case_label.type = DEFAULT_CASE;
+      entry->case_label.data = 0;
+      entry->next = current_switch->cases;
+      current_switch->cases = entry;
       if (!typecheck_stmt(stmt->statement.default_stmt.statement)) {
         return false;
       }
@@ -1525,6 +1610,12 @@ static bool ensure_modifiable_lvalue(struct Expr* expr, const char* loc,
     type_error_at(loc, "%s", non_lvalue_message);
     return false;
   }
+  // C11 6.3.2.1p1: a modifiable lvalue cannot have incomplete type, which
+  // rejects writes through void * (e.g. `*vp = f()`) and to incomplete structs.
+  if (!is_complete_type(expr->value_type)) {
+    type_error_at(loc, "cannot modify an object of incomplete type");
+    return false;
+  }
   if (type_contains_const(expr->value_type)) {
     type_error_at(loc, "cannot modify const-qualified object");
     return false;
@@ -1576,9 +1667,15 @@ bool typecheck_expr(struct Expr* expr) {
         }
 
         enum BinOp base_op = compound_assign_base_op(bin_expr->op);
-        if ((base_op == ADD_OP || base_op == SUB_OP) &&
-            is_pointer_type(left_type) &&
-            is_arithmetic_type(right_type)) {
+        if ((base_op == ADD_OP || base_op == SUB_OP) && is_pointer_type(left_type)) {
+          // Pointer arithmetic scales by the pointee size, so it must be complete
+          // (C11 6.5.6p2); this also covers prefix ++/--, which lower to += / -=.
+          if (!is_pointer_to_complete_type(left_type) || !is_arithmetic_type(right_type)) {
+            type_error_at(expr->loc,
+                          "compound pointer assignment requires a pointer to a complete "
+                          "type and an integer operand");
+            return false;
+          }
           expr->value_type = left_type;
           return true;
         }
@@ -1704,8 +1801,13 @@ bool typecheck_expr(struct Expr* expr) {
           type_error_at(expr->loc, "invalid types in shift expression");
           return false;
         }
-        convert_expr_type(&bin_expr->right, left_type);
-        expr->value_type = left_type;
+        // C11 6.5.7p3: each operand is promoted and the result has the
+        // promoted left type. The count is converted to that type as well so
+        // TAC sees one operand type.
+        struct Type* promoted = promote_integer_type(left_type);
+        convert_expr_type(&bin_expr->left, promoted);
+        convert_expr_type(&bin_expr->right, promoted);
+        expr->value_type = promoted;
         return true;
       } else if (bin_expr->op == COMMA_OP){
         // The result type of the comma operator is the type of the right operand.
@@ -1763,9 +1865,10 @@ bool typecheck_expr(struct Expr* expr) {
       }
 
       if (!is_arithmetic_type(post_assign_expr->expr->value_type) &&
-          !is_pointer_type(post_assign_expr->expr->value_type)) {
+          !is_pointer_to_complete_type(post_assign_expr->expr->value_type)) {
         type_error_at(expr->loc,
-                      "post-increment/decrement requires arithmetic or pointer type");
+                      "post-increment/decrement requires arithmetic type or a pointer "
+                      "to a complete type");
         return false;
       }
 
@@ -1915,10 +2018,10 @@ bool typecheck_expr(struct Expr* expr) {
         type_error_at(expr->loc, "unary operator requires an arithmetic type");
         return false;
       }
-      if (is_char_type(expr_type) &&
-          (unary_expr->op == NEGATE || unary_expr->op == COMPLEMENT || unary_expr->op == UNARY_PLUS)) {
-        //  Promote char to int for these operations.
-        convert_expr_type(&unary_expr->expr, &kIntType);
+      if (unary_expr->op == NEGATE || unary_expr->op == COMPLEMENT ||
+          unary_expr->op == UNARY_PLUS) {
+        // C11 6.5.3.3: the operand undergoes the integer promotions.
+        convert_expr_type(&unary_expr->expr, promote_integer_type(expr_type));
         expr_type = unary_expr->expr->value_type;
       }
       if (unary_expr->op == BOOL_NOT) {
@@ -2038,6 +2141,12 @@ bool typecheck_expr(struct Expr* expr) {
         sub_expr->index = temp;
       } else {
         type_error_at(expr->loc, "array subscript requires array/pointer and integer types");
+        return false;
+      }
+
+      // C11 6.5.2.1p1: the pointer operand must point to a complete object type.
+      if (!is_complete_type(ptr_type->type_data.pointer_type.referenced_type)) {
+        type_error_at(expr->loc, "cannot subscript a pointer to an incomplete type");
         return false;
       }
 
@@ -2380,17 +2489,28 @@ size_t get_type_alignment(struct Type* type) {
 // Determine the common arithmetic type of two operands.
 // Returns a common type or NULL if incompatible.
 // Pointer types are not handled here.
+// Apply the integer promotions (C11 6.3.1.1p2): every integer type narrower
+// than int (the char types and short types) becomes int, since int can
+// represent all of their values on this target. Other types are unchanged.
+struct Type* promote_integer_type(struct Type* type) {
+  switch (type->type) {
+    case CHAR_TYPE:
+    case SCHAR_TYPE:
+    case UCHAR_TYPE:
+    case SHORT_TYPE:
+    case USHORT_TYPE:
+      return &kIntType;
+    default:
+      return type;
+  }
+}
+
 struct Type* get_common_type(struct Type* t1, struct Type* t2) {
   // Arithmetic conversions use rvalue types, so top-level const is irrelevant.
   t1 = unqualify_type(t1);
   t2 = unqualify_type(t2);
-  // promote char types to int
-  if (is_char_type(t1)) {
-    t1 = &kIntType;
-  }
-  if (is_char_type(t2)) {
-    t2 = &kIntType;
-  }
+  t1 = promote_integer_type(t1);
+  t2 = promote_integer_type(t2);
 
   if (compare_types(t1, t2)) {
     return t1;
@@ -2508,7 +2628,7 @@ bool is_valid_type_specifier(struct Type* type) {
       // check parameter types and return type
       for (struct ParamTypeList* param = type->type_data.fun_type.param_types;
            param != NULL; param = param->next) {
-        if (!is_valid_type_specifier(param->type)) {
+        if (param->type->type == VOID_TYPE || !is_valid_type_specifier(param->type)) {
           return false;
         }
       }
@@ -2631,79 +2751,44 @@ enum StaticInitType get_var_init(struct Type* type) {
 // Returns a SymbolTable allocated in the arena.
 struct SymbolTable* create_symbol_table(size_t numBuckets){
   struct SymbolTable* table = arena_alloc(sizeof(struct SymbolTable));
-  table->size = numBuckets;
-  table->arr = arena_alloc(sizeof(struct SymbolEntry*) * numBuckets);
-  for (size_t i = 0; i < numBuckets; i++){
-    table->arr[i] = NULL;
-  }
+  slice_map_init(&table->map, numBuckets, false);
   return table;
 }
 
-// Insert a symbol entry into the table.
+// Add a symbol entry. An existing entry with the same name is kept and still
+// found first; callers check for redeclarations before inserting.
 void symbol_table_insert(struct SymbolTable* hmap, struct Slice* key, struct Type* type, struct IdentAttr* attrs){
-  size_t label = hash_slice(key) % hmap->size;
-  
-  struct SymbolEntry* newEntry = arena_alloc(sizeof(struct SymbolEntry));
-  newEntry->key = key;
-  newEntry->type = type;
-  newEntry->attrs = attrs;
-  newEntry->next = NULL;
-
-  if (hmap->arr[label] == NULL){
-    hmap->arr[label] = newEntry;
-  } else {
-    struct SymbolEntry* cur = hmap->arr[label];
-    while (cur->next != NULL){
-      cur = cur->next;
-    }
-    cur->next = newEntry;
-  }
+  struct SymbolEntry* entry = arena_alloc(sizeof(struct SymbolEntry));
+  entry->key = key;
+  entry->type = type;
+  entry->attrs = attrs;
+  slice_map_add(&hmap->map, key, entry);
 }
 
 // Look up a symbol entry by identifier name.
 // Returns the entry or NULL if missing.
 struct SymbolEntry* symbol_table_get(struct SymbolTable* hmap, struct Slice* key){
-  size_t label = hash_slice(key) % hmap->size;
-
-  struct SymbolEntry* cur = hmap->arr[label];
-  while (cur != NULL){
-    if (compare_slice_to_slice(cur->key, key)){
-      return cur;
-    }
-    cur = cur->next;
-  }
-  return NULL;
+  return slice_map_get(&hmap->map, key);
 }
 
-// Check if a symbol exists in the table.
-// Returns true if the symbol is present.
+// Check if a symbol entry exists in the table.
 bool symbol_table_contains(struct SymbolTable* hmap, struct Slice* key){
-  size_t label = hash_slice(key) % hmap->size;
-
-  struct SymbolEntry* cur = hmap->arr[label];
-  while (cur != NULL){
-    if (compare_slice_to_slice(cur->key, key)){
-      return true;
-    }
-    cur = cur->next;
-  }
-  return false;
+  return slice_map_contains(&hmap->map, key);
 }
 
 // Print the symbol table contents for debugging.
 void print_symbol_table(struct SymbolTable* hmap){
-  for (size_t i = 0; i < hmap->size; i++){
-    struct SymbolEntry* cur = hmap->arr[i];
-    while (cur != NULL){
-      printf("Key: %.*s\n", (int)cur->key->len, cur->key->start);
-      printf("  Type: ");
-      print_type(cur->type);
-      printf("\n");
-      printf("  Attributes:\n");
-      print_ident_attr(cur->attrs);
-      printf("\n");
-      cur = cur->next;
-    }
+  struct SliceMapIter it = slice_map_iter(&hmap->map);
+  void* value;
+  while (slice_map_next(&it, NULL, &value)){
+    struct SymbolEntry* cur = value;
+    printf("Key: %.*s\n", (int)cur->key->len, cur->key->start);
+    printf("  Type: ");
+    print_type(cur->type);
+    printf("\n");
+    printf("  Attributes:\n");
+    print_ident_attr(cur->attrs);
+    printf("\n");
   }
 }
 
@@ -2713,64 +2798,29 @@ void print_symbol_table(struct SymbolTable* hmap){
 // Returns a TypeTable allocated in the arena.
 struct TypeTable* create_type_table(size_t numBuckets){
   struct TypeTable* table = arena_alloc(sizeof(struct TypeTable));
-  table->size = numBuckets;
-  table->arr = arena_alloc(sizeof(struct TypeEntry*) * numBuckets);
-  for (size_t i = 0; i < numBuckets; i++){
-    table->arr[i] = NULL;
-  }
+  slice_map_init(&table->map, numBuckets, false);
   return table;
 }
 
-// Insert a type entry into the table.
+// Add a type entry; like the symbol table, an existing name is kept first.
 void type_table_insert(struct TypeTable* hmap, struct Slice* key,
     enum TypeEntryType type, union TypeEntryVariant data){
-  size_t label = hash_slice(key) % hmap->size;
-
-  struct TypeEntry* new_entry = arena_alloc(sizeof(struct TypeEntry));
-  new_entry->key = key;
-  new_entry->type = type;
-  new_entry->data = data;
-  new_entry->next = NULL;
-
-  if (hmap->arr[label] == NULL){
-    hmap->arr[label] = new_entry;
-  } else {
-    struct TypeEntry* cur = hmap->arr[label];
-    while (cur->next != NULL){
-      cur = cur->next;
-    }
-    cur->next = new_entry;
-  }
+  struct TypeEntry* entry = arena_alloc(sizeof(struct TypeEntry));
+  entry->key = key;
+  entry->type = type;
+  entry->data = data;
+  slice_map_add(&hmap->map, key, entry);
 }
 
 // Look up a type entry by identifier name.
 // Returns the entry or NULL if missing.
 struct TypeEntry* type_table_get(struct TypeTable* hmap, struct Slice* key){
-  size_t label = hash_slice(key) % hmap->size;
-
-  struct TypeEntry* cur = hmap->arr[label];
-  while (cur != NULL){
-    if (compare_slice_to_slice(cur->key, key)){
-      return cur;
-    }
-    cur = cur->next;
-  }
-  return NULL;
+  return slice_map_get(&hmap->map, key);
 }
 
 // Check if a type entry exists in the table.
-// Returns true if the entry is present.
 bool type_table_contains(struct TypeTable* hmap, struct Slice* key){
-  size_t label = hash_slice(key) % hmap->size;
-
-  struct TypeEntry* cur = hmap->arr[label];
-  while (cur != NULL){
-    if (compare_slice_to_slice(cur->key, key)){
-      return true;
-    }
-    cur = cur->next;
-  }
-  return false;
+  return slice_map_contains(&hmap->map, key);
 }
 
 // Print member entries for debugging.
@@ -2785,33 +2835,32 @@ static void print_member_entries(struct MemberEntry* members){
 
 // Print the type table contents for debugging.
 void print_type_table(struct TypeTable* hmap){
-  for (size_t i = 0; i < hmap->size; i++){
-    struct TypeEntry* cur = hmap->arr[i];
-    while (cur != NULL){
-      printf("Type: %.*s\n", (int)cur->key->len, cur->key->start);
-      switch (cur->type){
-        case STRUCT_ENTRY:
-          printf("  Kind: struct\n");
-          if (cur->data.struct_entry != NULL){
-            printf("  Alignment: %u\n", cur->data.struct_entry->alignment);
-            print_member_entries(cur->data.struct_entry->members);
-          }
-          break;
-        case UNION_ENTRY:
-          printf("  Kind: union\n");
-          if (cur->data.union_entry != NULL){
-            printf("  Alignment: %u\n", cur->data.union_entry->alignment);
-            print_member_entries(cur->data.union_entry->members);
-          }
-          break;
-        case ENUM_ENTRY:
-          printf("  Kind: enum\n");
-          break;
-        default:
-          printf("  Kind: unknown\n");
-          break;
-      }
-      cur = cur->next;
+  struct SliceMapIter it = slice_map_iter(&hmap->map);
+  void* value;
+  while (slice_map_next(&it, NULL, &value)){
+    struct TypeEntry* cur = value;
+    printf("Type: %.*s\n", (int)cur->key->len, cur->key->start);
+    switch (cur->type){
+      case STRUCT_ENTRY:
+        printf("  Kind: struct\n");
+        if (cur->data.struct_entry != NULL){
+          printf("  Alignment: %u\n", cur->data.struct_entry->alignment);
+          print_member_entries(cur->data.struct_entry->members);
+        }
+        break;
+      case UNION_ENTRY:
+        printf("  Kind: union\n");
+        if (cur->data.union_entry != NULL){
+          printf("  Alignment: %u\n", cur->data.union_entry->alignment);
+          print_member_entries(cur->data.union_entry->members);
+        }
+        break;
+      case ENUM_ENTRY:
+        printf("  Kind: enum\n");
+        break;
+      default:
+        printf("  Kind: unknown\n");
+        break;
     }
   }
 }
@@ -2927,9 +2976,24 @@ void print_ident_init(struct IdentInit* init){
   }
 }
 
-// Evaluate an integer constant expression during type checking.
-bool eval_const(struct Expr* expr, uint64_t* out_value) {
-  if (expr == NULL || out_value == NULL) {
+// Literal types for constant evaluation of literals that have not been type
+// checked yet (static initializers are evaluated before typecheck_init runs).
+static struct Type kConstLongType = { .type = LONG_TYPE };
+static struct Type kConstULongType = { .type = ULONG_TYPE };
+
+// Type an expression in place if no earlier pass has. Static initializers reach
+// eval_const before typecheck_init, so subexpressions may still be untyped;
+// type checking is idempotent on already-typed trees.
+static bool ensure_typed(struct Expr* expr) {
+  return expr->value_type != NULL || typecheck_expr(expr);
+}
+
+// Evaluate an integer constant expression (C11 6.6). On success *out_value
+// holds the value normalized to *out_type (see const_eval.h). Returns false for
+// anything that is not an integer constant expression and for operations C
+// leaves undefined (division by zero, INT_MIN / -1, out-of-range shifts).
+static bool eval_const_typed(struct Expr* expr, uint64_t* out_value, struct Type** out_type) {
+  if (expr == NULL) {
     return false;
   }
   switch (expr->type) {
@@ -2937,216 +3001,149 @@ bool eval_const(struct Expr* expr, uint64_t* out_value) {
       struct LitExpr* lit_expr = &expr->expr.lit_expr;
       switch (lit_expr->type) {
         case INT_CONST:
-          *out_value = (uint64_t)lit_expr->value.int_val;
-          return true;
+          *out_type = &kIntType;
+          return const_normalize((uint64_t)lit_expr->value.int_val, &kIntType, out_value);
         case UINT_CONST:
-          *out_value = lit_expr->value.uint_val;
-          return true;
+          *out_type = &kUIntType;
+          return const_normalize(lit_expr->value.uint_val, &kUIntType, out_value);
         case LONG_CONST:
-          *out_value = (uint64_t)lit_expr->value.long_val;
-          return true;
+          *out_type = &kConstLongType;
+          return const_normalize((uint64_t)lit_expr->value.long_val, &kConstLongType, out_value);
         case ULONG_CONST:
-          *out_value = lit_expr->value.ulong_val;
-          return true;
+          *out_type = &kConstULongType;
+          return const_normalize(lit_expr->value.ulong_val, &kConstULongType, out_value);
         default:
-          return false; // Not a constant literal
+          return false;
       }
     }
     case CAST: {
+      // An integer conversion keeps the low bits and re-extends them for the
+      // target type, which is exactly normalization to the target.
       struct CastExpr* cast_expr = &expr->expr.cast_expr;
       uint64_t inner_value;
-      if (!eval_const(cast_expr->expr, &inner_value)) {
+      struct Type* inner_type;
+      if (!eval_const_typed(cast_expr->expr, &inner_value, &inner_type)) {
         return false;
       }
-      // For simplicity, we assume casts do not change the value in this context.
-      *out_value = inner_value;
-      return true;
-    }
-    case BINARY: {
-      struct BinaryExpr* bin_expr = &expr->expr.bin_expr;
-      if (expr->value_type == NULL) {
-        if (!typecheck_expr(expr)) {
-          return false;
-        }
-      }
-      bool is_signed = is_signed_type(expr->value_type);
-      uint64_t left_value, right_value;
-      if (!eval_const(bin_expr->left, &left_value) ||
-          !eval_const(bin_expr->right, &right_value)) {
-        return false;
-      }
-      switch (bin_expr->op) {
-        case ADD_OP:
-          *out_value = left_value + right_value;
-          return true;
-        case SUB_OP:
-          *out_value = left_value - right_value;
-          return true;
-        case MUL_OP:
-          if (is_signed) {
-            *out_value = (uint64_t)((int64_t)left_value * (int64_t)right_value);
-          } else {
-            *out_value = left_value * right_value;
-          }
-          return true;
-        case DIV_OP:
-          if (right_value == 0) {
-            return false; // Division by zero
-          }
-          if (is_signed) {
-            *out_value = (uint64_t)((int64_t)left_value / (int64_t)right_value);
-          } else {
-            *out_value = left_value / right_value;
-          }
-          return true;
-        case MOD_OP:
-          if (right_value == 0) {
-            return false; // Modulo by zero
-          }
-          if (is_signed) {
-            *out_value = (uint64_t)((int64_t)left_value % (int64_t)right_value);
-          } else {
-            *out_value = left_value % right_value;
-          }
-          return true;
-        case BIT_AND:
-          *out_value = left_value & right_value;
-          return true;
-        case BIT_OR:
-          *out_value = left_value | right_value;
-          return true;
-        case BIT_XOR:
-          *out_value = left_value ^ right_value;
-          return true;
-        case BIT_SHL:
-          *out_value = left_value << right_value;
-          return true;
-        case BIT_SHR:
-          if (is_signed) {
-            *out_value = ((int64_t)left_value) >> right_value;
-          } else {
-            *out_value = left_value >> right_value;
-          }
-          return true;
-        case BOOL_AND:
-          *out_value = (left_value && right_value);
-          return true;
-        case BOOL_OR:
-          *out_value = (left_value || right_value);
-          return true;
-        case BOOL_EQ:
-          *out_value = (left_value == right_value);
-          return true;
-        case BOOL_NEQ:
-          *out_value = (left_value != right_value);
-          return true;
-        case BOOL_LE:
-          if (is_signed) {
-            *out_value = ((int64_t)left_value < (int64_t)right_value);
-          } else {
-            *out_value = (left_value < right_value);
-          }
-          return true;
-        case BOOL_GE:
-          if (is_signed) {
-            *out_value = ((int64_t)left_value > (int64_t)right_value);
-          } else {
-            *out_value = (left_value > right_value);
-          }
-          return true;
-        case BOOL_LEQ:
-          if (is_signed) {
-            *out_value = ((int64_t)left_value <= (int64_t)right_value);
-          } else {
-            *out_value = (left_value <= right_value);
-          }
-          return true;
-        case BOOL_GEQ:
-          if (is_signed) {
-            *out_value = ((int64_t)left_value >= (int64_t)right_value);
-          } else {
-            *out_value = (left_value >= right_value);
-          }
-          return true;
-        case COMMA_OP:
-          *out_value = right_value;
-          return true;
-        default:
-          return false; // Unsupported binary operation for constant evaluation
-      }
+      *out_type = cast_expr->target;
+      return const_normalize(inner_value, cast_expr->target, out_value);
     }
     case UNARY: {
-      struct UnaryExpr* unary_expr = &expr->expr.un_expr;
-      if (expr->value_type == NULL) {
-        if (!typecheck_expr(expr)) {
-          return false;
-        }
-      }
-      uint64_t inner_value;
-      if (!eval_const(unary_expr->expr, &inner_value)) {
+      if (!ensure_typed(expr)) {
         return false;
       }
-      switch (unary_expr->op) {
-        case NEGATE:
-          if (is_signed_type(expr->value_type)) {
-            *out_value = (uint64_t)(-(int64_t)inner_value);
-          } else {
-            *out_value = (uint64_t)(~inner_value + 1); // Two's complement negation
-          }
-          return true;
-        case COMPLEMENT:
-          *out_value = ~inner_value;
-          return true;
-        case BOOL_NOT:
-          *out_value = (inner_value == 0);
-          return true;
-        default:
-          return false; // Unsupported unary operation for constant evaluation
+      struct UnaryExpr* unary_expr = &expr->expr.un_expr;
+      uint64_t operand;
+      struct Type* operand_type;
+      if (!eval_const_typed(unary_expr->expr, &operand, &operand_type)) {
+        return false;
       }
+      // `!` tests the operand at its own type; the others compute in the
+      // (promoted) result type.
+      struct Type* eval_type = unary_expr->op == BOOL_NOT ? operand_type : expr->value_type;
+      *out_type = expr->value_type;
+      return const_eval_unary(unary_expr->op, operand, eval_type, out_value) == CONST_EVAL_OK;
+    }
+    case BINARY: {
+      if (!ensure_typed(expr)) {
+        return false;
+      }
+      struct BinaryExpr* bin_expr = &expr->expr.bin_expr;
+      uint64_t left;
+      uint64_t right;
+      struct Type* left_type;
+      struct Type* right_type;
+      *out_type = expr->value_type;
+      if (!eval_const_typed(bin_expr->left, &left, &left_type)) {
+        return false;
+      }
+
+      // && and || short-circuit: an operand that is not evaluated need not be
+      // constant-evaluable (C11 6.6p3), e.g. `0 && 1 / 0`.
+      if (bin_expr->op == BOOL_AND || bin_expr->op == BOOL_OR) {
+        bool left_true = left != 0;
+        if (left_true == (bin_expr->op == BOOL_OR)) {
+          *out_value = left_true;
+          return true;
+        }
+        if (!eval_const_typed(bin_expr->right, &right, &right_type)) {
+          return false;
+        }
+        *out_value = right != 0;
+        return true;
+      }
+
+      if (!eval_const_typed(bin_expr->right, &right, &right_type)) {
+        return false;
+      }
+
+      // Comparisons take their signedness from the (converted) operand type,
+      // not from the int result.
+      enum TACCondition cond;
+      if (binop_condition(bin_expr->op, left_type, &cond)) {
+        bool holds;
+        if (const_eval_condition(cond, left, left_type, right, right_type, &holds) !=
+            CONST_EVAL_OK) {
+          return false;
+        }
+        *out_value = holds;
+        return true;
+      }
+
+      enum ALUOp alu_op;
+      if (!binop_alu_op(bin_expr->op, expr->value_type, &alu_op)) {
+        return false;
+      }
+      return const_eval_alu(alu_op, left, left_type, right, right_type, expr->value_type,
+                            out_value) == CONST_EVAL_OK;
     }
     case SIZEOF_EXPR: {
       struct Expr* inner = expr->expr.sizeof_expr.expr;
-      if (inner == NULL) {
+      if (inner == NULL || !ensure_typed(inner) || !ensure_typed(expr) ||
+          !is_complete_type(inner->value_type)) {
         return false;
       }
-      if (inner->value_type == NULL) {
-        if (!typecheck_expr(inner)) {
-          return false;
-        }
-      }
-      if (!is_complete_type(inner->value_type)) {
-        return false;
-      }
-      *out_value = (uint64_t)get_type_size(inner->value_type);
-      return true;
+      *out_type = expr->value_type;
+      return const_normalize((uint64_t)get_type_size(inner->value_type), expr->value_type,
+                             out_value);
     }
     case SIZEOF_T_EXPR: {
       struct Type* type = expr->expr.sizeof_t_expr.type;
-      if (type == NULL) {
+      if (type == NULL || !is_complete_type(type) || !ensure_typed(expr)) {
         return false;
       }
-      if (!is_complete_type(type)) {
-        return false;
-      }
-      *out_value = (uint64_t)get_type_size(type);
-      return true;
+      *out_type = expr->value_type;
+      return const_normalize((uint64_t)get_type_size(type), expr->value_type, out_value);
     }
     case CONDITIONAL: {
-      struct ConditionalExpr* cond_expr = &expr->expr.conditional_expr;
-      uint64_t cond_value;
-      if (!eval_const(cond_expr->condition, &cond_value)) {
+      // Typing first converts both arms to their common type.
+      if (!ensure_typed(expr)) {
         return false;
       }
-      if (cond_value != 0) {
-        return eval_const(cond_expr->left, out_value);
-      } else {
-        return eval_const(cond_expr->right, out_value);
+      struct ConditionalExpr* cond_expr = &expr->expr.conditional_expr;
+      uint64_t cond_value;
+      struct Type* cond_type;
+      if (!eval_const_typed(cond_expr->condition, &cond_value, &cond_type)) {
+        return false;
       }
+      struct Type* arm_type;
+      uint64_t arm_value;
+      if (!eval_const_typed(cond_value != 0 ? cond_expr->left : cond_expr->right,
+                            &arm_value, &arm_type)) {
+        return false;
+      }
+      *out_type = expr->value_type;
+      return const_normalize(arm_value, expr->value_type, out_value);
     }
     default:
-      return false; // Not a literal expression
+      return false;
   }
-  return false; // Not a literal expression
+}
+
+// Evaluate an integer constant expression; see eval_const_typed.
+bool eval_const(struct Expr* expr, uint64_t* out_value) {
+  struct Type* type;
+  return eval_const_typed(expr, out_value, &type);
 }
 
 // Return whether an initializer can be evaluated as a static constant.
@@ -3233,6 +3230,11 @@ struct InitList* is_init_const(struct Type* type, struct Initializer* init) {
         uint64_t const_val;
         if (!eval_const(init->init.single_init, &const_val)) {
           return NULL;
+        }
+        // The initializer is converted as if by assignment to the object type.
+        uint64_t converted;
+        if (const_normalize(const_val, type, &converted)) {
+          const_val = converted;
         }
 
         struct InitList* init_list = arena_alloc(sizeof(struct InitList));

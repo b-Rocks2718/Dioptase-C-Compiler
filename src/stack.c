@@ -1,4 +1,5 @@
 #include "stack.h"
+#include "exit_codes.h"
 
 #include <limits.h>
 #include <stdint.h>
@@ -10,7 +11,7 @@ static void stack_allocation_error(const char* operation, int capacity) {
   fprintf(stderr,
           "integer stack: unable to %s storage for %d elements\n",
           operation, capacity);
-  exit(EXIT_FAILURE);
+  exit(BCC_EXIT_INTERNAL);
 }
 
 // Compute the backing allocation size without overflowing size_t.

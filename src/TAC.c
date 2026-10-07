@@ -1,4 +1,7 @@
 #include "TAC.h"
+#include "const_eval.h"
+#include "analysis.h"
+#include "exit_codes.h"
 #include "arena.h"
 #include "label_resolution.h"
 #include "source_location.h"
@@ -7,6 +10,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <limits.h>
 
 static int tac_temp_counter = 0;
@@ -57,7 +61,7 @@ static const char* declaration_loc(const struct Declaration* dclr) {
 // Print a TAC error with optional source location context and exit.
 // loc may be NULL; fmt is a printf-style format.
 // Source context must be initialized for locations.
-static void tac_error_at(const char* loc, const char* fmt, ...) {
+ANALYSIS_NORETURN static void tac_error_at(const char* loc, const char* fmt, ...) {
   struct SourceLocation where = source_location_from_ptr(loc);
   const char* filename = source_filename_for_ptr(loc);
   if (where.line == 0) {
@@ -70,17 +74,126 @@ static void tac_error_at(const char* loc, const char* fmt, ...) {
   vprintf(fmt, args);
   va_end(args);
   printf("\n");
-  exit(EXIT_FAILURE);
+  exit(BCC_EXIT_INTERNAL);
 }
 
-// Allocate and initialize a single TAC instruction node.
-// Returns a node with next == NULL and an empty reaching-copy list.
-// Callers must fill the variant fields.
+// Allocate a zeroed, unlinked TAC instruction node of the given kind.
+// Callers fill the variant fields; the arena does not zero memory itself.
 struct TACInstr* tac_instr_create(enum TACInstrType type) {
   struct TACInstr* instr = (struct TACInstr*)arena_alloc(sizeof(struct TACInstr));
+  memset(instr, 0, sizeof(*instr));
   instr->type = type;
-  instr->next = NULL;
   return instr;
+}
+
+// Append a Val-field operand to an operand list.
+static void add_val_operand(struct TACOperands* ops, struct Val** field, enum TACOperandRole role) {
+  struct TACOperand* op = &ops->op[ops->count++];
+  memset(op, 0, sizeof(*op));
+  op->kind = TAC_OPERAND_VAL;
+  op->role = role;
+  op->val = field;
+}
+
+// Append a call's argument array (always read) to an operand list.
+static void add_args_operand(struct TACOperands* ops, struct Val** field, size_t num_args) {
+  struct TACOperand* op = &ops->op[ops->count++];
+  memset(op, 0, sizeof(*op));
+  op->kind = TAC_OPERAND_ARGS;
+  op->role = TAC_USE;
+  op->args = field;
+  op->num_args = num_args;
+}
+
+// Append a directly named variable to an operand list.
+static void add_name_operand(struct TACOperands* ops, struct Slice** field, enum TACOperandRole role) {
+  struct TACOperand* op = &ops->op[ops->count++];
+  memset(op, 0, sizeof(*op));
+  op->kind = TAC_OPERAND_NAME;
+  op->role = role;
+  op->name = field;
+}
+
+struct TACOperands tac_instr_operands(struct TACInstr* instr) {
+  struct TACOperands ops = { .count = 0 };
+  union TACInstrVariant* in = &instr->instr;
+  switch (instr->type) {
+    case TACRETURN:
+      add_val_operand(&ops, &in->tac_return.src, TAC_USE);
+      break;
+    case TACUNARY:
+      add_val_operand(&ops, &in->tac_unary.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_unary.src, TAC_USE);
+      break;
+    case TACBINARY:
+      add_val_operand(&ops, &in->tac_binary.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_binary.src1, TAC_USE);
+      add_val_operand(&ops, &in->tac_binary.src2, TAC_USE);
+      break;
+    case TACCOND_JUMP:
+      add_val_operand(&ops, &in->tac_cond_jump.src1, TAC_USE);
+      add_val_operand(&ops, &in->tac_cond_jump.src2, TAC_USE);
+      break;
+    case TACCOPY:
+    case TACVOLATILE_READ:
+    case TACVOLATILE_WRITE:
+      add_val_operand(&ops, &in->tac_copy.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_copy.src, TAC_USE);
+      break;
+    case TACCALL:
+      add_val_operand(&ops, &in->tac_call.dst, TAC_DEF);
+      add_args_operand(&ops, &in->tac_call.args, in->tac_call.num_args);
+      break;
+    case TACCALL_INDIRECT:
+      add_val_operand(&ops, &in->tac_call_indirect.func, TAC_USE);
+      add_val_operand(&ops, &in->tac_call_indirect.dst, TAC_DEF);
+      add_args_operand(&ops, &in->tac_call_indirect.args, in->tac_call_indirect.num_args);
+      break;
+    case TACTAIL_CALL:
+      add_args_operand(&ops, &in->tac_tail_call.args, in->tac_tail_call.num_args);
+      break;
+    case TACTAIL_CALL_INDIRECT:
+      add_val_operand(&ops, &in->tac_tail_call_indirect.func, TAC_USE);
+      add_args_operand(&ops, &in->tac_tail_call_indirect.args, in->tac_tail_call_indirect.num_args);
+      break;
+    case TACGET_ADDRESS:
+      add_val_operand(&ops, &in->tac_get_address.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_get_address.src, TAC_ADDRESS);
+      break;
+    case TACLOAD:
+    case TACVOLATILE_LOAD:
+      add_val_operand(&ops, &in->tac_load.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_load.src_ptr, TAC_USE);
+      break;
+    case TACSTORE:
+    case TACVOLATILE_STORE:
+      add_val_operand(&ops, &in->tac_store.dst_ptr, TAC_USE);
+      add_val_operand(&ops, &in->tac_store.src, TAC_USE);
+      break;
+    case TACCOPY_TO_OFFSET:
+    case TACVOLATILE_COPY_TO_OFFSET:
+      add_name_operand(&ops, &in->tac_copy_to_offset.dst, TAC_PARTIAL_DEF);
+      add_val_operand(&ops, &in->tac_copy_to_offset.src, TAC_USE);
+      break;
+    case TACCOPY_FROM_OFFSET:
+    case TACVOLATILE_COPY_FROM_OFFSET:
+      add_val_operand(&ops, &in->tac_copy_from_offset.dst, TAC_DEF);
+      add_name_operand(&ops, &in->tac_copy_from_offset.src, TAC_USE);
+      break;
+    case TACTRUNC:
+      add_val_operand(&ops, &in->tac_trunc.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_trunc.src, TAC_USE);
+      break;
+    case TACEXTEND:
+      add_val_operand(&ops, &in->tac_extend.dst, TAC_DEF);
+      add_val_operand(&ops, &in->tac_extend.src, TAC_USE);
+      break;
+    case TACJUMP:
+    case TACLABEL:
+    case TACBOUNDARY:
+      break;
+  }
+  return ops;
 }
 
 // Build a one-element list, or an empty list if instr is NULL.
@@ -143,7 +256,7 @@ static struct Type* tac_builtin_type(enum TypeType kind) {
       return &ulong_type;
     default:
       tac_error_at(NULL, "unsupported builtin type kind in tac_builtin_type");
-      exit(1);
+      exit(BCC_EXIT_INTERNAL);
   }
 }
 
@@ -194,6 +307,65 @@ static bool val_is_volatile_var(const struct Val* val) {
   }
   struct SymbolEntry* entry = symbol_table_get(global_symbol_table, val->val.var_name);
   return entry != NULL && entry->type != NULL && entry->type->is_volatile;
+}
+
+// ---------------------------------------------------------------------------
+// TAC instruction builders
+// ---------------------------------------------------------------------------
+
+// Append one instruction to a list under construction.
+static void tac_emit(struct TACInstrList* list, struct TACInstr* instr) {
+  concat_TAC_instrs(list, tac_instr_list(instr));
+}
+
+// Copy-shaped instruction: TACCOPY, TACVOLATILE_READ, or TACVOLATILE_WRITE,
+// which all use the tac_copy payload.
+static struct TACInstr* tac_copy_of(enum TACInstrType kind, struct Val* dst, struct Val* src) {
+  struct TACInstr* instr = tac_instr_create(kind);
+  instr->instr.tac_copy.dst = dst;
+  instr->instr.tac_copy.src = src;
+  return instr;
+}
+
+static struct TACInstr* tac_binary_of(enum ALUOp op, struct Val* dst,
+                                      struct Val* src1, struct Val* src2) {
+  struct TACInstr* instr = tac_instr_create(TACBINARY);
+  instr->instr.tac_binary.alu_op = op;
+  instr->instr.tac_binary.dst = dst;
+  instr->instr.tac_binary.src1 = src1;
+  instr->instr.tac_binary.src2 = src2;
+  return instr;
+}
+
+static struct TACInstr* tac_unary_of(enum UnOp op, struct Val* dst, struct Val* src) {
+  struct TACInstr* instr = tac_instr_create(TACUNARY);
+  instr->instr.tac_unary.op = op;
+  instr->instr.tac_unary.dst = dst;
+  instr->instr.tac_unary.src = src;
+  return instr;
+}
+
+// Jump to label when `src1 <cond> src2` holds.
+static struct TACInstr* tac_cond_jump_of(enum TACCondition cond, struct Val* src1,
+                                         struct Val* src2, struct Slice* label) {
+  struct TACInstr* instr = tac_instr_create(TACCOND_JUMP);
+  instr->instr.tac_cond_jump.condition = cond;
+  instr->instr.tac_cond_jump.src1 = src1;
+  instr->instr.tac_cond_jump.src2 = src2;
+  instr->instr.tac_cond_jump.label = label;
+  return instr;
+}
+
+static struct TACInstr* tac_jump_to(struct Slice* label) {
+  struct TACInstr* instr = tac_instr_create(TACJUMP);
+  instr->instr.tac_jump.label = label;
+  return instr;
+}
+
+static struct TACInstr* tac_label_at(struct Slice* label) {
+  struct TACInstr* instr = tac_instr_create(TACLABEL);
+  instr->instr.tac_label.label = label;
+  return instr;
 }
 
 // Allocate a variable TAC value referencing an existing name.
@@ -333,59 +505,23 @@ static enum BinOp compound_to_binop(enum BinOp op) {
 }
 
 // Map a relational operator to a TAC condition, using signedness.
-// Returns the TAC condition used for a successful comparison.
+// op must be relational; anything else is an internal error.
 static enum TACCondition relation_to_cond(enum BinOp op, struct Type* type) {
-  bool is_signed = is_signed_type(type);
-  switch (op) {
-    case BOOL_EQ:
-      return CondE;
-    case BOOL_NEQ:
-      return CondNE;
-    case BOOL_GE:
-      return is_signed ? CondG : CondA;
-    case BOOL_GEQ:
-      return is_signed ? CondGE : CondAE;
-    case BOOL_LE:
-      return is_signed ? CondL : CondB;
-    case BOOL_LEQ:
-      return is_signed ? CondLE : CondBE;
-    default:
-      tac_error_at(NULL, "invalid relational operator in relation_to_cond");
-      return -1;
+  enum TACCondition cond;
+  if (!binop_condition(op, type, &cond)) {
+    tac_error_at(NULL, "invalid relational operator in relation_to_cond");
   }
+  return cond;
 }
 
-// Map a binary operator to an ALU op, using signedness.
-// Returns the ALU op used
-static enum TACCondition binop_to_aluop(enum BinOp op, struct Type* type) {
-  bool is_signed = is_signed_type(type);
-  switch (op) {
-    case ADD_OP:
-      return ALU_ADD;
-    case SUB_OP:
-      return ALU_SUB;
-    case MUL_OP:
-      return is_signed ? ALU_SMUL : ALU_UMUL;
-    case DIV_OP:
-      return is_signed ? ALU_SDIV : ALU_UDIV;
-    case MOD_OP:
-      return is_signed ? ALU_SMOD : ALU_UMOD;
-    case BIT_AND:
-      return ALU_AND;
-    case BIT_OR:
-      return ALU_OR;
-    case BIT_XOR:
-      return ALU_XOR;
-    case BIT_SHL:
-      return is_signed ? ALU_ASL : ALU_LSL;
-    case BIT_SHR:
-      return is_signed ? ALU_ASR : ALU_LSR;
-    case COMMA_OP:
-      return ALU_MOV;
-    default:
-      tac_error_at(NULL, "invalid binary operator in binop_to_aluop");
-      return -1;
+// Map an arithmetic/bitwise operator to an ALU op, using signedness.
+// op must have an ALU equivalent; anything else is an internal error.
+static enum ALUOp binop_to_aluop(enum BinOp op, struct Type* type) {
+  enum ALUOp alu_op;
+  if (!binop_alu_op(op, type, &alu_op)) {
+    tac_error_at(NULL, "invalid binary operator in binop_to_aluop");
   }
+  return alu_op;
 }
 
 // Emit TAC for signed division/modulo when the LHS is a narrower unsigned type.
@@ -407,73 +543,45 @@ static struct TACInstrList emit_unsigned_lhs_signed_divmod(struct Slice* func_na
     struct Slice* rhs_nonneg = tac_make_label(func_name, "rhs_nonneg");
     struct Slice* rhs_done = tac_make_label(func_name, "rhs_done");
 
-    struct TACInstr* jump_rhs_nonneg = tac_instr_create(TACCOND_JUMP);
-    jump_rhs_nonneg->instr.tac_cond_jump.src1 = rhs;
-    jump_rhs_nonneg->instr.tac_cond_jump.src2 = tac_make_const(0, rhs_type);
-    jump_rhs_nonneg->instr.tac_cond_jump.condition = CondGE;
-    jump_rhs_nonneg->instr.tac_cond_jump.label = rhs_nonneg;
-    concat_TAC_instrs(&instrs, tac_instr_list(jump_rhs_nonneg));
+    struct TACInstr* jump_rhs_nonneg = tac_cond_jump_of(CondGE, rhs, tac_make_const(0, rhs_type), rhs_nonneg);
+    tac_emit(&instrs, jump_rhs_nonneg);
 
-    struct TACInstr* negate_rhs = tac_instr_create(TACUNARY);
-    negate_rhs->instr.tac_unary.op = NEGATE;
-    negate_rhs->instr.tac_unary.dst = rhs_abs;
-    negate_rhs->instr.tac_unary.src = rhs;
-    concat_TAC_instrs(&instrs, tac_instr_list(negate_rhs));
+    struct TACInstr* negate_rhs = tac_unary_of(NEGATE, rhs_abs, rhs);
+    tac_emit(&instrs, negate_rhs);
 
-    struct TACInstr* rhs_neg_true = tac_instr_create(TACCOPY);
-    rhs_neg_true->instr.tac_copy.dst = rhs_neg;
-    rhs_neg_true->instr.tac_copy.src = tac_make_const(1, rhs_neg->type);
-    concat_TAC_instrs(&instrs, tac_instr_list(rhs_neg_true));
+    struct TACInstr* rhs_neg_true = tac_copy_of(TACCOPY, rhs_neg, tac_make_const(1, rhs_neg->type));
+    tac_emit(&instrs, rhs_neg_true);
 
-    struct TACInstr* jump_rhs_done = tac_instr_create(TACJUMP);
-    jump_rhs_done->instr.tac_jump.label = rhs_done;
-    concat_TAC_instrs(&instrs, tac_instr_list(jump_rhs_done));
+    struct TACInstr* jump_rhs_done = tac_jump_to(rhs_done);
+    tac_emit(&instrs, jump_rhs_done);
 
-    struct TACInstr* rhs_nonneg_label = tac_instr_create(TACLABEL);
-    rhs_nonneg_label->instr.tac_label.label = rhs_nonneg;
-    concat_TAC_instrs(&instrs, tac_instr_list(rhs_nonneg_label));
+    struct TACInstr* rhs_nonneg_label = tac_label_at(rhs_nonneg);
+    tac_emit(&instrs, rhs_nonneg_label);
 
-    struct TACInstr* rhs_copy = tac_instr_create(TACCOPY);
-    rhs_copy->instr.tac_copy.dst = rhs_abs;
-    rhs_copy->instr.tac_copy.src = rhs;
-    concat_TAC_instrs(&instrs, tac_instr_list(rhs_copy));
+    struct TACInstr* rhs_copy = tac_copy_of(TACCOPY, rhs_abs, rhs);
+    tac_emit(&instrs, rhs_copy);
 
-    struct TACInstr* rhs_neg_false = tac_instr_create(TACCOPY);
-    rhs_neg_false->instr.tac_copy.dst = rhs_neg;
-    rhs_neg_false->instr.tac_copy.src = tac_make_const(0, rhs_neg->type);
-    concat_TAC_instrs(&instrs, tac_instr_list(rhs_neg_false));
+    struct TACInstr* rhs_neg_false = tac_copy_of(TACCOPY, rhs_neg, tac_make_const(0, rhs_neg->type));
+    tac_emit(&instrs, rhs_neg_false);
 
-    struct TACInstr* rhs_done_label = tac_instr_create(TACLABEL);
-    rhs_done_label->instr.tac_label.label = rhs_done;
-    concat_TAC_instrs(&instrs, tac_instr_list(rhs_done_label));
+    struct TACInstr* rhs_done_label = tac_label_at(rhs_done);
+    tac_emit(&instrs, rhs_done_label);
   }
 
-  struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
-  bin_instr->instr.tac_binary.alu_op = is_mod ? ALU_UMOD : ALU_UDIV;
-  bin_instr->instr.tac_binary.dst = dst;
-  bin_instr->instr.tac_binary.src1 = lhs;
-  bin_instr->instr.tac_binary.src2 = rhs_abs;
-  concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
+  struct TACInstr* bin_instr = tac_binary_of(is_mod ? ALU_UMOD : ALU_UDIV, dst, lhs, rhs_abs);
+  tac_emit(&instrs, bin_instr);
 
   if (!is_mod && rhs_neg != NULL) {
     struct Slice* div_done = tac_make_label(func_name, "div_done");
 
-    struct TACInstr* jump_done = tac_instr_create(TACCOND_JUMP);
-    jump_done->instr.tac_cond_jump.src1 = rhs_neg;
-    jump_done->instr.tac_cond_jump.src2 = tac_make_const(0, rhs_neg->type);
-    jump_done->instr.tac_cond_jump.condition = CondE;
-    jump_done->instr.tac_cond_jump.label = div_done;
-    concat_TAC_instrs(&instrs, tac_instr_list(jump_done));
+    struct TACInstr* jump_done = tac_cond_jump_of(CondE, rhs_neg, tac_make_const(0, rhs_neg->type), div_done);
+    tac_emit(&instrs, jump_done);
 
-    struct TACInstr* negate_dst = tac_instr_create(TACUNARY);
-    negate_dst->instr.tac_unary.op = NEGATE;
-    negate_dst->instr.tac_unary.dst = dst;
-    negate_dst->instr.tac_unary.src = dst;
-    concat_TAC_instrs(&instrs, tac_instr_list(negate_dst));
+    struct TACInstr* negate_dst = tac_unary_of(NEGATE, dst, dst);
+    tac_emit(&instrs, negate_dst);
 
-    struct TACInstr* div_done_label = tac_instr_create(TACLABEL);
-    div_done_label->instr.tac_label.label = div_done;
-    concat_TAC_instrs(&instrs, tac_instr_list(div_done_label));
+    struct TACInstr* div_done_label = tac_label_at(div_done);
+    tac_emit(&instrs, div_done_label);
   }
 
   return instrs;
@@ -580,19 +688,17 @@ struct TACProg* prog_to_TAC(struct Program* program, bool emit_debug_info, bool 
   // Collect static storage entries from the symbol table for visibility.
   struct TopLevel* statics_head = NULL;
   struct TopLevel* statics_tail = NULL;
-  for (size_t i = 0; i < global_symbol_table->size; i++) {
-    for (struct SymbolEntry* entry = global_symbol_table->arr[i];
-      entry != NULL;
-      entry = entry->next) {
-      struct TopLevel* top_level = symbol_to_TAC(entry);
-      if (top_level != NULL) {
-        if (statics_head == NULL) {
-          statics_head = top_level;
-          statics_tail = top_level;
-        } else {
-          statics_tail->next = top_level;
-          statics_tail = top_level;
-        }
+  struct SliceMapIter symbols = slice_map_iter(&global_symbol_table->map);
+  for (struct SymbolEntry* entry = slice_map_next_value(&symbols); entry != NULL;
+       entry = slice_map_next_value(&symbols)) {
+    struct TopLevel* top_level = symbol_to_TAC(entry);
+    if (top_level != NULL) {
+      if (statics_head == NULL) {
+        statics_head = top_level;
+        statics_tail = top_level;
+      } else {
+        statics_tail->next = top_level;
+        statics_tail = top_level;
       }
     }
   }
@@ -704,10 +810,40 @@ struct TopLevel* func_to_TAC(struct FunctionDclr* declaration) {
   struct TACInstr* ret_instr = tac_instr_create(TACRETURN);
   ret_instr->instr.tac_return.src = tac_make_const(0, tac_builtin_type(INT_TYPE)); // default return 0
 
-  concat_TAC_instrs(&body, tac_instr_list(ret_instr));
+  tac_emit(&body, ret_instr);
   top_level->top.tac_func.body = body;
 
   return top_level;
+}
+
+// At the end of a scope, call the cleanup handler of every variable declared
+// in it that has one (`__attribute__((cleanup(f)))`), passing the variable's
+// address. Visits the scope's identifiers in map order.
+static void emit_scope_cleanups(struct Slice* func_name, struct TACInstrList* instrs,
+                                struct IdentMap* idents) {
+  struct SliceMapIter it = slice_map_iter(&idents->map);
+  void* value;
+  while (slice_map_next(&it, NULL, &value)) {
+    struct IdentMapEntry* ident_entry = value;
+    struct SymbolEntry* symbol_entry = symbol_table_get(global_symbol_table, ident_entry->entry_name);
+    if (symbol_entry == NULL || symbol_entry->attrs == NULL ||
+        symbol_entry->attrs->attr_type != LOCAL_ATTR ||
+        symbol_entry->attrs->cleanup_handler == NULL) {
+      continue;
+    }
+    struct Val* var = tac_make_var(ident_entry->entry_name, symbol_entry->type);
+    struct Val* addr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
+    struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
+    addr_instr->instr.tac_get_address.dst = addr;
+    addr_instr->instr.tac_get_address.src = var;
+    tac_emit(instrs, addr_instr);
+    struct TACInstr* cleanup_instr = tac_instr_create(TACCALL);
+    cleanup_instr->instr.tac_call.func_name = symbol_entry->attrs->cleanup_handler;
+    cleanup_instr->instr.tac_call.args = addr;
+    cleanup_instr->instr.tac_call.dst = NULL;
+    cleanup_instr->instr.tac_call.num_args = 1;
+    tac_emit(instrs, cleanup_instr);
+  }
 }
 
 // Lower a block of statements/declarations into a TAC instruction list.
@@ -723,7 +859,7 @@ struct TACInstrList block_to_TAC(struct Slice* func_name, struct Block* block) {
         if (debug_info_enabled) {
           struct TACInstr* boundary_before = tac_instr_create(TACBOUNDARY);
           boundary_before->instr.tac_boundary.loc = cur->item->item.stmt->loc;
-          concat_TAC_instrs(&item_instrs, tac_instr_list(boundary_before));
+          tac_emit(&item_instrs, boundary_before);
         }
         concat_TAC_instrs(&item_instrs, stmt_to_TAC(func_name, cur->item->item.stmt));
         break;
@@ -756,29 +892,7 @@ struct TACInstrList block_to_TAC(struct Slice* func_name, struct Block* block) {
     active_cleanup_count = enclosing_cleanup_count;
     return head;
   }
-  for (size_t i = 0; i < block->idents->size; ++i){
-    for (struct IdentMapEntry* ident_entry = block->idents->arr[i]; ident_entry != NULL; ident_entry = ident_entry->next) {
-      struct SymbolEntry* symbol_entry = symbol_table_get(global_symbol_table, ident_entry->entry_name);
-      if (symbol_entry == NULL || symbol_entry->attrs == NULL) {
-        continue;
-      }
-      if (symbol_entry->attrs->attr_type == LOCAL_ATTR &&
-          symbol_entry->attrs->cleanup_handler != NULL) {
-        struct TACInstr* cleanup_instr = tac_instr_create(TACCALL);
-        cleanup_instr->instr.tac_call.func_name = symbol_entry->attrs->cleanup_handler;
-        struct Val* var = tac_make_var(ident_entry->entry_name, symbol_entry->type);
-        struct Val* addr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
-        struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
-        addr_instr->instr.tac_get_address.dst = addr;
-        addr_instr->instr.tac_get_address.src = var;
-        concat_TAC_instrs(&head, tac_instr_list(addr_instr));
-        cleanup_instr->instr.tac_call.args = addr;
-        cleanup_instr->instr.tac_call.dst = NULL;
-        cleanup_instr->instr.tac_call.num_args = 1;
-        concat_TAC_instrs(&head, tac_instr_list(cleanup_instr));
-      }
-    }
-  }
+  emit_scope_cleanups(func_name, &head, block->idents);
   active_cleanup_count = enclosing_cleanup_count;
   return head;
 }
@@ -859,7 +973,7 @@ struct TACInstrList single_init_to_TAC(struct Slice* func_name,
     store_instr->instr.tac_copy_to_offset.offset =
         init_offset_to_int(offset, init->loc);
     store_instr->instr.tac_copy_to_offset.dst_type = type;
-    concat_TAC_instrs(&expr_instrs, tac_instr_list(store_instr));
+    tac_emit(&expr_instrs, store_instr);
     return expr_instrs;
   }
 
@@ -992,7 +1106,7 @@ static struct TACInstrList string_init_to_TAC(struct Slice* func_name, struct Sl
     store_instr->instr.tac_copy_to_offset.offset =
         init_offset_to_int(byte_offset, str_expr->string->start);
     store_instr->instr.tac_copy_to_offset.dst_type = element_type;
-    concat_TAC_instrs(&instrs, tac_instr_list(store_instr));
+    tac_emit(&instrs, store_instr);
   }
 
   return instrs;
@@ -1092,7 +1206,7 @@ struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt)
       struct TACInstr* ret_instr = tac_instr_create(TACRETURN);
       ret_instr->instr.tac_return.src = dst;
       
-      concat_TAC_instrs(&expr_instrs, tac_instr_list(ret_instr));
+      tac_emit(&expr_instrs, ret_instr);
       return expr_instrs;
     }
     case EXPR_STMT:
@@ -1113,8 +1227,7 @@ struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt)
       // goto label
       // TAC:
       // Jump label
-      struct TACInstr* jump_instr = tac_instr_create(TACJUMP);
-      jump_instr->instr.tac_jump.label = stmt->statement.goto_stmt.label;
+      struct TACInstr* jump_instr = tac_jump_to(stmt->statement.goto_stmt.label);
 
       return tac_instr_list(jump_instr);
     }
@@ -1126,8 +1239,7 @@ struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt)
       // <stmt>
       struct TACInstrList stmt_instrs = stmt_to_TAC(func_name, stmt->statement.labeled_stmt.stmt);
 
-      struct TACInstr* label_instr = tac_instr_create(TACLABEL);
-      label_instr->instr.tac_label.label = stmt->statement.labeled_stmt.label;
+      struct TACInstr* label_instr = tac_label_at(stmt->statement.labeled_stmt.label);
 
       struct TACInstrList label_instr_list = tac_instr_list(label_instr);
       concat_TAC_instrs(&label_instr_list, stmt_instrs);
@@ -1141,8 +1253,7 @@ struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt)
       // break
       // TAC:
       // Jump label.break
-      struct TACInstr* jump_instr = tac_instr_create(TACJUMP);
-      jump_instr->instr.tac_jump.label = slice_concat(stmt->statement.break_stmt.label, ".break");
+      struct TACInstr* jump_instr = tac_jump_to(slice_concat(stmt->statement.break_stmt.label, ".break"));
 
       return tac_instr_list(jump_instr);
     }
@@ -1151,8 +1262,7 @@ struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt)
       // continue
       // TAC:
       // Jump label.continue
-      struct TACInstr* jump_instr = tac_instr_create(TACJUMP);
-      jump_instr->instr.tac_jump.label = slice_concat(stmt->statement.continue_stmt.label, ".continue");
+      struct TACInstr* jump_instr = tac_jump_to(slice_concat(stmt->statement.continue_stmt.label, ".continue"));
 
       return tac_instr_list(jump_instr);
     }
@@ -1193,12 +1303,11 @@ struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt)
                                                    dst);
       struct TACInstrList stmt_instrs = stmt_to_TAC(func_name, stmt->statement.switch_stmt.statement);
 
-      struct TACInstr* break_label_instr = tac_instr_create(TACLABEL);
-      break_label_instr->instr.tac_label.label = slice_concat(stmt->statement.switch_stmt.label, ".break");
+      struct TACInstr* break_label_instr = tac_label_at(slice_concat(stmt->statement.switch_stmt.label, ".break"));
 
       concat_TAC_instrs(&expr_instrs, cases_instrs);
       concat_TAC_instrs(&expr_instrs, stmt_instrs);
-      concat_TAC_instrs(&expr_instrs, tac_instr_list(break_label_instr));
+      tac_emit(&expr_instrs, break_label_instr);
 
       return expr_instrs;
     }
@@ -1210,8 +1319,7 @@ struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt)
       // <stmt>
       struct TACInstrList stmt_instrs = stmt_to_TAC(func_name, stmt->statement.case_stmt.statement);
 
-      struct TACInstr* label_instr = tac_instr_create(TACLABEL);
-      label_instr->instr.tac_label.label = stmt->statement.case_stmt.label;
+      struct TACInstr* label_instr = tac_label_at(stmt->statement.case_stmt.label);
 
       struct TACInstrList label_instr_list = tac_instr_list(label_instr);
       concat_TAC_instrs(&label_instr_list, stmt_instrs);
@@ -1225,8 +1333,7 @@ struct TACInstrList stmt_to_TAC(struct Slice* func_name, struct Statement* stmt)
       // <stmt>
       struct TACInstrList stmt_instrs = stmt_to_TAC(func_name, stmt->statement.default_stmt.statement);
 
-      struct TACInstr* label_instr = tac_instr_create(TACLABEL);
-      label_instr->instr.tac_label.label = stmt->statement.default_stmt.label;
+      struct TACInstr* label_instr = tac_label_at(stmt->statement.default_stmt.label);
 
       struct TACInstrList label_instr_list = tac_instr_list(label_instr);
       concat_TAC_instrs(&label_instr_list, stmt_instrs);
@@ -1270,11 +1377,7 @@ static struct Val* promote_switch_val(struct Slice* func_name, struct Val* value
 
   size_t src_bits = get_type_size(value->type) * CHAR_BIT;
   uint64_t mask = (UINT64_C(1) << src_bits) - UINT64_C(1);
-  struct TACInstr* mask_instr = tac_instr_create(TACBINARY);
-  mask_instr->instr.tac_binary.alu_op = ALU_AND;
-  mask_instr->instr.tac_binary.dst = promoted;
-  mask_instr->instr.tac_binary.src1 = value;
-  mask_instr->instr.tac_binary.src2 = tac_make_const(mask, int_type);
+  struct TACInstr* mask_instr = tac_binary_of(ALU_AND, promoted, value, tac_make_const(mask, int_type));
   concat_TAC_instrs(instrs, tac_instr_list(mask_instr));
   return promoted;
 }
@@ -1295,14 +1398,9 @@ struct TACInstrList cases_to_TAC(struct Slice* func_name, struct Slice* label, s
         // TAC:
         // CondJump CondE switch_val, const, case_label
 
-        struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
-        cond_jump_instr->instr.tac_cond_jump.src1 = switch_val;
-        cond_jump_instr->instr.tac_cond_jump.src2 =
-            tac_make_const((uint64_t)case_item->case_label.data, switch_val->type);
-        cond_jump_instr->instr.tac_cond_jump.condition = CondE;
-        cond_jump_instr->instr.tac_cond_jump.label = make_case_label(label, case_item->case_label.data);
+        struct TACInstr* cond_jump_instr = tac_cond_jump_of(CondE, switch_val, tac_make_const((uint64_t)case_item->case_label.data, switch_val->type), make_case_label(label, case_item->case_label.data));
 
-        concat_TAC_instrs(&case_instrs, tac_instr_list(cond_jump_instr));
+        tac_emit(&case_instrs, cond_jump_instr);
         break;
       }
       case DEFAULT_CASE:
@@ -1323,9 +1421,8 @@ struct TACInstrList cases_to_TAC(struct Slice* func_name, struct Slice* label, s
   // (no case matched)
   // TAC:
   // Jump default_label or break_label
-  struct TACInstr* jump_instr = tac_instr_create(TACJUMP);
-  jump_instr->instr.tac_jump.label = fallthrough_label;
-  concat_TAC_instrs(&case_instrs, tac_instr_list(jump_instr));
+  struct TACInstr* jump_instr = tac_jump_to(fallthrough_label);
+  tac_emit(&case_instrs, jump_instr);
 
   return case_instrs;
 }
@@ -1394,22 +1491,19 @@ struct TACInstrList while_to_TAC(struct Slice* func_name,
   // <body>
   // Jump continue
   // Label break
-  struct TACInstr* continue_label_instr = tac_instr_create(TACLABEL);
-  continue_label_instr->instr.tac_label.label = continue_label;
-  concat_TAC_instrs(&instrs, tac_instr_list(continue_label_instr));
+  struct TACInstr* continue_label_instr = tac_label_at(continue_label);
+  tac_emit(&instrs, continue_label_instr);
 
   struct TACInstrList cond_instrs = cond_to_TAC(func_name, condition, break_label, true);
   concat_TAC_instrs(&instrs, cond_instrs);
 
   concat_TAC_instrs(&instrs, body_instrs);
 
-  struct TACInstr* jump_back = tac_instr_create(TACJUMP);
-  jump_back->instr.tac_jump.label = continue_label;
-  concat_TAC_instrs(&instrs, tac_instr_list(jump_back));
+  struct TACInstr* jump_back = tac_jump_to(continue_label);
+  tac_emit(&instrs, jump_back);
 
-  struct TACInstr* break_label_instr = tac_instr_create(TACLABEL);
-  break_label_instr->instr.tac_label.label = break_label;
-  concat_TAC_instrs(&instrs, tac_instr_list(break_label_instr));
+  struct TACInstr* break_label_instr = tac_label_at(break_label);
+  tac_emit(&instrs, break_label_instr);
 
   return instrs;
 }
@@ -1444,21 +1538,18 @@ struct TACInstrList do_while_to_TAC(struct Slice* func_name,
   // <cond>
   // Branch to start when cond is true
   // Label break
-  struct TACInstr* start_label_instr = tac_instr_create(TACLABEL);
-  start_label_instr->instr.tac_label.label = start_label;
-  concat_TAC_instrs(&instrs, tac_instr_list(start_label_instr));
+  struct TACInstr* start_label_instr = tac_label_at(start_label);
+  tac_emit(&instrs, start_label_instr);
 
   concat_TAC_instrs(&instrs, body_instrs);
 
-  struct TACInstr* continue_label_instr = tac_instr_create(TACLABEL);
-  continue_label_instr->instr.tac_label.label = continue_label;
-  concat_TAC_instrs(&instrs, tac_instr_list(continue_label_instr));
+  struct TACInstr* continue_label_instr = tac_label_at(continue_label);
+  tac_emit(&instrs, continue_label_instr);
 
   concat_TAC_instrs(&instrs, cond_instrs);
 
-  struct TACInstr* break_label_instr = tac_instr_create(TACLABEL);
-  break_label_instr->instr.tac_label.label = break_label;
-  concat_TAC_instrs(&instrs, tac_instr_list(break_label_instr));
+  struct TACInstr* break_label_instr = tac_label_at(break_label);
+  tac_emit(&instrs, break_label_instr);
 
   return instrs;
 }
@@ -1518,56 +1609,29 @@ struct TACInstrList for_to_TAC(struct Slice* func_name,
   struct TACInstrList instrs = tac_instr_list(NULL);
   concat_TAC_instrs(&instrs, init_instrs);
 
-  struct TACInstr* start_label_instr = tac_instr_create(TACLABEL);
-  start_label_instr->instr.tac_label.label = start_label;
-  concat_TAC_instrs(&instrs, tac_instr_list(start_label_instr));
+  struct TACInstr* start_label_instr = tac_label_at(start_label);
+  tac_emit(&instrs, start_label_instr);
 
   concat_TAC_instrs(&instrs, condition_instrs);
   concat_TAC_instrs(&instrs, body_instrs);
 
-  struct TACInstr* continue_label_instr = tac_instr_create(TACLABEL);
-  continue_label_instr->instr.tac_label.label = continue_label;
-  concat_TAC_instrs(&instrs, tac_instr_list(continue_label_instr));
+  struct TACInstr* continue_label_instr = tac_label_at(continue_label);
+  tac_emit(&instrs, continue_label_instr);
 
   concat_TAC_instrs(&instrs, end_instrs);
 
-  struct TACInstr* jump_back = tac_instr_create(TACJUMP);
-  jump_back->instr.tac_jump.label = start_label;
-  concat_TAC_instrs(&instrs, tac_instr_list(jump_back));
+  struct TACInstr* jump_back = tac_jump_to(start_label);
+  tac_emit(&instrs, jump_back);
 
-  struct TACInstr* break_label_instr = tac_instr_create(TACLABEL);
-  break_label_instr->instr.tac_label.label = break_label;
-  concat_TAC_instrs(&instrs, tac_instr_list(break_label_instr));
+  struct TACInstr* break_label_instr = tac_label_at(break_label);
+  tac_emit(&instrs, break_label_instr);
 
   // call all cleanup functions for variables going out of scope here
   if (idents == NULL) {
     active_cleanup_count = enclosing_cleanup_count;
     return instrs;
   }
-  for (size_t i = 0; i < idents->size; ++i){
-    for (struct IdentMapEntry* ident_entry = idents->arr[i]; ident_entry != NULL; ident_entry = ident_entry->next) {
-      struct SymbolEntry* symbol_entry = symbol_table_get(global_symbol_table, ident_entry->entry_name);
-      if (symbol_entry == NULL || symbol_entry->attrs == NULL) {
-        continue;
-      }
-      if (symbol_entry->attrs->attr_type == LOCAL_ATTR &&
-          symbol_entry->attrs->cleanup_handler != NULL) {
-        struct TACInstr* cleanup_instr = tac_instr_create(TACCALL);
-        cleanup_instr->instr.tac_call.func_name = symbol_entry->attrs->cleanup_handler;
-        struct Val* var = tac_make_var(ident_entry->entry_name, symbol_entry->type);
-        // pass in address of var
-        struct Val* addr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
-        struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
-        addr_instr->instr.tac_get_address.dst = addr;
-        addr_instr->instr.tac_get_address.src = var;
-        concat_TAC_instrs(&instrs, tac_instr_list(addr_instr));
-        cleanup_instr->instr.tac_call.args = addr;
-        cleanup_instr->instr.tac_call.dst = NULL;
-        cleanup_instr->instr.tac_call.num_args = 1;
-        concat_TAC_instrs(&instrs, tac_instr_list(cleanup_instr));
-      }
-    }
-  }
+  emit_scope_cleanups(func_name, &instrs, idents);
   active_cleanup_count = enclosing_cleanup_count;
   return instrs;
 }
@@ -1586,15 +1650,14 @@ struct TACInstrList if_to_TAC(struct Slice* func_name, struct Expr* condition, s
   struct TACInstrList body_instrs = stmt_to_TAC(func_name, if_stmt);
 
   struct Slice* end_label = tac_make_label(func_name, "end");
-  struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
-  end_label_instr->instr.tac_label.label = end_label;
+  struct TACInstr* end_label_instr = tac_label_at(end_label);
 
   struct TACInstrList cond_instrs = cond_to_TAC(func_name, condition, end_label, true);
 
   struct TACInstrList instrs = tac_instr_list(NULL);
   concat_TAC_instrs(&instrs, cond_instrs);
   concat_TAC_instrs(&instrs, body_instrs);
-  concat_TAC_instrs(&instrs, tac_instr_list(end_label_instr));
+  tac_emit(&instrs, end_label_instr);
 
   return instrs;
 }
@@ -1622,22 +1685,19 @@ struct TACInstrList if_else_to_TAC(struct Slice* func_name,
   // Label end
   struct TACInstrList cond_instrs = cond_to_TAC(func_name, condition, else_label, true);
 
-  struct TACInstr* jump_end_instr = tac_instr_create(TACJUMP);
-  jump_end_instr->instr.tac_jump.label = end_label;
+  struct TACInstr* jump_end_instr = tac_jump_to(end_label);
 
-  struct TACInstr* else_label_instr = tac_instr_create(TACLABEL);
-  else_label_instr->instr.tac_label.label = else_label;
+  struct TACInstr* else_label_instr = tac_label_at(else_label);
 
-  struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
-  end_label_instr->instr.tac_label.label = end_label;
+  struct TACInstr* end_label_instr = tac_label_at(end_label);
 
   struct TACInstrList instrs = tac_instr_list(NULL);
   concat_TAC_instrs(&instrs, cond_instrs);
   concat_TAC_instrs(&instrs, if_instrs);
-  concat_TAC_instrs(&instrs, tac_instr_list(jump_end_instr));
-  concat_TAC_instrs(&instrs, tac_instr_list(else_label_instr));
+  tac_emit(&instrs, jump_end_instr);
+  tac_emit(&instrs, else_label_instr);
   concat_TAC_instrs(&instrs, else_instrs);
-  concat_TAC_instrs(&instrs, tac_instr_list(end_label_instr));
+  tac_emit(&instrs, end_label_instr);
 
   return instrs;
 }
@@ -1700,30 +1760,21 @@ struct TACInstrList relational_to_TAC(struct Slice* func_name,
   // CondJump <cond> left, right, end
   // Copy dst, 0
   // Label end
-  struct TACInstr* init_copy = tac_instr_create(TACCOPY);
-  init_copy->instr.tac_copy.dst = dst;
-  init_copy->instr.tac_copy.src = tac_make_const(1, tac_builtin_type(INT_TYPE));
-  concat_TAC_instrs(&instrs, tac_instr_list(init_copy));
+  struct TACInstr* init_copy = tac_copy_of(TACCOPY, dst, tac_make_const(1, tac_builtin_type(INT_TYPE)));
+  tac_emit(&instrs, init_copy);
 
   concat_TAC_instrs(&instrs, left_instrs);
   concat_TAC_instrs(&instrs, right_instrs);
 
-  struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
-  cond_jump_instr->instr.tac_cond_jump.src1 = left_val;
-  cond_jump_instr->instr.tac_cond_jump.src2 = right_val;
-  cond_jump_instr->instr.tac_cond_jump.condition = relation_to_cond(op, left->value_type);
-  cond_jump_instr->instr.tac_cond_jump.label = end_label;
+  struct TACInstr* cond_jump_instr = tac_cond_jump_of(relation_to_cond(op, left->value_type), left_val, right_val, end_label);
 
-  struct TACInstr* clear_copy = tac_instr_create(TACCOPY);
-  clear_copy->instr.tac_copy.dst = dst;
-  clear_copy->instr.tac_copy.src = tac_make_const(0, tac_builtin_type(INT_TYPE));
+  struct TACInstr* clear_copy = tac_copy_of(TACCOPY, dst, tac_make_const(0, tac_builtin_type(INT_TYPE)));
 
-  struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
-  end_label_instr->instr.tac_label.label = end_label;
+  struct TACInstr* end_label_instr = tac_label_at(end_label);
 
-  concat_TAC_instrs(&instrs, tac_instr_list(cond_jump_instr));
-  concat_TAC_instrs(&instrs, tac_instr_list(clear_copy));
-  concat_TAC_instrs(&instrs, tac_instr_list(end_label_instr));
+  tac_emit(&instrs, cond_jump_instr);
+  tac_emit(&instrs, clear_copy);
+  tac_emit(&instrs, end_label_instr);
 
   result->type = PLAIN_OPERAND;
   result->val = dst;
@@ -1771,7 +1822,7 @@ struct TACInstrList call_to_TAC(struct Slice* func_name, struct Expr* expr, stru
 
     struct TACInstrList instrs = tac_instr_list(NULL);
     concat_TAC_instrs(&instrs, arg_instrs);
-    concat_TAC_instrs(&instrs, tac_instr_list(call_instr));
+    tac_emit(&instrs, call_instr);
 
     if (result != NULL) {
       result->type = PLAIN_OPERAND;
@@ -1803,7 +1854,7 @@ struct TACInstrList call_to_TAC(struct Slice* func_name, struct Expr* expr, stru
     struct TACInstrList instrs = tac_instr_list(NULL);
     concat_TAC_instrs(&instrs, func_instrs);
     concat_TAC_instrs(&instrs, arg_instrs);
-    concat_TAC_instrs(&instrs, tac_instr_list(call_instr));
+    tac_emit(&instrs, call_instr);
 
     if (result != NULL) {
       result->type = PLAIN_OPERAND;
@@ -1811,6 +1862,66 @@ struct TACInstrList call_to_TAC(struct Slice* func_name, struct Expr* expr, stru
     }
     return instrs;
   }
+}
+
+// Load a scalar lvalue represented by a pointer or an aggregate subobject.
+// Precondition: location has type DEREFERENCED_POINTER or SUB_OBJECT. The
+// caller has already emitted the code that computes its base exactly once.
+static struct TACInstrList load_indirect_lvalue(struct ExprResult* location,
+                                                struct Type* object_type,
+                                                struct Val* dst) {
+  bool is_volatile = type_is_volatile(object_type);
+  if (location->type == DEREFERENCED_POINTER) {
+    struct TACInstr* load_instr = tac_instr_create(
+        is_volatile ? TACVOLATILE_LOAD : TACLOAD);
+    load_instr->instr.tac_load.dst = dst;
+    load_instr->instr.tac_load.src_ptr = location->val;
+    return tac_instr_list(load_instr);
+  }
+
+  struct TACInstr* copy_instr = tac_instr_create(
+      is_volatile ? TACVOLATILE_COPY_FROM_OFFSET : TACCOPY_FROM_OFFSET);
+  copy_instr->instr.tac_copy_from_offset.dst = dst;
+  copy_instr->instr.tac_copy_from_offset.src = location->sub_object_base;
+  copy_instr->instr.tac_copy_from_offset.offset = location->sub_object_offset;
+  return tac_instr_list(copy_instr);
+}
+
+// Store a scalar value into a pointer or aggregate subobject lvalue.
+// Precondition: location has type DEREFERENCED_POINTER or SUB_OBJECT.
+static struct TACInstrList store_indirect_lvalue(struct ExprResult* location,
+                                                 struct Type* object_type,
+                                                 struct Val* src) {
+  bool is_volatile = type_is_volatile(object_type);
+  if (location->type == DEREFERENCED_POINTER) {
+    struct TACInstr* store_instr = tac_instr_create(
+        is_volatile ? TACVOLATILE_STORE : TACSTORE);
+    store_instr->instr.tac_store.dst_ptr = location->val;
+    store_instr->instr.tac_store.src = src;
+    return tac_instr_list(store_instr);
+  }
+
+  struct TACInstr* copy_instr = tac_instr_create(
+      is_volatile ? TACVOLATILE_COPY_TO_OFFSET : TACCOPY_TO_OFFSET);
+  copy_instr->instr.tac_copy_to_offset.dst = location->sub_object_base;
+  copy_instr->instr.tac_copy_to_offset.offset = location->sub_object_offset;
+  copy_instr->instr.tac_copy_to_offset.src = src;
+  copy_instr->instr.tac_copy_to_offset.dst_type = object_type;
+  return tac_instr_list(copy_instr);
+}
+
+// Scale an integer offset by the size of ptr_type's referent for pointer
+// arithmetic: emits `Binary Mul scaled, offset, sizeof(*ptr)` and returns
+// scaled, a fresh temp of offset_type.
+static struct Val* emit_pointer_scale(struct Slice* func_name, struct TACInstrList* instrs,
+                                      struct Val* offset, struct Type* offset_type,
+                                      struct Type* ptr_type) {
+  struct Type* ref_type = ptr_type->type_data.pointer_type.referenced_type;
+  int scale = (int)get_type_size(ref_type);
+  struct Val* scaled = make_temp(func_name, offset_type);
+  tac_emit(instrs, tac_binary_of(binop_to_aluop(MUL_OP, offset_type), scaled, offset,
+                                 tac_make_const((uint64_t)scale, offset_type)));
+  return scaled;
 }
 
 // Lower an expression and ensure the result is a plain operand.
@@ -1829,10 +1940,8 @@ struct TACInstrList expr_to_TAC_convert(struct Slice* func_name, struct Expr* ex
       if (val_is_volatile_var(raw_result.val)) {
         struct Type* value_type = unqualify_type(raw_result.val->type);
         struct Val* tmp = make_temp(func_name, value_type);
-        struct TACInstr* read_instr = tac_instr_create(TACVOLATILE_READ);
-        read_instr->instr.tac_copy.dst = tmp;
-        read_instr->instr.tac_copy.src = raw_result.val;
-        concat_TAC_instrs(&instrs, tac_instr_list(read_instr));
+        struct TACInstr* read_instr = tac_copy_of(TACVOLATILE_READ, tmp, raw_result.val);
+        tac_emit(&instrs, read_instr);
         tac_copy_val(dst, tmp);
         return instrs;
       }
@@ -1841,53 +1950,955 @@ struct TACInstrList expr_to_TAC_convert(struct Slice* func_name, struct Expr* ex
       }
       return instrs;
     }
-    case DEREFERENCED_POINTER: {
-      struct Type* value_type = type_is_volatile(expr->value_type)
-                                    ? unqualify_type(expr->value_type)
-                                    : expr->value_type;
-      struct Val* tmp = make_temp(func_name, value_type);
-      tac_copy_val(dst, tmp);
-      struct Val* load_dst = dst != NULL ? dst : tmp;
-
-      // AST:
-      // lvalue expression used as value
-      // TAC:
-      // Load dst, [ptr]            or VolatileLoad when the object is volatile
-      struct TACInstr* load_instr = tac_instr_create(
-          type_is_volatile(expr->value_type) ? TACVOLATILE_LOAD : TACLOAD);
-      load_instr->instr.tac_load.dst = load_dst;
-      load_instr->instr.tac_load.src_ptr = raw_result.val;
-      concat_TAC_instrs(&instrs, tac_instr_list(load_instr));
-    
-      return instrs;
-    }
+    case DEREFERENCED_POINTER:
     case SUB_OBJECT: {
+      // AST:
+      // *ptr, struct.field, or ptr->field used as a value
+      // TAC:
+      // Load dst, [ptr]  or  CopyFromOffset dst, base, offset
+      // (volatile forms when the object is volatile)
       struct Type* value_type = type_is_volatile(expr->value_type)
                                     ? unqualify_type(expr->value_type)
                                     : expr->value_type;
       struct Val* tmp = make_temp(func_name, value_type);
       tac_copy_val(dst, tmp);
-      struct Val* copy_dst = dst != NULL ? dst : tmp;
-      // AST:
-      // struct.field or ptr->field used as value
-      // TAC:
-      // CopyFromOffset dst, base_ptr, offset
-      // VolatileCopyFromOffset when the member type is volatile
-
-      struct TACInstr* copy_instr = tac_instr_create(
-          type_is_volatile(expr->value_type) ? TACVOLATILE_COPY_FROM_OFFSET
-                                             : TACCOPY_FROM_OFFSET);
-      copy_instr->instr.tac_copy_from_offset.dst = copy_dst;
-      copy_instr->instr.tac_copy_from_offset.src = raw_result.sub_object_base;
-      copy_instr->instr.tac_copy_from_offset.offset = raw_result.sub_object_offset;
-      concat_TAC_instrs(&instrs, tac_instr_list(copy_instr));
-
+      concat_TAC_instrs(&instrs, load_indirect_lvalue(&raw_result, expr->value_type,
+                                                      dst != NULL ? dst : tmp));
       return instrs;
     }
     default:
       tac_error_at(expr ? expr->loc : NULL, "unsupported ExprResult type in expr_to_TAC_convert");
       return tac_instr_list(NULL);
   }
+}
+
+// Lower a binary expression: short-circuit && and ||, comparisons, compound
+// assignment, pointer arithmetic, and plain arithmetic.
+static struct TACInstrList lower_binary_expr(struct Slice* func_name, struct Expr* expr,
+                                             struct ExprResult* result) {
+  struct BinaryExpr* bin_expr = &expr->expr.bin_expr;
+  enum BinOp op = bin_expr->op;
+
+  if (op == BOOL_AND || op == BOOL_OR) {
+    struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
+    struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
+    struct TACInstrList left_instrs = expr_to_TAC_convert(func_name, bin_expr->left, left_val);
+    struct TACInstrList right_instrs = expr_to_TAC_convert(func_name, bin_expr->right, right_val);
+
+    struct Val* dst = make_temp(func_name, expr->value_type);
+    struct Slice* end_label = tac_make_label(func_name, "end");
+
+    struct TACInstrList instrs = tac_instr_list(NULL);
+
+    // AST:
+    // left && right   OR   left || right
+    // TAC:
+    // Copy dst, <short-circuit default>
+    // <left>
+    // CondJump <cond> left, 0, end
+    // <right>
+    // CondJump <cond> right, 0, end
+    // Copy dst, <final>
+    // Label end
+    // Default result matches the short-circuit outcome before evaluating RHS.
+    struct TACInstr* init_copy = tac_copy_of(TACCOPY, dst, tac_make_const(op != BOOL_AND, tac_builtin_type(INT_TYPE)));
+    tac_emit(&instrs, init_copy);
+    concat_TAC_instrs(&instrs, left_instrs);
+
+    // If the left side decides the result, skip RHS evaluation.
+    struct TACInstr* jump_left = tac_cond_jump_of((op == BOOL_AND) ? CondE : CondNE, left_val, tac_make_const(0, left_val->type), end_label);
+
+    tac_emit(&instrs, jump_left);
+    concat_TAC_instrs(&instrs, right_instrs);
+
+    struct TACInstr* jump_right = tac_cond_jump_of((op == BOOL_AND) ? CondE : CondNE, right_val, tac_make_const(0, right_val->type), end_label);
+
+    tac_emit(&instrs, jump_right);
+
+    struct TACInstr* final_copy = tac_copy_of(TACCOPY, dst, tac_make_const(op == BOOL_AND, tac_builtin_type(INT_TYPE)));
+
+    struct TACInstr* end_label_instr = tac_label_at(end_label);
+
+    tac_emit(&instrs, final_copy);
+    tac_emit(&instrs, end_label_instr);
+
+    result->type = PLAIN_OPERAND;
+    result->val = dst;
+    return instrs;
+  }
+
+  if (is_relational_op(op)) {
+    return relational_to_TAC(func_name, expr, op, bin_expr->left, bin_expr->right, result);
+  }
+
+  if (is_compound_op(op)) {
+    struct ExprResult lhs_result;
+    struct TACInstrList lhs_instrs = expr_to_TAC(func_name, bin_expr->left, &lhs_result);
+
+    struct Val* rhs_val = (struct Val*)arena_alloc(sizeof(struct Val));
+    struct TACInstrList rhs_instrs = expr_to_TAC_convert(func_name, bin_expr->right, rhs_val);
+
+    struct TACInstrList instrs = tac_instr_list(NULL);
+    concat_TAC_instrs(&instrs, lhs_instrs);
+    concat_TAC_instrs(&instrs, rhs_instrs);
+
+    enum BinOp base_op = compound_to_binop(op);
+    struct Type* lhs_type = bin_expr->left->value_type;
+    struct Type* rhs_type = bin_expr->right->value_type;
+    bool pointer_lhs = is_pointer_type(lhs_type);
+    struct Type* op_type = lhs_type;
+    if (!pointer_lhs && is_arithmetic_type(lhs_type) && is_arithmetic_type(rhs_type)) {
+      if (base_op == BIT_SHL || base_op == BIT_SHR) {
+        op_type = lhs_type;
+      } else {
+        op_type = get_common_type(lhs_type, rhs_type);
+        if (op_type == NULL) {
+          op_type = lhs_type;
+        }
+      }
+    }
+
+    // AST:
+    // lhs <op>= rhs
+    // TAC:
+    // <lhs lvalue>
+    // <rhs>
+    // [read]     acc = lhs     VolatileRead, Load, or CopyFromOffset; none
+    //                          for a non-volatile variable, updated in place
+    // [optional] Binary Mul scaled = rhs * sizeof(*lhs)
+    // Binary op acc, acc, rhs_or_scaled
+    // [write]    lhs = acc     VolatileWrite, Store, or CopyToOffset; none
+    //                          when updated in place
+    bool in_place = lhs_result.type == PLAIN_OPERAND && !val_is_volatile_var(lhs_result.val);
+    struct Val* acc = lhs_result.val;
+    if (lhs_result.type == PLAIN_OPERAND) {
+      if (!in_place) {
+        acc = make_temp(func_name, unqualify_type(lhs_type));
+        tac_emit(&instrs, tac_copy_of(TACVOLATILE_READ, acc, lhs_result.val));
+      }
+    } else if (lhs_result.type == DEREFERENCED_POINTER || lhs_result.type == SUB_OBJECT) {
+      // The left side's base was evaluated once above. Read its current
+      // value after the right side, then update the same location.
+      acc = make_temp(func_name, unqualify_type(expr->value_type));
+      concat_TAC_instrs(&instrs, load_indirect_lvalue(&lhs_result, lhs_type, acc));
+    } else {
+      tac_error_at(expr->loc, "unsupported compound assignment lvalue");
+    }
+
+    struct Val* rhs_for_op = rhs_val;
+    if (pointer_lhs && (base_op == ADD_OP || base_op == SUB_OP) && is_arithmetic_type(rhs_type)) {
+      rhs_for_op = emit_pointer_scale(func_name, &instrs, rhs_val, rhs_type, lhs_type);
+    }
+
+    bool needs_unsigned_div = !pointer_lhs &&
+        (base_op == DIV_OP || base_op == MOD_OP) &&
+        is_signed_type(op_type) &&
+        (get_type_size(op_type) > get_type_size(lhs_type)) &&
+        !is_signed_type(lhs_type);
+    if (needs_unsigned_div) {
+      // Signed division/modulo in a wider type with a narrower unsigned lhs
+      // must zero-extend the lhs first; the 32-bit backend emulates it with
+      // unsigned operations and a sign fix-up.
+      concat_TAC_instrs(&instrs, emit_unsigned_lhs_signed_divmod(func_name, acc, acc, rhs_for_op,
+                                                                 rhs_for_op->type,
+                                                                 base_op == MOD_OP));
+    } else {
+      tac_emit(&instrs, tac_binary_of(binop_to_aluop(base_op, op_type), acc, acc, rhs_for_op));
+    }
+
+    if (lhs_result.type != PLAIN_OPERAND) {
+      concat_TAC_instrs(&instrs, store_indirect_lvalue(&lhs_result, lhs_type, acc));
+    } else if (!in_place) {
+      tac_emit(&instrs, tac_copy_of(TACVOLATILE_WRITE, lhs_result.val, acc));
+    }
+    result->type = PLAIN_OPERAND;
+    result->val = acc;
+    return instrs;
+  }
+
+  if (op == ADD_OP || op == SUB_OP) {
+    struct Type* left_type = bin_expr->left->value_type;
+    struct Type* right_type = bin_expr->right->value_type;
+
+    bool left_ptr = is_pointer_type(left_type);
+    bool right_ptr = is_pointer_type(right_type);
+
+    struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
+    struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
+    struct TACInstrList left_instrs = expr_to_TAC_convert(func_name, bin_expr->left, left_val);
+    struct TACInstrList right_instrs = expr_to_TAC_convert(func_name, bin_expr->right, right_val);
+
+    struct TACInstrList instrs = tac_instr_list(NULL);
+    concat_TAC_instrs(&instrs, left_instrs);
+    concat_TAC_instrs(&instrs, right_instrs);
+
+    if (!left_ptr && !right_ptr) {
+      // AST:
+      // left +/- right (non-pointer)
+      // TAC:
+      // <left>
+      // <right>
+      // Binary op dst, left, right
+      struct Val* dst = make_temp(func_name, expr->value_type);
+      struct TACInstr* bin_instr = tac_binary_of(binop_to_aluop(op, expr->value_type), dst, left_val, right_val);
+      tac_emit(&instrs, bin_instr);
+      result->type = PLAIN_OPERAND;
+      result->val = dst;
+      return instrs;
+    }
+
+    if (op == ADD_OP && left_ptr && is_arithmetic_type(right_type)) {
+      // AST:
+      // ptr + int
+      // TAC:
+      // <ptr>
+      // <int>
+      // Binary Mul scaled = int * sizeof(T)
+      // Binary Add dst, ptr, scaled
+      struct Val* scaled = emit_pointer_scale(func_name, &instrs, right_val, right_type, left_type);
+
+      struct Val* dst = make_temp(func_name, expr->value_type);
+      struct TACInstr* add_instr = tac_binary_of(binop_to_aluop(ADD_OP, expr->value_type), dst, left_val, scaled);
+      tac_emit(&instrs, add_instr);
+
+      result->type = PLAIN_OPERAND;
+      result->val = dst;
+      return instrs;
+    }
+
+    if (op == ADD_OP && right_ptr && is_arithmetic_type(left_type)) {
+      // AST:
+      // int + ptr
+      // TAC:
+      // <int>
+      // <ptr>
+      // Binary Mul scaled = int * sizeof(T)
+      // Binary Add dst, scaled, ptr
+      struct Val* scaled = emit_pointer_scale(func_name, &instrs, left_val, left_type, right_type);
+
+      struct Val* dst = make_temp(func_name, expr->value_type);
+      struct TACInstr* add_instr = tac_binary_of(binop_to_aluop(ADD_OP, expr->value_type), dst, scaled, right_val);
+      tac_emit(&instrs, add_instr);
+
+      result->type = PLAIN_OPERAND;
+      result->val = dst;
+      return instrs;
+    }
+
+    if (op == SUB_OP && left_ptr && is_arithmetic_type(right_type)) {
+      // AST:
+      // ptr - int
+      // TAC:
+      // <ptr>
+      // <int>
+      // Binary Mul scaled = int * sizeof(T)
+      // Binary Sub dst, ptr, scaled
+      struct Val* scaled = emit_pointer_scale(func_name, &instrs, right_val, right_type, left_type);
+
+      struct Val* dst = make_temp(func_name, expr->value_type);
+      struct TACInstr* sub_instr = tac_binary_of(binop_to_aluop(SUB_OP, expr->value_type), dst, left_val, scaled);
+      tac_emit(&instrs, sub_instr);
+
+      result->type = PLAIN_OPERAND;
+      result->val = dst;
+      return instrs;
+    }
+
+    tac_error_at(expr->loc, "invalid pointer arithmetic in binary operation");
+    return tac_instr_list(NULL);
+  }
+
+  {
+    struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
+    struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
+    struct TACInstrList left_instrs = expr_to_TAC_convert(func_name, bin_expr->left, left_val);
+    struct TACInstrList right_instrs = expr_to_TAC_convert(func_name, bin_expr->right, right_val);
+
+    struct Val* dst = make_temp(func_name, expr->value_type);
+    // AST:
+    // left <op> right
+    // TAC:
+    // <left>
+    // <right>
+    // Binary op dst, left, right
+    struct TACInstr* bin_instr = tac_binary_of(binop_to_aluop(op, expr->value_type), dst, left_val, right_val);
+
+    struct TACInstrList instrs = tac_instr_list(NULL);
+    concat_TAC_instrs(&instrs, left_instrs);
+    concat_TAC_instrs(&instrs, right_instrs);
+    tac_emit(&instrs, bin_instr);
+
+    result->type = PLAIN_OPERAND;
+    result->val = dst;
+    return instrs;
+  }
+}
+
+// Lower `lhs = rhs`. The result is the stored value.
+static struct TACInstrList lower_assign_expr(struct Slice* func_name, struct Expr* expr,
+                                             struct ExprResult* result) {
+  struct AssignExpr* assign_expr = &expr->expr.assign_expr;
+  struct ExprResult lhs_result;
+  struct TACInstrList lhs_instrs = expr_to_TAC(func_name, assign_expr->left, &lhs_result);
+
+  struct Val* rhs_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstrList rhs_instrs = expr_to_TAC_convert(func_name, assign_expr->right, rhs_val);
+
+  struct TACInstrList instrs = tac_instr_list(NULL);
+  concat_TAC_instrs(&instrs, lhs_instrs);
+  concat_TAC_instrs(&instrs, rhs_instrs);
+
+  if (lhs_result.type == PLAIN_OPERAND) {
+    // AST:
+    // lhs = rhs (plain lvalue)
+    // TAC:
+    // <lhs lvalue>
+    // <rhs>
+    // Copy lhs, rhs    or VolatileWrite when lhs is volatile
+    bool lhs_volatile = val_is_volatile_var(lhs_result.val);
+    struct TACInstr* copy_instr = tac_copy_of(lhs_volatile ? TACVOLATILE_WRITE : TACCOPY, lhs_result.val, rhs_val);
+    tac_emit(&instrs, copy_instr);
+
+    result->type = PLAIN_OPERAND;
+    // A volatile assignment yields the stored value. Re-reading the object
+    // would be a second volatile access.
+    result->val = lhs_volatile ? rhs_val : lhs_result.val;
+    return instrs;
+  }
+
+  if (lhs_result.type == DEREFERENCED_POINTER || lhs_result.type == SUB_OBJECT) {
+    // AST:
+    // *ptr = rhs  OR  struct.field = rhs  OR  ptr->field = rhs
+    // TAC:
+    // <ptr or base>
+    // <rhs>
+    // Store [ptr], rhs  or  CopyToOffset base, offset, rhs
+    // (volatile forms when the object is volatile)
+    concat_TAC_instrs(&instrs, store_indirect_lvalue(&lhs_result, assign_expr->left->value_type,
+                                                     rhs_val));
+    result->type = PLAIN_OPERAND;
+    result->val = rhs_val;
+    return instrs;
+  }
+
+  tac_error_at(expr->loc, "invalid assignment target");
+  return tac_instr_list(NULL);
+}
+
+// Lower postfix ++/--: the result is the value before the update.
+static struct TACInstrList lower_post_assign_expr(struct Slice* func_name, struct Expr* expr,
+                                                  struct ExprResult* result) {
+  struct PostAssignExpr* post_assign = &expr->expr.post_assign_expr;
+  if (post_assign->expr == NULL) {
+    tac_error_at(expr->loc, "post-assignment requires an lvalue");
+    return tac_instr_list(NULL);
+  }
+
+  struct ExprResult lhs_result;
+  struct TACInstrList lhs_instrs = expr_to_TAC(func_name, post_assign->expr, &lhs_result);
+
+  enum BinOp bin_op = (post_assign->op == POST_INC) ? ADD_OP : SUB_OP;
+  struct Val* step_val = tac_make_const(1, tac_builtin_type(INT_TYPE));
+  if (is_pointer_type(expr->value_type)) {
+    struct Type* ref_type = expr->value_type->type_data.pointer_type.referenced_type;
+    step_val = tac_make_const((uint64_t)get_type_size(ref_type),
+                              tac_builtin_type(INT_TYPE));
+  }
+
+  struct Val* old_val = make_temp(func_name, expr->value_type);
+  struct TACInstrList instrs = tac_instr_list(NULL);
+  concat_TAC_instrs(&instrs, lhs_instrs);
+
+  if (lhs_result.type == PLAIN_OPERAND) {
+    struct Val* src = lhs_result.val;
+    bool src_volatile = val_is_volatile_var(src);
+
+    // AST:
+    // x++ or x--
+    // TAC:
+    // Copy old, x          or VolatileRead when x is volatile
+    // Binary op new, old, step
+    // Copy x, new          or VolatileWrite when x is volatile
+    struct TACInstr* copy_instr = tac_copy_of(src_volatile ? TACVOLATILE_READ : TACCOPY, old_val, src);
+    tac_emit(&instrs, copy_instr);
+
+    struct Val* updated = src_volatile ? make_temp(func_name, unqualify_type(expr->value_type)) : src;
+    struct TACInstr* bin_instr = tac_binary_of(binop_to_aluop(bin_op, expr->value_type), updated, src_volatile ? old_val : src, step_val);
+    tac_emit(&instrs, bin_instr);
+
+    if (src_volatile) {
+      struct TACInstr* write_instr = tac_copy_of(TACVOLATILE_WRITE, src, updated);
+      tac_emit(&instrs, write_instr);
+    }
+
+    result->type = PLAIN_OPERAND;
+    result->val = old_val;
+    return instrs;
+  }
+
+  if (lhs_result.type == DEREFERENCED_POINTER || lhs_result.type == SUB_OBJECT) {
+    // Preserve the original value as the result of postfix update while
+    // writing the incremented/decremented value to the same lvalue.
+    concat_TAC_instrs(&instrs,
+                      load_indirect_lvalue(&lhs_result, expr->value_type, old_val));
+
+    struct Val* new_val = make_temp(func_name, expr->value_type);
+    struct TACInstr* bin_instr = tac_binary_of(binop_to_aluop(bin_op, expr->value_type), new_val, old_val, step_val);
+    tac_emit(&instrs, bin_instr);
+
+    concat_TAC_instrs(&instrs,
+                      store_indirect_lvalue(&lhs_result, expr->value_type, new_val));
+
+    result->type = PLAIN_OPERAND;
+    result->val = old_val;
+    return instrs;
+  }
+
+  tac_error_at(expr->loc, "post-assignment requires an lvalue");
+  return tac_instr_list(NULL);
+}
+
+// Lower `cond ? left : right` with branches so only one arm is evaluated.
+static struct TACInstrList lower_conditional_expr(struct Slice* func_name, struct Expr* expr,
+                                                  struct ExprResult* result) {
+  struct ConditionalExpr* cond_expr = &expr->expr.conditional_expr;
+
+  struct TACInstrList instrs = tac_instr_list(NULL);
+
+  struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstrList cond_instrs = expr_to_TAC_convert(func_name, cond_expr->condition, cond_val);
+  concat_TAC_instrs(&instrs, cond_instrs);
+
+  struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstrList left_instrs = expr_to_TAC_convert(func_name, cond_expr->left, left_val);
+
+  struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstrList right_instrs = expr_to_TAC_convert(func_name, cond_expr->right, right_val);
+
+  struct Slice* else_label = tac_make_label(func_name, "else");
+  struct Slice* end_label = tac_make_label(func_name, "end");
+  struct Val* dst = make_temp(func_name, expr->value_type);
+
+  // AST:
+  // cond ? left : right
+  // TAC:
+  // <cond>
+  // CondJump CondE cond, 0, else
+  // <left>
+  // Copy dst, left (if not void)
+  // Jump end
+  // Label else
+  // <right>
+  // Copy dst, right (if not void)
+  // Label end
+
+  struct TACInstr* cond_jump_instr = tac_cond_jump_of(CondE, cond_val, tac_make_const(0, cond_val->type), else_label);
+  tac_emit(&instrs, cond_jump_instr);
+
+  concat_TAC_instrs(&instrs, left_instrs);
+
+  if (expr->value_type->type != VOID_TYPE){
+    struct TACInstr* copy_left = tac_copy_of(TACCOPY, dst, left_val);
+    tac_emit(&instrs, copy_left);
+  }
+
+  struct TACInstr* jump_end = tac_jump_to(end_label);
+  tac_emit(&instrs, jump_end);
+
+  struct TACInstr* else_label_instr = tac_label_at(else_label);
+  tac_emit(&instrs, else_label_instr);
+
+  concat_TAC_instrs(&instrs, right_instrs);
+
+  if (expr->value_type->type != VOID_TYPE){
+    struct TACInstr* copy_right = tac_copy_of(TACCOPY, dst, right_val);
+    tac_emit(&instrs, copy_right);
+  }
+
+  struct TACInstr* end_label_instr = tac_label_at(end_label);
+  tac_emit(&instrs, end_label_instr);
+
+  result->type = PLAIN_OPERAND;
+  result->val = dst;
+  return instrs;
+}
+
+// Lower an integer literal to a typed constant.
+static struct TACInstrList lower_lit_expr(struct Slice* func_name, struct Expr* expr,
+                                          struct ExprResult* result) {
+  struct LitExpr* lit = &expr->expr.lit_expr;
+  uint64_t const_value = 0;
+  switch (lit->type) {
+    case INT_CONST:
+      const_value = (uint64_t)(int64_t)lit->value.int_val;
+      break;
+    case UINT_CONST:
+      const_value = (uint64_t)lit->value.uint_val;
+      break;
+    case LONG_CONST:
+      const_value = (uint64_t)(int64_t)lit->value.long_val;
+      break;
+    case ULONG_CONST:
+      const_value = (uint64_t)lit->value.ulong_val;
+      break;
+    default:
+      tac_error_at(expr->loc, "unknown literal type in TAC lowering");
+      return tac_instr_list(NULL);
+  }
+
+  result->type = PLAIN_OPERAND;
+  result->val = tac_make_const(const_value, expr->value_type);
+  return tac_instr_list(NULL);
+}
+
+// Lower a unary operator; `!` becomes a comparison against zero.
+static struct TACInstrList lower_unary_expr(struct Slice* func_name, struct Expr* expr,
+                                            struct ExprResult* result) {
+  struct UnaryExpr* unary_expr = &expr->expr.un_expr;
+  if (unary_expr->op == BOOL_NOT) {
+    struct Val* src_val = (struct Val*)arena_alloc(sizeof(struct Val));
+    struct TACInstrList src_instrs = expr_to_TAC_convert(func_name, unary_expr->expr, src_val);
+
+    struct Val* dst = make_temp(func_name, expr->value_type);
+    struct Slice* end_label = tac_make_label(func_name, "end");
+
+    struct TACInstrList instrs = tac_instr_list(NULL);
+
+    // AST:
+    // !expr
+    // TAC:
+    // Copy dst, 1
+    // <expr>
+    // CondJump CondE src, 0, end
+    // Copy dst, 0
+    // Label end
+    struct TACInstr* init_copy = tac_copy_of(TACCOPY, dst, tac_make_const(1, tac_builtin_type(INT_TYPE)));
+    tac_emit(&instrs, init_copy);
+    concat_TAC_instrs(&instrs, src_instrs);
+
+    struct TACInstr* cond_jump_instr = tac_cond_jump_of(CondE, src_val, tac_make_const(0, src_val->type), end_label);
+
+    struct TACInstr* clear_copy = tac_copy_of(TACCOPY, dst, tac_make_const(0, tac_builtin_type(INT_TYPE)));
+
+    struct TACInstr* end_label_instr = tac_label_at(end_label);
+
+    tac_emit(&instrs, cond_jump_instr);
+    tac_emit(&instrs, clear_copy);
+    tac_emit(&instrs, end_label_instr);
+
+    result->type = PLAIN_OPERAND;
+    result->val = dst;
+    return instrs;
+  }
+
+  struct Val* src_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstrList src_instrs = expr_to_TAC_convert(func_name, unary_expr->expr, src_val);
+  struct Val* dst = make_temp(func_name, expr->value_type);
+
+  // AST:
+  // op expr
+  // TAC:
+  // <expr>
+  // Unary op dst, src
+  struct TACInstr* un_instr = tac_unary_of(unary_expr->op, dst, src_val);
+
+  struct TACInstrList instrs = tac_instr_list(NULL);
+  concat_TAC_instrs(&instrs, src_instrs);
+  tac_emit(&instrs, un_instr);
+
+  result->type = PLAIN_OPERAND;
+  result->val = dst;
+  return instrs;
+}
+
+// Lower a cast: truncation, sign or zero extension, or a plain copy.
+static struct TACInstrList lower_cast_expr(struct Slice* func_name, struct Expr* expr,
+                                           struct ExprResult* result) {
+  struct CastExpr* cast_expr = &expr->expr.cast_expr;
+  struct Val* src_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstrList src_instrs = expr_to_TAC_convert(func_name, cast_expr->expr, src_val);
+
+  if (cast_expr->target->type == VOID_TYPE) {
+    // Casting to void is a no-op.
+    result->type = PLAIN_OPERAND;
+    result->val = src_val;
+    return src_instrs;
+  }
+
+  size_t target_size = get_type_size(cast_expr->target);
+  size_t src_size = get_type_size(cast_expr->expr->value_type);
+  if (target_size == 0 || src_size == 0) {
+    tac_error_at(expr->loc, "unsupported cast between sizes %zu and %zu", target_size, src_size);
+    return tac_instr_list(NULL);
+  }
+
+  if (target_size == src_size ||
+    (target_size > src_size && is_unsigned_type(cast_expr->expr->value_type))) {
+    // No-op cast between same-size types, or zero-extend to larger unsigned type.
+    // AST:
+    // (T)expr
+    // TAC:
+    // <expr>
+    result->type = PLAIN_OPERAND;
+    result->val = src_val;
+    return src_instrs;
+  }
+
+  if (target_size < src_size) {
+    // Narrow the value to the destination width before storing it.
+    struct Val* dst = make_temp(func_name, cast_expr->target);
+    // AST:
+    // (T)expr
+    // TAC:
+    // <expr>
+    // Trunc dst, src
+
+    struct TACInstr* trunc_instr = tac_instr_create(TACTRUNC);
+    trunc_instr->instr.tac_trunc.dst = dst;
+    trunc_instr->instr.tac_trunc.src = src_val;
+    trunc_instr->instr.tac_trunc.target_size = target_size;
+
+
+    tac_emit(&src_instrs, trunc_instr);
+
+    result->type = PLAIN_OPERAND;
+    result->val = dst;
+    return src_instrs;
+  }
+
+  // Only widening a signed source remains (equal sizes and unsigned widening
+  // were copies above, narrowing was a truncation), so sign-extend.
+  // AST:
+  // (T)expr
+  // TAC:
+  // <expr>
+  // Extend dst, src
+  struct Val* dst = make_temp(func_name, cast_expr->target);
+  struct TACInstr* extend_instr = tac_instr_create(TACEXTEND);
+  extend_instr->instr.tac_extend.dst = dst;
+  extend_instr->instr.tac_extend.src = src_val;
+  extend_instr->instr.tac_extend.src_size = src_size;
+  tac_emit(&src_instrs, extend_instr);
+
+  result->type = PLAIN_OPERAND;
+  result->val = dst;
+  return src_instrs;
+}
+
+// Lower `&expr`; for lvalues that are already addresses no code is needed.
+static struct TACInstrList lower_addr_of_expr(struct Slice* func_name, struct Expr* expr,
+                                              struct ExprResult* result) {
+  struct AddrOfExpr* addr_expr = &expr->expr.addr_of_expr;
+  struct ExprResult inner_result;
+  struct TACInstrList instrs = expr_to_TAC(func_name, addr_expr->expr, &inner_result);
+
+  if (inner_result.type == PLAIN_OPERAND) {
+    struct Val* dst = make_temp(func_name, expr->value_type);
+    // AST:
+    // &lvalue
+    // TAC:
+    // <lvalue>
+    // GetAddress dst, lvalue
+    struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
+    addr_instr->instr.tac_get_address.dst = dst;
+    addr_instr->instr.tac_get_address.src = inner_result.val;
+    tac_emit(&instrs, addr_instr);
+
+    result->type = PLAIN_OPERAND;
+    result->val = dst;
+    return instrs;
+  }
+
+  if (inner_result.type == DEREFERENCED_POINTER) {
+    // &(*p) collapses to p, so reuse the pointer operand directly.
+    result->type = PLAIN_OPERAND;
+    result->val = inner_result.val;
+    return instrs;
+  }
+
+  if (inner_result.type == SUB_OBJECT) {
+    struct Val* dst = make_temp(func_name, expr->value_type);
+    // AST:
+    // &struct.field  OR  &ptr->field
+    // TAC:
+    // <base_ptr>
+    // GetAddress dst, base_ptr
+    // Binary Add dst, dst, offset
+    struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
+    addr_instr->instr.tac_get_address.dst = dst;
+    addr_instr->instr.tac_get_address.src = tac_make_var(inner_result.sub_object_base, 
+      tac_builtin_type(UINT_TYPE));
+
+
+
+    struct TACInstr* offset_instr = tac_binary_of(ALU_ADD, dst, dst, tac_make_const((uint64_t)inner_result.sub_object_offset, tac_builtin_type(UINT_TYPE)));
+
+    tac_emit(&instrs, addr_instr);
+    tac_emit(&instrs, offset_instr);
+
+    result->type = PLAIN_OPERAND;
+    result->val = dst;
+    return instrs;
+  }
+
+  tac_error_at(expr->loc, "invalid address-of operand");
+  return tac_instr_list(NULL);
+}
+
+// Lower `array[index]` as a dereference of scaled pointer arithmetic.
+static struct TACInstrList lower_subscript_expr(struct Slice* func_name, struct Expr* expr,
+                                                struct ExprResult* result) {
+  struct SubscriptExpr* sub_expr = &expr->expr.subscript_expr;
+  struct Val* base_ptr_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstrList base_ptr_instrs = expr_to_TAC_convert(func_name, sub_expr->array, base_ptr_val);
+
+  struct Val* index_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstrList index_instrs = expr_to_TAC_convert(func_name, sub_expr->index, index_val);
+
+  struct TACInstrList instrs = tac_instr_list(NULL);
+  concat_TAC_instrs(&instrs, base_ptr_instrs);
+  concat_TAC_instrs(&instrs, index_instrs);
+
+  // AST:
+  // base_ptr[index]
+  // TAC:
+  // <base_ptr>
+  // <index>
+  // Binary Mul offset = index * sizeof(T)
+  // Binary Add addr = base_ptr + offset
+  struct Type* ref_type = expr->value_type;
+  size_t scale = get_type_size(ref_type);
+  struct Val* offset = make_temp(func_name, index_val->type);
+
+  struct TACInstr* mul_instr = tac_binary_of(binop_to_aluop(MUL_OP, index_val->type), offset, index_val, tac_make_const((uint64_t)scale, index_val->type));
+  tac_emit(&instrs, mul_instr);
+
+  struct Val* addr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
+  struct TACInstr* add_instr = tac_binary_of(binop_to_aluop(ADD_OP, addr->type), addr, base_ptr_val, offset);
+  tac_emit(&instrs, add_instr);
+
+  result->type = DEREFERENCED_POINTER;
+  result->val = addr;
+  return instrs;
+}
+
+// Lower a string literal to its static array (or a pointer to it).
+static struct TACInstrList lower_string_expr(struct Slice* func_name, struct Expr* expr,
+                                             struct ExprResult* result) {
+  struct StringExpr* str_expr = &expr->expr.string_expr;
+  struct Val* str_label = make_str_label(str_expr);
+
+  struct IdentAttr* const_attr = arena_alloc(sizeof(struct IdentAttr));
+  const_attr->attr_type = CONST_ATTR;
+  const_attr->is_defined = true;
+  const_attr->storage = STATIC;
+  const_attr->init.init_type = INITIAL;
+  const_attr->init.init_list = arena_alloc(sizeof(struct InitList));
+  const_attr->init.init_list->next = NULL;
+  const_attr->init.init_list->value = arena_alloc(sizeof(struct StaticInit));
+  const_attr->init.init_list->value->int_type = STRING_INIT;
+  const_attr->init.init_list->value->value.string = str_expr->string;
+  // Ensure the emitted data includes the null terminator via explicit padding.
+  size_t array_size = str_expr->string->len + 1;
+  size_t element_size = get_type_size(&kCharType);
+  if (str_expr->string->len < array_size) {
+    struct InitList* pad_node = arena_alloc(sizeof(struct InitList));
+    pad_node->value = arena_alloc(sizeof(struct StaticInit));
+    pad_node->value->int_type = ZERO_INIT;
+    pad_node->value->value.num = (array_size - str_expr->string->len) * element_size;
+    pad_node->next = NULL;
+    const_attr->init.init_list->next = pad_node;
+  }
+
+  symbol_table_insert(global_symbol_table, str_label->val.var_name, 
+    expr->value_type, const_attr);
+
+  result->type = PLAIN_OPERAND;
+  result->val = tac_make_var(str_label->val.var_name, expr->value_type);
+  return tac_instr_list(NULL);
+}
+
+// Lower a GNU statement expression; its value is the last expression statement.
+static struct TACInstrList lower_stmt_expr_expr(struct Slice* func_name, struct Expr* expr,
+                                                struct ExprResult* result) {
+  struct StmtExpr* stmt_expr = &expr->expr.stmt_expr;
+  if (stmt_expr->block == NULL) {
+    tac_error_at(expr->loc, "empty statement expression in TAC lowering");
+    return tac_instr_list(NULL);
+  }
+
+  struct Block* last_item = stmt_expr->block;
+  while (last_item->next != NULL) {
+    last_item = last_item->next;
+  }
+
+  struct TACInstrList instrs = tac_instr_list(NULL);
+  size_t enclosing_cleanup_count = active_cleanup_count;
+
+  for (struct Block* cur = stmt_expr->block; cur != NULL; cur = cur->next) {
+    // loop though each item here instead of doing it recursively,
+    // that way we can get the result from the last item easily
+    struct TACInstrList item_instrs;
+    bool is_last = (cur == last_item);
+
+    switch (cur->item->type) {
+      case STMT_ITEM: {
+        struct Statement* stmt = cur->item->item.stmt;
+        if (is_last && stmt->type == EXPR_STMT) {
+          // Last expression statement provides the statement-expression value.
+          struct Expr* tail_expr = stmt->statement.expr_stmt.expr;
+          if (expr->value_type->type == VOID_TYPE) {
+            item_instrs = expr_to_TAC_convert(func_name, tail_expr, NULL);
+            result->type = PLAIN_OPERAND;
+            result->val = NULL;
+          } else {
+            struct Val* dst = make_temp(func_name, expr->value_type);
+            item_instrs = expr_to_TAC_convert(func_name, tail_expr, dst);
+            result->type = PLAIN_OPERAND;
+            result->val = dst;
+          }
+        } else {
+          item_instrs = stmt_to_TAC(func_name, stmt);
+          if (is_last) {
+            result->type = PLAIN_OPERAND;
+            result->val = NULL;
+          }
+        }
+
+        if (debug_info_enabled) {
+          struct TACInstr* boundary_before = tac_instr_create(TACBOUNDARY);
+          boundary_before->instr.tac_boundary.loc = stmt->loc;
+          struct TACInstrList boundary_before_list = tac_instr_list(boundary_before);
+          concat_TAC_instrs(&boundary_before_list, item_instrs);
+          item_instrs = boundary_before_list;
+        }
+        break;
+      }
+      case DCLR_ITEM: {
+        item_instrs = local_dclr_to_TAC(func_name, cur->item->item.dclr);
+        if (cur->item->item.dclr->type == VAR_DCLR) {
+          note_cleanup_declaration(&cur->item->item.dclr->dclr.var_dclr);
+        }
+        if (debug_info_enabled) {
+          const char* loc = declaration_loc(cur->item->item.dclr);
+          if (loc != NULL) {
+            struct TACInstr* boundary_dclr = tac_instr_create(TACBOUNDARY);
+            boundary_dclr->instr.tac_boundary.loc = loc;
+            struct TACInstrList boundary_dclr_list = tac_instr_list(boundary_dclr);
+            concat_TAC_instrs(&boundary_dclr_list, item_instrs);
+            item_instrs = boundary_dclr_list;
+          }
+        }
+        if (is_last) {
+          result->type = PLAIN_OPERAND;
+          result->val = NULL;
+        }
+        break;
+      }
+      default:
+        tac_error_at(expr->loc, "invalid block item type in statement expression");
+        return tac_instr_list(NULL);
+    }
+
+    concat_TAC_instrs(&instrs, item_instrs);
+  }
+
+  active_cleanup_count = enclosing_cleanup_count;
+  return instrs;
+}
+
+// Lower `object.member` to a sub-object of the containing aggregate.
+static struct TACInstrList lower_dot_expr_expr(struct Slice* func_name, struct Expr* expr,
+                                               struct ExprResult* result) {
+  struct DotExpr* dot_expr = &expr->expr.dot_expr;
+  struct ExprResult* base_result = (struct ExprResult*)arena_alloc(sizeof(struct ExprResult));
+  struct TACInstrList base_instrs = expr_to_TAC(func_name, dot_expr->struct_expr, base_result);
+
+  struct Type* base_type = dot_expr->struct_expr->value_type;
+  struct MemberEntry* field_entry = get_struct_member(base_type, dot_expr->member);
+  if (field_entry == NULL) {
+    tac_error_at(expr->loc, "struct/union has no field named '%.*s'", (int)dot_expr->member->len, dot_expr->member->start);
+    return tac_instr_list(NULL);
+  }
+
+  size_t field_offset = field_entry->offset;
+
+  struct TACInstrList instrs = base_instrs;
+
+  switch (base_result->type) {
+    case PLAIN_OPERAND:
+      // AST:
+      // base.field
+      // TAC:
+      // <base>
+      // Binary Add addr = base + offset
+      if (base_result->val->val_type != VARIABLE) {
+        tac_error_at(expr->loc, "invalid base expression for dot operator");
+        return tac_instr_list(NULL);
+      }
+      result->type = SUB_OBJECT;  
+      result->sub_object_base = base_result->val->val.var_name;
+      result->sub_object_offset = field_offset;
+      return instrs;
+    case DEREFERENCED_POINTER:
+      struct Val* dst_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
+      // AST:
+      // (base_ptr)->field
+      // TAC:
+      // <base_ptr>
+      // Binary Add dst_ptr = base_ptr + offset
+      struct TACInstr* add_instr = tac_binary_of(binop_to_aluop(ADD_OP, dst_ptr->type), dst_ptr, base_result->val, tac_make_const((uint64_t)field_offset, tac_builtin_type(UINT_TYPE)));
+      tac_emit(&instrs, add_instr);
+
+      result->type = DEREFERENCED_POINTER;
+      result->val = dst_ptr;
+      return instrs;
+    case SUB_OBJECT:
+      // AST:
+      // base.sub_object.field
+      // TAC:
+      // <base.field>
+      result->type = SUB_OBJECT;
+      result->sub_object_base = base_result->sub_object_base;
+      result->sub_object_offset = base_result->sub_object_offset + field_offset;
+      return instrs;
+    default:
+      tac_error_at(expr->loc, "invalid base expression for dot operator");
+      return tac_instr_list(NULL);
+  }
+}
+
+// Lower `pointer->member` to a sub-object reached through the pointer.
+static struct TACInstrList lower_arrow_expr_expr(struct Slice* func_name, struct Expr* expr,
+                                                 struct ExprResult* result) {
+  // AST:
+  // base_ptr->field
+  // TAC:
+  // <base_ptr>
+  // Binary Add dst_ptr = base_ptr + offset
+  struct ArrowExpr* arrow_expr = &expr->expr.arrow_expr;
+  struct Val* base_ptr_val = (struct Val*)arena_alloc(sizeof(struct Val));
+  struct TACInstrList base_ptr_instrs = expr_to_TAC_convert(func_name, arrow_expr->pointer_expr, base_ptr_val);
+  struct Type* base_type = arrow_expr->pointer_expr->value_type;
+  if (base_type->type != POINTER_TYPE) {
+    tac_error_at(expr->loc, "arrow operator requires pointer to struct/union");
+    return tac_instr_list(NULL);
+  }
+  base_type = base_type->type_data.pointer_type.referenced_type;
+  struct MemberEntry* field_entry = get_struct_member(base_type, arrow_expr->member);
+  if (field_entry == NULL) {
+    tac_error_at(expr->loc, "struct/union has no field named '%.*s'", (int)arrow_expr->member->len, arrow_expr->member->start);
+    return tac_instr_list(NULL);
+  }
+  size_t field_offset = field_entry->offset;
+  struct TACInstrList instrs = base_ptr_instrs;
+  struct Val* dst_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
+
+  struct TACInstr* add_instr = tac_binary_of(binop_to_aluop(ADD_OP, dst_ptr->type), dst_ptr, base_ptr_val, tac_make_const((uint64_t)field_offset, tac_builtin_type(UINT_TYPE)));
+  tac_emit(&instrs, add_instr);
+  result->type = DEREFERENCED_POINTER;
+  result->val = dst_ptr;
+  return instrs;
 }
 
 // Lower an expression into TAC instructions and an ExprResult.
@@ -1899,763 +2910,18 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
   }
 
   switch (expr->type) {
-    case BINARY: {
-      struct BinaryExpr* bin_expr = &expr->expr.bin_expr;
-      enum BinOp op = bin_expr->op;
-
-      if (op == BOOL_AND || op == BOOL_OR) {
-        struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
-        struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
-        struct TACInstrList left_instrs = expr_to_TAC_convert(func_name, bin_expr->left, left_val);
-        struct TACInstrList right_instrs = expr_to_TAC_convert(func_name, bin_expr->right, right_val);
-
-        struct Val* dst = make_temp(func_name, expr->value_type);
-        struct Slice* end_label = tac_make_label(func_name, "end");
-
-        struct TACInstrList instrs = tac_instr_list(NULL);
-
-        // AST:
-        // left && right   OR   left || right
-        // TAC:
-        // Copy dst, <short-circuit default>
-        // <left>
-        // CondJump <cond> left, 0, end
-        // <right>
-        // CondJump <cond> right, 0, end
-        // Copy dst, <final>
-        // Label end
-        // Default result matches the short-circuit outcome before evaluating RHS.
-        struct TACInstr* init_copy = tac_instr_create(TACCOPY);
-        init_copy->instr.tac_copy.dst = dst;
-        init_copy->instr.tac_copy.src =
-            tac_make_const(op != BOOL_AND, tac_builtin_type(INT_TYPE));
-        concat_TAC_instrs(&instrs, tac_instr_list(init_copy));
-        concat_TAC_instrs(&instrs, left_instrs);
-
-        // If the left side decides the result, skip RHS evaluation.
-        struct TACInstr* jump_left = tac_instr_create(TACCOND_JUMP);
-        jump_left->instr.tac_cond_jump.src1 = left_val;
-        jump_left->instr.tac_cond_jump.src2 = tac_make_const(0, left_val->type);
-        jump_left->instr.tac_cond_jump.condition = (op == BOOL_AND) ? CondE : CondNE;
-        jump_left->instr.tac_cond_jump.label = end_label;
-
-        concat_TAC_instrs(&instrs, tac_instr_list(jump_left));
-        concat_TAC_instrs(&instrs, right_instrs);
-
-        struct TACInstr* jump_right = tac_instr_create(TACCOND_JUMP);
-        jump_right->instr.tac_cond_jump.src1 = right_val;
-        jump_right->instr.tac_cond_jump.src2 = tac_make_const(0, right_val->type);
-        jump_right->instr.tac_cond_jump.condition = (op == BOOL_AND) ? CondE : CondNE;
-        jump_right->instr.tac_cond_jump.label = end_label;
-
-        concat_TAC_instrs(&instrs, tac_instr_list(jump_right));
-
-        struct TACInstr* final_copy = tac_instr_create(TACCOPY);
-        final_copy->instr.tac_copy.dst = dst;
-        final_copy->instr.tac_copy.src =
-            tac_make_const(op == BOOL_AND, tac_builtin_type(INT_TYPE));
-
-        struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
-        end_label_instr->instr.tac_label.label = end_label;
-
-        concat_TAC_instrs(&instrs, tac_instr_list(final_copy));
-        concat_TAC_instrs(&instrs, tac_instr_list(end_label_instr));
-
-        result->type = PLAIN_OPERAND;
-        result->val = dst;
-        return instrs;
-      }
-
-      if (is_relational_op(op)) {
-        return relational_to_TAC(func_name, expr, op, bin_expr->left, bin_expr->right, result);
-      }
-
-      if (is_compound_op(op)) {
-        struct ExprResult lhs_result;
-        struct TACInstrList lhs_instrs = expr_to_TAC(func_name, bin_expr->left, &lhs_result);
-
-        struct Val* rhs_val = (struct Val*)arena_alloc(sizeof(struct Val));
-        struct TACInstrList rhs_instrs = expr_to_TAC_convert(func_name, bin_expr->right, rhs_val);
-
-        struct TACInstrList instrs = tac_instr_list(NULL);
-        concat_TAC_instrs(&instrs, lhs_instrs);
-        concat_TAC_instrs(&instrs, rhs_instrs);
-
-        enum BinOp base_op = compound_to_binop(op);
-        struct Type* lhs_type = bin_expr->left->value_type;
-        struct Type* rhs_type = bin_expr->right->value_type;
-        bool pointer_lhs = is_pointer_type(lhs_type);
-        struct Type* op_type = lhs_type;
-        if (!pointer_lhs && is_arithmetic_type(lhs_type) && is_arithmetic_type(rhs_type)) {
-          if (base_op == BIT_SHL || base_op == BIT_SHR) {
-            op_type = lhs_type;
-          } else {
-            op_type = get_common_type(lhs_type, rhs_type);
-            if (op_type == NULL) {
-              op_type = lhs_type;
-            }
-          }
-        }
-
-        if (lhs_result.type == PLAIN_OPERAND) {
-          // AST:
-          // lhs <op>= rhs (plain lvalue)
-          // TAC:
-          // <lhs lvalue>
-          // <rhs>
-          // [volatile] VolatileRead acc, lhs
-          // [optional] Binary Mul scaled = rhs * sizeof(T)
-          // Binary op acc, acc, rhs_or_scaled
-          // [volatile] VolatileWrite lhs, acc
-          bool lhs_volatile = val_is_volatile_var(lhs_result.val);
-          struct Val* acc = lhs_result.val;
-          if (lhs_volatile) {
-            acc = make_temp(func_name, unqualify_type(lhs_type));
-            struct TACInstr* read_instr = tac_instr_create(TACVOLATILE_READ);
-            read_instr->instr.tac_copy.dst = acc;
-            read_instr->instr.tac_copy.src = lhs_result.val;
-            concat_TAC_instrs(&instrs, tac_instr_list(read_instr));
-          }
-          struct Val* rhs_for_op = rhs_val;
-          if (pointer_lhs && (base_op == ADD_OP || base_op == SUB_OP) && is_arithmetic_type(rhs_type)) {
-            struct Type* ref_type = lhs_type->type_data.pointer_type.referenced_type;
-            int scale = (int)get_type_size(ref_type);
-            struct Val* scaled = make_temp(func_name, rhs_type);
-
-            // Scale integer offsets by element size for pointer arithmetic.
-            struct TACInstr* mul_instr = tac_instr_create(TACBINARY);
-            mul_instr->instr.tac_binary.alu_op = binop_to_aluop(MUL_OP, rhs_type);
-            mul_instr->instr.tac_binary.dst = scaled;
-            mul_instr->instr.tac_binary.src1 = rhs_val;
-            mul_instr->instr.tac_binary.src2 =
-                tac_make_const((uint64_t)scale, rhs_type);
-            concat_TAC_instrs(&instrs, tac_instr_list(mul_instr));
-            rhs_for_op = scaled;
-          }
-
-          bool needs_unsigned_div = !pointer_lhs &&
-              (base_op == DIV_OP || base_op == MOD_OP) &&
-              is_signed_type(op_type) &&
-              (get_type_size(op_type) > get_type_size(lhs_type)) &&
-              !is_signed_type(lhs_type);
-          if (needs_unsigned_div) {
-            // Signed long division/modulo with a narrower unsigned lhs must zero-extend before op.
-            // The backend is 32-bit, so emulate by using unsigned ops and fixing the sign.
-            struct TACInstrList div_instrs = emit_unsigned_lhs_signed_divmod(func_name, acc, acc,
-                                                rhs_for_op, rhs_for_op->type,
-                                                base_op == MOD_OP);
-            concat_TAC_instrs(&instrs, div_instrs);
-            if (lhs_volatile) {
-              struct TACInstr* write_instr = tac_instr_create(TACVOLATILE_WRITE);
-              write_instr->instr.tac_copy.dst = lhs_result.val;
-              write_instr->instr.tac_copy.src = acc;
-              concat_TAC_instrs(&instrs, tac_instr_list(write_instr));
-            }
-            result->type = PLAIN_OPERAND;
-            result->val = acc;
-            return instrs;
-          }
-
-          struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
-          bin_instr->instr.tac_binary.alu_op = binop_to_aluop(base_op, op_type);
-          bin_instr->instr.tac_binary.dst = acc;
-          bin_instr->instr.tac_binary.src1 = acc;
-          bin_instr->instr.tac_binary.src2 = rhs_for_op;
-          concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
-
-          if (lhs_volatile) {
-            struct TACInstr* write_instr = tac_instr_create(TACVOLATILE_WRITE);
-            write_instr->instr.tac_copy.dst = lhs_result.val;
-            write_instr->instr.tac_copy.src = acc;
-            concat_TAC_instrs(&instrs, tac_instr_list(write_instr));
-          }
-          result->type = PLAIN_OPERAND;
-          result->val = acc;
-          return instrs;
-        }
-
-        if (lhs_result.type == DEREFERENCED_POINTER) {
-          struct Val* cur = make_temp(func_name, expr->value_type);
-          // AST:
-          // *ptr <op>= rhs
-          // TAC:
-          // Load cur, [ptr]
-          // [optional] Binary Mul scaled = rhs * sizeof(T)
-          // Binary op cur, cur, rhs_or_scaled
-          // Store [ptr], cur
-          // Load lvalue before applying the compound operation.
-          struct TACInstr* load_instr = tac_instr_create(
-              type_is_volatile(lhs_type) ? TACVOLATILE_LOAD : TACLOAD);
-          load_instr->instr.tac_load.dst = cur;
-          load_instr->instr.tac_load.src_ptr = lhs_result.val;
-          concat_TAC_instrs(&instrs, tac_instr_list(load_instr));
-
-          struct Val* rhs_for_op = rhs_val;
-          if (pointer_lhs && (base_op == ADD_OP || base_op == SUB_OP) && is_arithmetic_type(rhs_type)) {
-            struct Type* ref_type = lhs_type->type_data.pointer_type.referenced_type;
-            int scale = (int)get_type_size(ref_type);
-            struct Val* scaled = make_temp(func_name, rhs_type);
-
-            struct TACInstr* mul_instr = tac_instr_create(TACBINARY);
-            mul_instr->instr.tac_binary.alu_op = binop_to_aluop(MUL_OP, rhs_type);
-            mul_instr->instr.tac_binary.dst = scaled;
-            mul_instr->instr.tac_binary.src1 = rhs_val;
-            mul_instr->instr.tac_binary.src2 =
-                tac_make_const((uint64_t)scale, rhs_type);
-            concat_TAC_instrs(&instrs, tac_instr_list(mul_instr));
-            rhs_for_op = scaled;
-          }
-
-          bool needs_unsigned_div = !pointer_lhs &&
-              (base_op == DIV_OP || base_op == MOD_OP) &&
-              is_signed_type(op_type) &&
-              (get_type_size(op_type) > get_type_size(lhs_type)) &&
-              !is_signed_type(lhs_type);
-          if (needs_unsigned_div) {
-            // Use the same unsigned-division emulation before storing back through the pointer.
-            struct TACInstrList div_instrs = emit_unsigned_lhs_signed_divmod(func_name, cur, cur, rhs_for_op,
-                                                rhs_for_op->type, base_op == MOD_OP);
-            concat_TAC_instrs(&instrs, div_instrs);
-
-            struct TACInstr* store_instr = tac_instr_create(
-                type_is_volatile(lhs_type) ? TACVOLATILE_STORE : TACSTORE);
-            store_instr->instr.tac_store.dst_ptr = lhs_result.val;
-            store_instr->instr.tac_store.src = cur;
-            concat_TAC_instrs(&instrs, tac_instr_list(store_instr));
-
-            result->type = PLAIN_OPERAND;
-            result->val = cur;
-            return instrs;
-          }
-
-          struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
-          bin_instr->instr.tac_binary.alu_op = binop_to_aluop(base_op, op_type);
-          bin_instr->instr.tac_binary.dst = cur;
-          bin_instr->instr.tac_binary.src1 = cur;
-          bin_instr->instr.tac_binary.src2 = rhs_for_op;
-          concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
-
-          struct TACInstr* store_instr = tac_instr_create(
-              type_is_volatile(lhs_type) ? TACVOLATILE_STORE : TACSTORE);
-          store_instr->instr.tac_store.dst_ptr = lhs_result.val;
-          store_instr->instr.tac_store.src = cur;
-          concat_TAC_instrs(&instrs, tac_instr_list(store_instr));
-
-          result->type = PLAIN_OPERAND;
-          result->val = cur;
-          return instrs;
-        }
-
-        tac_error_at(expr->loc, "unsupported compound assignment lvalue");
-        return tac_instr_list(NULL);
-      }
-
-      if (op == ADD_OP || op == SUB_OP) {
-        struct Type* left_type = bin_expr->left->value_type;
-        struct Type* right_type = bin_expr->right->value_type;
-
-        bool left_ptr = is_pointer_type(left_type);
-        bool right_ptr = is_pointer_type(right_type);
-
-        struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
-        struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
-        struct TACInstrList left_instrs = expr_to_TAC_convert(func_name, bin_expr->left, left_val);
-        struct TACInstrList right_instrs = expr_to_TAC_convert(func_name, bin_expr->right, right_val);
-
-        struct TACInstrList instrs = tac_instr_list(NULL);
-        concat_TAC_instrs(&instrs, left_instrs);
-        concat_TAC_instrs(&instrs, right_instrs);
-
-        if (!left_ptr && !right_ptr) {
-          // AST:
-          // left +/- right (non-pointer)
-          // TAC:
-          // <left>
-          // <right>
-          // Binary op dst, left, right
-          struct Val* dst = make_temp(func_name, expr->value_type);
-          struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
-          bin_instr->instr.tac_binary.alu_op = binop_to_aluop(op, expr->value_type);
-          bin_instr->instr.tac_binary.dst = dst;
-          bin_instr->instr.tac_binary.src1 = left_val;
-          bin_instr->instr.tac_binary.src2 = right_val;
-          concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
-          result->type = PLAIN_OPERAND;
-          result->val = dst;
-          return instrs;
-        }
-
-        if (op == ADD_OP && left_ptr && is_arithmetic_type(right_type)) {
-          // AST:
-          // ptr + int
-          // TAC:
-          // <ptr>
-          // <int>
-          // Binary Mul scaled = int * sizeof(T)
-          // Binary Add dst, ptr, scaled
-          struct Type* ref_type = left_type->type_data.pointer_type.referenced_type;
-          int scale = (int)get_type_size(ref_type);
-          struct Val* scaled = make_temp(func_name, right_type);
-
-          // Pointer +/- integer uses scaled byte offset.
-          struct TACInstr* mul_instr = tac_instr_create(TACBINARY);
-          mul_instr->instr.tac_binary.alu_op = binop_to_aluop(MUL_OP, right_type);
-          mul_instr->instr.tac_binary.dst = scaled;
-          mul_instr->instr.tac_binary.src1 = right_val;
-          mul_instr->instr.tac_binary.src2 =
-              tac_make_const((uint64_t)scale, right_type);
-          concat_TAC_instrs(&instrs, tac_instr_list(mul_instr));
-
-          struct Val* dst = make_temp(func_name, expr->value_type);
-          struct TACInstr* add_instr = tac_instr_create(TACBINARY);
-          add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, expr->value_type);
-          add_instr->instr.tac_binary.dst = dst;
-          add_instr->instr.tac_binary.src1 = left_val;
-          add_instr->instr.tac_binary.src2 = scaled;
-          concat_TAC_instrs(&instrs, tac_instr_list(add_instr));
-
-          result->type = PLAIN_OPERAND;
-          result->val = dst;
-          return instrs;
-        }
-
-        if (op == ADD_OP && right_ptr && is_arithmetic_type(left_type)) {
-          // AST:
-          // int + ptr
-          // TAC:
-          // <int>
-          // <ptr>
-          // Binary Mul scaled = int * sizeof(T)
-          // Binary Add dst, scaled, ptr
-          struct Type* ref_type = right_type->type_data.pointer_type.referenced_type;
-          int scale = (int)get_type_size(ref_type);
-          struct Val* scaled = make_temp(func_name, left_type);
-
-          struct TACInstr* mul_instr = tac_instr_create(TACBINARY);
-          mul_instr->instr.tac_binary.alu_op = binop_to_aluop(MUL_OP, left_type);
-          mul_instr->instr.tac_binary.dst = scaled;
-          mul_instr->instr.tac_binary.src1 = left_val;
-          mul_instr->instr.tac_binary.src2 =
-              tac_make_const((uint64_t)scale, left_type);
-          concat_TAC_instrs(&instrs, tac_instr_list(mul_instr));
-
-          struct Val* dst = make_temp(func_name, expr->value_type);
-          struct TACInstr* add_instr = tac_instr_create(TACBINARY);
-          add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, expr->value_type);
-          add_instr->instr.tac_binary.dst = dst;
-          add_instr->instr.tac_binary.src1 = scaled;
-          add_instr->instr.tac_binary.src2 = right_val;
-          concat_TAC_instrs(&instrs, tac_instr_list(add_instr));
-
-          result->type = PLAIN_OPERAND;
-          result->val = dst;
-          return instrs;
-        }
-
-        if (op == SUB_OP && left_ptr && is_arithmetic_type(right_type)) {
-          // AST:
-          // ptr - int
-          // TAC:
-          // <ptr>
-          // <int>
-          // Binary Mul scaled = int * sizeof(T)
-          // Binary Sub dst, ptr, scaled
-          struct Type* ref_type = left_type->type_data.pointer_type.referenced_type;
-          int scale = (int)get_type_size(ref_type);
-          struct Val* scaled = make_temp(func_name, right_type);
-
-          struct TACInstr* mul_instr = tac_instr_create(TACBINARY);
-          mul_instr->instr.tac_binary.alu_op = binop_to_aluop(MUL_OP, right_type);
-          mul_instr->instr.tac_binary.dst = scaled;
-          mul_instr->instr.tac_binary.src1 = right_val;
-          mul_instr->instr.tac_binary.src2 =
-              tac_make_const((uint64_t)scale, right_type);
-          concat_TAC_instrs(&instrs, tac_instr_list(mul_instr));
-
-          struct Val* dst = make_temp(func_name, expr->value_type);
-          struct TACInstr* sub_instr = tac_instr_create(TACBINARY);
-          sub_instr->instr.tac_binary.alu_op = binop_to_aluop(SUB_OP, expr->value_type);
-          sub_instr->instr.tac_binary.dst = dst;
-          sub_instr->instr.tac_binary.src1 = left_val;
-          sub_instr->instr.tac_binary.src2 = scaled;
-          concat_TAC_instrs(&instrs, tac_instr_list(sub_instr));
-
-          result->type = PLAIN_OPERAND;
-          result->val = dst;
-          return instrs;
-        }
-
-        tac_error_at(expr->loc, "invalid pointer arithmetic in binary operation");
-        return tac_instr_list(NULL);
-      }
-
-      {
-        struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
-        struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
-        struct TACInstrList left_instrs = expr_to_TAC_convert(func_name, bin_expr->left, left_val);
-        struct TACInstrList right_instrs = expr_to_TAC_convert(func_name, bin_expr->right, right_val);
-
-        struct Val* dst = make_temp(func_name, expr->value_type);
-        // AST:
-        // left <op> right
-        // TAC:
-        // <left>
-        // <right>
-        // Binary op dst, left, right
-        struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
-        bin_instr->instr.tac_binary.alu_op = binop_to_aluop(op, expr->value_type);
-        bin_instr->instr.tac_binary.dst = dst;
-        bin_instr->instr.tac_binary.src1 = left_val;
-        bin_instr->instr.tac_binary.src2 = right_val;
-
-        struct TACInstrList instrs = tac_instr_list(NULL);
-        concat_TAC_instrs(&instrs, left_instrs);
-        concat_TAC_instrs(&instrs, right_instrs);
-        concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
-
-        result->type = PLAIN_OPERAND;
-        result->val = dst;
-        return instrs;
-      }
-    }
-    case ASSIGN: {
-      struct AssignExpr* assign_expr = &expr->expr.assign_expr;
-      struct ExprResult lhs_result;
-      struct TACInstrList lhs_instrs = expr_to_TAC(func_name, assign_expr->left, &lhs_result);
-
-      struct Val* rhs_val = (struct Val*)arena_alloc(sizeof(struct Val));
-      struct TACInstrList rhs_instrs = expr_to_TAC_convert(func_name, assign_expr->right, rhs_val);
-
-      struct TACInstrList instrs = tac_instr_list(NULL);
-      concat_TAC_instrs(&instrs, lhs_instrs);
-      concat_TAC_instrs(&instrs, rhs_instrs);
-
-      if (lhs_result.type == PLAIN_OPERAND) {
-        // AST:
-        // lhs = rhs (plain lvalue)
-        // TAC:
-        // <lhs lvalue>
-        // <rhs>
-        // Copy lhs, rhs    or VolatileWrite when lhs is volatile
-        bool lhs_volatile = val_is_volatile_var(lhs_result.val);
-        struct TACInstr* copy_instr = tac_instr_create(
-            lhs_volatile ? TACVOLATILE_WRITE : TACCOPY);
-        copy_instr->instr.tac_copy.dst = lhs_result.val;
-        copy_instr->instr.tac_copy.src = rhs_val;
-        concat_TAC_instrs(&instrs, tac_instr_list(copy_instr));
-
-        result->type = PLAIN_OPERAND;
-        // A volatile assignment yields the stored value. Re-reading the object
-        // would be a second volatile access.
-        result->val = lhs_volatile ? rhs_val : lhs_result.val;
-        return instrs;
-      }
-
-      if (lhs_result.type == DEREFERENCED_POINTER) {
-        // AST:
-        // *ptr = rhs
-        // TAC:
-        // <ptr>
-        // <rhs>
-        // Store [ptr], rhs    or VolatileStore when the object is volatile
-        struct Type* stored_type = assign_expr->left->value_type;
-        struct TACInstr* store_instr = tac_instr_create(
-            type_is_volatile(stored_type) ? TACVOLATILE_STORE : TACSTORE);
-        store_instr->instr.tac_store.dst_ptr = lhs_result.val;
-        store_instr->instr.tac_store.src = rhs_val;
-        concat_TAC_instrs(&instrs, tac_instr_list(store_instr));
-
-        result->type = PLAIN_OPERAND;
-        result->val = rhs_val;
-        return instrs;
-      }
-
-      if (lhs_result.type == SUB_OBJECT) {
-        // AST:
-        // struct.field = rhs  OR  ptr->field = rhs
-        // TAC:
-        // <base_ptr>
-        // <rhs>
-        // CopyToOffset base_ptr, offset, rhs
-        struct Type* stored_type = assign_expr->left->value_type;
-        struct TACInstr* copy_instr = tac_instr_create(
-            type_is_volatile(stored_type) ? TACVOLATILE_COPY_TO_OFFSET
-                                          : TACCOPY_TO_OFFSET);
-        copy_instr->instr.tac_copy_to_offset.dst = lhs_result.sub_object_base;
-        copy_instr->instr.tac_copy_to_offset.offset = lhs_result.sub_object_offset;
-        copy_instr->instr.tac_copy_to_offset.src = rhs_val;
-        copy_instr->instr.tac_copy_to_offset.dst_type = assign_expr->left->value_type;
-        concat_TAC_instrs(&instrs, tac_instr_list(copy_instr));
-
-        result->type = PLAIN_OPERAND;
-        result->val = rhs_val;
-        return instrs;
-      }
-
-      tac_error_at(expr->loc, "invalid assignment target");
-      return tac_instr_list(NULL);
-    }
-    case POST_ASSIGN: {
-      struct PostAssignExpr* post_assign = &expr->expr.post_assign_expr;
-      if (post_assign->expr == NULL) {
-        tac_error_at(expr->loc, "post-assignment requires an lvalue");
-        return tac_instr_list(NULL);
-      }
-
-      struct ExprResult lhs_result;
-      struct TACInstrList lhs_instrs = expr_to_TAC(func_name, post_assign->expr, &lhs_result);
-
-      enum BinOp bin_op = (post_assign->op == POST_INC) ? ADD_OP : SUB_OP;
-      struct Val* step_val = tac_make_const(1, tac_builtin_type(INT_TYPE));
-      if (is_pointer_type(expr->value_type)) {
-        struct Type* ref_type = expr->value_type->type_data.pointer_type.referenced_type;
-        step_val = tac_make_const((uint64_t)get_type_size(ref_type),
-                                  tac_builtin_type(INT_TYPE));
-      }
-
-      struct Val* old_val = make_temp(func_name, expr->value_type);
-      struct TACInstrList instrs = tac_instr_list(NULL);
-      concat_TAC_instrs(&instrs, lhs_instrs);
-
-      if (lhs_result.type == PLAIN_OPERAND) {
-        struct Val* src = lhs_result.val;
-        bool src_volatile = val_is_volatile_var(src);
-
-        // AST:
-        // x++ or x--
-        // TAC:
-        // Copy old, x          or VolatileRead when x is volatile
-        // Binary op new, old, step
-        // Copy x, new          or VolatileWrite when x is volatile
-        struct TACInstr* copy_instr = tac_instr_create(
-            src_volatile ? TACVOLATILE_READ : TACCOPY);
-        copy_instr->instr.tac_copy.dst = old_val;
-        copy_instr->instr.tac_copy.src = src;
-        concat_TAC_instrs(&instrs, tac_instr_list(copy_instr));
-
-        struct Val* updated = src_volatile ? make_temp(func_name, unqualify_type(expr->value_type)) : src;
-        struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
-        bin_instr->instr.tac_binary.alu_op = binop_to_aluop(bin_op, expr->value_type);
-        bin_instr->instr.tac_binary.dst = updated;
-        bin_instr->instr.tac_binary.src1 = src_volatile ? old_val : src;
-        bin_instr->instr.tac_binary.src2 = step_val;
-        concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
-
-        if (src_volatile) {
-          struct TACInstr* write_instr = tac_instr_create(TACVOLATILE_WRITE);
-          write_instr->instr.tac_copy.dst = src;
-          write_instr->instr.tac_copy.src = updated;
-          concat_TAC_instrs(&instrs, tac_instr_list(write_instr));
-        }
-
-        result->type = PLAIN_OPERAND;
-        result->val = old_val;
-        return instrs;
-      }
-
-      if (lhs_result.type == DEREFERENCED_POINTER) {
-        // AST:
-        // (*ptr)++ or (*ptr)--
-        // TAC:
-        // Load old, [ptr]
-        // Binary new, old, step
-        // Store [ptr], new
-        bool obj_volatile = type_is_volatile(expr->value_type);
-        struct TACInstr* load_instr = tac_instr_create(
-            obj_volatile ? TACVOLATILE_LOAD : TACLOAD);
-        load_instr->instr.tac_load.dst = old_val;
-        load_instr->instr.tac_load.src_ptr = lhs_result.val;
-        concat_TAC_instrs(&instrs, tac_instr_list(load_instr));
-
-        struct Val* new_val = make_temp(func_name, expr->value_type);
-        struct TACInstr* bin_instr = tac_instr_create(TACBINARY);
-        bin_instr->instr.tac_binary.alu_op = binop_to_aluop(bin_op, expr->value_type);
-        bin_instr->instr.tac_binary.dst = new_val;
-        bin_instr->instr.tac_binary.src1 = old_val;
-        bin_instr->instr.tac_binary.src2 = step_val;
-        concat_TAC_instrs(&instrs, tac_instr_list(bin_instr));
-
-        struct TACInstr* store_instr = tac_instr_create(
-            obj_volatile ? TACVOLATILE_STORE : TACSTORE);
-        store_instr->instr.tac_store.dst_ptr = lhs_result.val;
-        store_instr->instr.tac_store.src = new_val;
-        concat_TAC_instrs(&instrs, tac_instr_list(store_instr));
-
-        result->type = PLAIN_OPERAND;
-        result->val = old_val;
-        return instrs;
-      }
-
-      tac_error_at(expr->loc, "post-assignment requires an lvalue");
-      return tac_instr_list(NULL);
-    }
-    case CONDITIONAL: {
-      struct ConditionalExpr* cond_expr = &expr->expr.conditional_expr;
-
-      struct TACInstrList instrs = tac_instr_list(NULL);
-
-      struct Val* cond_val = (struct Val*)arena_alloc(sizeof(struct Val));
-      struct TACInstrList cond_instrs = expr_to_TAC_convert(func_name, cond_expr->condition, cond_val);
-      concat_TAC_instrs(&instrs, cond_instrs);
-
-      struct Val* left_val = (struct Val*)arena_alloc(sizeof(struct Val));
-      struct TACInstrList left_instrs = expr_to_TAC_convert(func_name, cond_expr->left, left_val);
-
-      struct Val* right_val = (struct Val*)arena_alloc(sizeof(struct Val));
-      struct TACInstrList right_instrs = expr_to_TAC_convert(func_name, cond_expr->right, right_val);
-
-      struct Slice* else_label = tac_make_label(func_name, "else");
-      struct Slice* end_label = tac_make_label(func_name, "end");
-      struct Val* dst = make_temp(func_name, expr->value_type);
-
-      // AST:
-      // cond ? left : right
-      // TAC:
-      // <cond>
-      // CondJump CondE cond, 0, else
-      // <left>
-      // Copy dst, left (if not void)
-      // Jump end
-      // Label else
-      // <right>
-      // Copy dst, right (if not void)
-      // Label end
-
-      struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
-      cond_jump_instr->instr.tac_cond_jump.src1 = cond_val;
-      cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, cond_val->type);
-      cond_jump_instr->instr.tac_cond_jump.condition = CondE;
-      cond_jump_instr->instr.tac_cond_jump.label = else_label;
-      concat_TAC_instrs(&instrs, tac_instr_list(cond_jump_instr));
-
-      concat_TAC_instrs(&instrs, left_instrs);
-
-      if (expr->value_type->type != VOID_TYPE){
-        struct TACInstr* copy_left = tac_instr_create(TACCOPY);
-        copy_left->instr.tac_copy.dst = dst;
-        copy_left->instr.tac_copy.src = left_val;
-        concat_TAC_instrs(&instrs, tac_instr_list(copy_left));
-      }
-
-      struct TACInstr* jump_end = tac_instr_create(TACJUMP);
-      jump_end->instr.tac_jump.label = end_label;
-      concat_TAC_instrs(&instrs, tac_instr_list(jump_end));
-
-      struct TACInstr* else_label_instr = tac_instr_create(TACLABEL);
-      else_label_instr->instr.tac_label.label = else_label;
-      concat_TAC_instrs(&instrs, tac_instr_list(else_label_instr));
-
-      concat_TAC_instrs(&instrs, right_instrs);
-
-      if (expr->value_type->type != VOID_TYPE){
-        struct TACInstr* copy_right = tac_instr_create(TACCOPY);
-        copy_right->instr.tac_copy.dst = dst;
-        copy_right->instr.tac_copy.src = right_val;
-        concat_TAC_instrs(&instrs, tac_instr_list(copy_right));
-      }
-
-      struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
-      end_label_instr->instr.tac_label.label = end_label;
-      concat_TAC_instrs(&instrs, tac_instr_list(end_label_instr));
-
-      result->type = PLAIN_OPERAND;
-      result->val = dst;
-      return instrs;
-    }
-    case LIT: {
-      struct LitExpr* lit = &expr->expr.lit_expr;
-      uint64_t const_value = 0;
-      switch (lit->type) {
-        case INT_CONST:
-          const_value = (uint64_t)(int64_t)lit->value.int_val;
-          break;
-        case UINT_CONST:
-          const_value = (uint64_t)lit->value.uint_val;
-          break;
-        case LONG_CONST:
-          const_value = (uint64_t)(int64_t)lit->value.long_val;
-          break;
-        case ULONG_CONST:
-          const_value = (uint64_t)lit->value.ulong_val;
-          break;
-        default:
-          tac_error_at(expr->loc, "unknown literal type in TAC lowering");
-          return tac_instr_list(NULL);
-      }
-
-      result->type = PLAIN_OPERAND;
-      result->val = tac_make_const(const_value, expr->value_type);
-      return tac_instr_list(NULL);
-    }
-    case UNARY: {
-      struct UnaryExpr* unary_expr = &expr->expr.un_expr;
-      if (unary_expr->op == BOOL_NOT) {
-        struct Val* src_val = (struct Val*)arena_alloc(sizeof(struct Val));
-        struct TACInstrList src_instrs = expr_to_TAC_convert(func_name, unary_expr->expr, src_val);
-
-        struct Val* dst = make_temp(func_name, expr->value_type);
-        struct Slice* end_label = tac_make_label(func_name, "end");
-
-        struct TACInstrList instrs = tac_instr_list(NULL);
-
-        // AST:
-        // !expr
-        // TAC:
-        // Copy dst, 1
-        // <expr>
-        // CondJump CondE src, 0, end
-        // Copy dst, 0
-        // Label end
-        struct TACInstr* init_copy = tac_instr_create(TACCOPY);
-        init_copy->instr.tac_copy.dst = dst;
-        init_copy->instr.tac_copy.src = tac_make_const(1, tac_builtin_type(INT_TYPE));
-        concat_TAC_instrs(&instrs, tac_instr_list(init_copy));
-        concat_TAC_instrs(&instrs, src_instrs);
-
-        struct TACInstr* cond_jump_instr = tac_instr_create(TACCOND_JUMP);
-        cond_jump_instr->instr.tac_cond_jump.src1 = src_val;
-        cond_jump_instr->instr.tac_cond_jump.src2 = tac_make_const(0, src_val->type);
-        cond_jump_instr->instr.tac_cond_jump.condition = CondE;
-        cond_jump_instr->instr.tac_cond_jump.label = end_label;
-
-        struct TACInstr* clear_copy = tac_instr_create(TACCOPY);
-        clear_copy->instr.tac_copy.dst = dst;
-        clear_copy->instr.tac_copy.src = tac_make_const(0, tac_builtin_type(INT_TYPE));
-
-        struct TACInstr* end_label_instr = tac_instr_create(TACLABEL);
-        end_label_instr->instr.tac_label.label = end_label;
-
-        concat_TAC_instrs(&instrs, tac_instr_list(cond_jump_instr));
-        concat_TAC_instrs(&instrs, tac_instr_list(clear_copy));
-        concat_TAC_instrs(&instrs, tac_instr_list(end_label_instr));
-
-        result->type = PLAIN_OPERAND;
-        result->val = dst;
-        return instrs;
-      }
-
-      struct Val* src_val = (struct Val*)arena_alloc(sizeof(struct Val));
-      struct TACInstrList src_instrs = expr_to_TAC_convert(func_name, unary_expr->expr, src_val);
-      struct Val* dst = make_temp(func_name, expr->value_type);
-
-      // AST:
-      // op expr
-      // TAC:
-      // <expr>
-      // Unary op dst, src
-      struct TACInstr* un_instr = tac_instr_create(TACUNARY);
-      un_instr->instr.tac_unary.op = unary_expr->op;
-      un_instr->instr.tac_unary.dst = dst;
-      un_instr->instr.tac_unary.src = src_val;
-
-      struct TACInstrList instrs = tac_instr_list(NULL);
-      concat_TAC_instrs(&instrs, src_instrs);
-      concat_TAC_instrs(&instrs, tac_instr_list(un_instr));
-
-      result->type = PLAIN_OPERAND;
-      result->val = dst;
-      return instrs;
-    }
+    case BINARY:
+      return lower_binary_expr(func_name, expr, result);
+    case ASSIGN:
+      return lower_assign_expr(func_name, expr, result);
+    case POST_ASSIGN:
+      return lower_post_assign_expr(func_name, expr, result);
+    case CONDITIONAL:
+      return lower_conditional_expr(func_name, expr, result);
+    case LIT:
+      return lower_lit_expr(func_name, expr, result);
+    case UNARY:
+      return lower_unary_expr(func_name, expr, result);
     case VAR: {
       result->type = PLAIN_OPERAND;
       result->val = tac_make_var(expr->expr.var_expr.name, expr->value_type);
@@ -2664,143 +2930,10 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
     case FUNCTION_CALL: {
       return call_to_TAC(func_name, expr, result, false);
     }
-    case CAST: {
-      struct CastExpr* cast_expr = &expr->expr.cast_expr;
-      struct Val* src_val = (struct Val*)arena_alloc(sizeof(struct Val));
-      struct TACInstrList src_instrs = expr_to_TAC_convert(func_name, cast_expr->expr, src_val);
-
-      if (cast_expr->target->type == VOID_TYPE) {
-        // Casting to void is a no-op.
-        result->type = PLAIN_OPERAND;
-        result->val = src_val;
-        return src_instrs;
-      }
-
-      size_t target_size = get_type_size(cast_expr->target);
-      size_t src_size = get_type_size(cast_expr->expr->value_type);
-      if (target_size == 0 || src_size == 0) {
-        tac_error_at(expr->loc, "unsupported cast between sizes %zu and %zu", target_size, src_size);
-        return tac_instr_list(NULL);
-      }
-
-      if (target_size == src_size ||
-        (target_size > src_size && is_unsigned_type(cast_expr->expr->value_type))) {
-        // No-op cast between same-size types, or zero-extend to larger unsigned type.
-        // AST:
-        // (T)expr
-        // TAC:
-        // <expr>
-        result->type = PLAIN_OPERAND;
-        result->val = src_val;
-        return src_instrs;
-      }
-
-      if (target_size < src_size) {
-        // Narrow the value to the destination width before storing it.
-        struct Val* dst = make_temp(func_name, cast_expr->target);
-        // AST:
-        // (T)expr
-        // TAC:
-        // <expr>
-        // Trunc dst, src
-
-        struct TACInstr* trunc_instr = tac_instr_create(TACTRUNC);
-        trunc_instr->instr.tac_trunc.dst = dst;
-        trunc_instr->instr.tac_trunc.src = src_val;
-        trunc_instr->instr.tac_trunc.target_size = target_size;
-
-
-        concat_TAC_instrs(&src_instrs, tac_instr_list(trunc_instr));
-
-        result->type = PLAIN_OPERAND;
-        result->val = dst;
-        return src_instrs;
-      }
-
-      // can assume target type is signed here, so we sign extend
-      if (target_size > src_size) {
-        // Widen the value and preserve signedness before storing it.
-        struct Val* dst = make_temp(func_name, cast_expr->target);
-        // AST:
-        // (T)expr
-        // TAC:
-        // <expr>
-        // Extend dst, src
-
-        struct TACInstr* extend_instr = tac_instr_create(TACEXTEND);
-        extend_instr->instr.tac_extend.dst = dst;
-        extend_instr->instr.tac_extend.src = src_val;
-        extend_instr->instr.tac_extend.src_size = src_size;
-
-        concat_TAC_instrs(&src_instrs, tac_instr_list(extend_instr));
-
-        result->type = PLAIN_OPERAND;
-        result->val = dst;
-        return src_instrs;
-      }
-    }
-    case ADDR_OF: {
-      struct AddrOfExpr* addr_expr = &expr->expr.addr_of_expr;
-      struct ExprResult inner_result;
-      struct TACInstrList instrs = expr_to_TAC(func_name, addr_expr->expr, &inner_result);
-
-      if (inner_result.type == PLAIN_OPERAND) {
-        struct Val* dst = make_temp(func_name, expr->value_type);
-        // AST:
-        // &lvalue
-        // TAC:
-        // <lvalue>
-        // GetAddress dst, lvalue
-        struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
-        addr_instr->instr.tac_get_address.dst = dst;
-        addr_instr->instr.tac_get_address.src = inner_result.val;
-        concat_TAC_instrs(&instrs, tac_instr_list(addr_instr));
-
-        result->type = PLAIN_OPERAND;
-        result->val = dst;
-        return instrs;
-      }
-
-      if (inner_result.type == DEREFERENCED_POINTER) {
-        // &(*p) collapses to p, so reuse the pointer operand directly.
-        result->type = PLAIN_OPERAND;
-        result->val = inner_result.val;
-        return instrs;
-      }
-
-      if (inner_result.type == SUB_OBJECT) {
-        struct Val* dst = make_temp(func_name, expr->value_type);
-        // AST:
-        // &struct.field  OR  &ptr->field
-        // TAC:
-        // <base_ptr>
-        // GetAddress dst, base_ptr
-        // Binary Add dst, dst, offset
-        struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
-        addr_instr->instr.tac_get_address.dst = dst;
-        addr_instr->instr.tac_get_address.src = tac_make_var(inner_result.sub_object_base, 
-          tac_builtin_type(UINT_TYPE));
-
-        
-
-        struct TACInstr* offset_instr = tac_instr_create(TACBINARY);
-        offset_instr->instr.tac_binary.alu_op = ALU_ADD;
-        offset_instr->instr.tac_binary.dst = dst;
-        offset_instr->instr.tac_binary.src1 = dst;
-        offset_instr->instr.tac_binary.src2 = tac_make_const((uint64_t)inner_result.sub_object_offset, 
-          tac_builtin_type(UINT_TYPE));
-
-        concat_TAC_instrs(&instrs, tac_instr_list(addr_instr));
-        concat_TAC_instrs(&instrs, tac_instr_list(offset_instr));
-
-        result->type = PLAIN_OPERAND;
-        result->val = dst;
-        return instrs;
-      }
-
-      tac_error_at(expr->loc, "invalid address-of operand");
-      return tac_instr_list(NULL);
-    }
+    case CAST:
+      return lower_cast_expr(func_name, expr, result);
+    case ADDR_OF:
+      return lower_addr_of_expr(func_name, expr, result);
     case DEREFERENCE: {
       struct DereferenceExpr* deref_expr = &expr->expr.deref_expr;
       struct Val* ptr_val = (struct Val*)arena_alloc(sizeof(struct Val));
@@ -2810,81 +2943,10 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
       result->val = ptr_val;
       return instrs;
     }
-    case SUBSCRIPT: {
-      struct SubscriptExpr* sub_expr = &expr->expr.subscript_expr;
-      struct Val* base_ptr_val = (struct Val*)arena_alloc(sizeof(struct Val));
-      struct TACInstrList base_ptr_instrs = expr_to_TAC_convert(func_name, sub_expr->array, base_ptr_val);
-
-      struct Val* index_val = (struct Val*)arena_alloc(sizeof(struct Val));
-      struct TACInstrList index_instrs = expr_to_TAC_convert(func_name, sub_expr->index, index_val);
-
-      struct TACInstrList instrs = tac_instr_list(NULL);
-      concat_TAC_instrs(&instrs, base_ptr_instrs);
-      concat_TAC_instrs(&instrs, index_instrs);
-
-      // AST:
-      // base_ptr[index]
-      // TAC:
-      // <base_ptr>
-      // <index>
-      // Binary Mul offset = index * sizeof(T)
-      // Binary Add addr = base_ptr + offset
-      struct Type* ref_type = expr->value_type;
-      size_t scale = get_type_size(ref_type);
-      struct Val* offset = make_temp(func_name, index_val->type);
-
-      struct TACInstr* mul_instr = tac_instr_create(TACBINARY);
-      mul_instr->instr.tac_binary.alu_op = binop_to_aluop(MUL_OP, index_val->type);
-      mul_instr->instr.tac_binary.dst = offset;
-      mul_instr->instr.tac_binary.src1 = index_val;
-      mul_instr->instr.tac_binary.src2 = tac_make_const((uint64_t)scale, index_val->type);
-      concat_TAC_instrs(&instrs, tac_instr_list(mul_instr));
-
-      struct Val* addr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
-      struct TACInstr* add_instr = tac_instr_create(TACBINARY);
-      add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, addr->type);
-      add_instr->instr.tac_binary.dst = addr;
-      add_instr->instr.tac_binary.src1 = base_ptr_val;
-      add_instr->instr.tac_binary.src2 = offset;
-      concat_TAC_instrs(&instrs, tac_instr_list(add_instr));
-
-      result->type = DEREFERENCED_POINTER;
-      result->val = addr;
-      return instrs;
-    }
-    case STRING: {
-      struct StringExpr* str_expr = &expr->expr.string_expr;
-      struct Val* str_label = make_str_label(str_expr);
-
-      struct IdentAttr* const_attr = arena_alloc(sizeof(struct IdentAttr));
-      const_attr->attr_type = CONST_ATTR;
-      const_attr->is_defined = true;
-      const_attr->storage = STATIC;
-      const_attr->init.init_type = INITIAL;
-      const_attr->init.init_list = arena_alloc(sizeof(struct InitList));
-      const_attr->init.init_list->next = NULL;
-      const_attr->init.init_list->value = arena_alloc(sizeof(struct StaticInit));
-      const_attr->init.init_list->value->int_type = STRING_INIT;
-      const_attr->init.init_list->value->value.string = str_expr->string;
-      // Ensure the emitted data includes the null terminator via explicit padding.
-      size_t array_size = str_expr->string->len + 1;
-      size_t element_size = get_type_size(&kCharType);
-      if (str_expr->string->len < array_size) {
-        struct InitList* pad_node = arena_alloc(sizeof(struct InitList));
-        pad_node->value = arena_alloc(sizeof(struct StaticInit));
-        pad_node->value->int_type = ZERO_INIT;
-        pad_node->value->value.num = (array_size - str_expr->string->len) * element_size;
-        pad_node->next = NULL;
-        const_attr->init.init_list->next = pad_node;
-      }
-
-      symbol_table_insert(global_symbol_table, str_label->val.var_name, 
-        expr->value_type, const_attr);
-
-      result->type = PLAIN_OPERAND;
-      result->val = tac_make_var(str_label->val.var_name, expr->value_type);
-      return tac_instr_list(NULL);
-    }
+    case SUBSCRIPT:
+      return lower_subscript_expr(func_name, expr, result);
+    case STRING:
+      return lower_string_expr(func_name, expr, result);
     case SIZEOF_EXPR: {
       struct SizeOfExpr* sizeof_expr = &expr->expr.sizeof_expr;
       size_t type_size = get_type_size(sizeof_expr->expr->value_type);
@@ -2901,190 +2963,12 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
       result->val = tac_make_const(type_size, tac_builtin_type(UINT_TYPE));
       return tac_instr_list(NULL);
     }
-    case STMT_EXPR: {
-      struct StmtExpr* stmt_expr = &expr->expr.stmt_expr;
-      if (stmt_expr->block == NULL) {
-        tac_error_at(expr->loc, "empty statement expression in TAC lowering");
-        return tac_instr_list(NULL);
-      }
-
-      struct Block* last_item = stmt_expr->block;
-      while (last_item->next != NULL) {
-        last_item = last_item->next;
-      }
-
-      struct TACInstrList instrs = tac_instr_list(NULL);
-      size_t enclosing_cleanup_count = active_cleanup_count;
-
-      for (struct Block* cur = stmt_expr->block; cur != NULL; cur = cur->next) {
-        // loop though each item here instead of doing it recursively,
-        // that way we can get the result from the last item easily
-        struct TACInstrList item_instrs;
-        bool is_last = (cur == last_item);
-
-        switch (cur->item->type) {
-          case STMT_ITEM: {
-            struct Statement* stmt = cur->item->item.stmt;
-            if (is_last && stmt->type == EXPR_STMT) {
-              // Last expression statement provides the statement-expression value.
-              struct Expr* tail_expr = stmt->statement.expr_stmt.expr;
-              if (expr->value_type->type == VOID_TYPE) {
-                item_instrs = expr_to_TAC_convert(func_name, tail_expr, NULL);
-                result->type = PLAIN_OPERAND;
-                result->val = NULL;
-              } else {
-                struct Val* dst = make_temp(func_name, expr->value_type);
-                item_instrs = expr_to_TAC_convert(func_name, tail_expr, dst);
-                result->type = PLAIN_OPERAND;
-                result->val = dst;
-              }
-            } else {
-              item_instrs = stmt_to_TAC(func_name, stmt);
-              if (is_last) {
-                result->type = PLAIN_OPERAND;
-                result->val = NULL;
-              }
-            }
-
-            if (debug_info_enabled) {
-              struct TACInstr* boundary_before = tac_instr_create(TACBOUNDARY);
-              boundary_before->instr.tac_boundary.loc = stmt->loc;
-              struct TACInstrList boundary_before_list = tac_instr_list(boundary_before);
-              concat_TAC_instrs(&boundary_before_list, item_instrs);
-              item_instrs = boundary_before_list;
-            }
-            break;
-          }
-          case DCLR_ITEM: {
-            item_instrs = local_dclr_to_TAC(func_name, cur->item->item.dclr);
-            if (cur->item->item.dclr->type == VAR_DCLR) {
-              note_cleanup_declaration(&cur->item->item.dclr->dclr.var_dclr);
-            }
-            if (debug_info_enabled) {
-              const char* loc = declaration_loc(cur->item->item.dclr);
-              if (loc != NULL) {
-                struct TACInstr* boundary_dclr = tac_instr_create(TACBOUNDARY);
-                boundary_dclr->instr.tac_boundary.loc = loc;
-                struct TACInstrList boundary_dclr_list = tac_instr_list(boundary_dclr);
-                concat_TAC_instrs(&boundary_dclr_list, item_instrs);
-                item_instrs = boundary_dclr_list;
-              }
-            }
-            if (is_last) {
-              result->type = PLAIN_OPERAND;
-              result->val = NULL;
-            }
-            break;
-          }
-          default:
-            tac_error_at(expr->loc, "invalid block item type in statement expression");
-            return tac_instr_list(NULL);
-        }
-
-        concat_TAC_instrs(&instrs, item_instrs);
-      }
-
-      active_cleanup_count = enclosing_cleanup_count;
-      return instrs;
-    }
-    case DOT_EXPR: {
-      struct DotExpr* dot_expr = &expr->expr.dot_expr;
-      struct ExprResult* base_result = (struct ExprResult*)arena_alloc(sizeof(struct ExprResult));
-      struct TACInstrList base_instrs = expr_to_TAC(func_name, dot_expr->struct_expr, base_result);
-
-      struct Type* base_type = dot_expr->struct_expr->value_type;
-      struct MemberEntry* field_entry = get_struct_member(base_type, dot_expr->member);
-      if (field_entry == NULL) {
-        tac_error_at(expr->loc, "struct/union has no field named '%.*s'", (int)dot_expr->member->len, dot_expr->member->start);
-        return tac_instr_list(NULL);
-      }
-
-      size_t field_offset = field_entry->offset;
-
-      struct TACInstrList instrs = base_instrs;
-
-      switch (base_result->type) {
-        case PLAIN_OPERAND:
-          // AST:
-          // base.field
-          // TAC:
-          // <base>
-          // Binary Add addr = base + offset
-          if (base_result->val->val_type != VARIABLE) {
-            tac_error_at(expr->loc, "invalid base expression for dot operator");
-            return tac_instr_list(NULL);
-          }
-          result->type = SUB_OBJECT;  
-          result->sub_object_base = base_result->val->val.var_name;
-          result->sub_object_offset = field_offset;
-          return instrs;
-        case DEREFERENCED_POINTER:
-          struct Val* dst_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
-          // AST:
-          // (base_ptr)->field
-          // TAC:
-          // <base_ptr>
-          // Binary Add dst_ptr = base_ptr + offset
-          struct TACInstr* add_instr = tac_instr_create(TACBINARY);
-          add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, dst_ptr->type);
-          add_instr->instr.tac_binary.dst = dst_ptr;
-          add_instr->instr.tac_binary.src1 = base_result->val;
-          add_instr->instr.tac_binary.src2 =
-              tac_make_const((uint64_t)field_offset, tac_builtin_type(UINT_TYPE));
-          concat_TAC_instrs(&instrs, tac_instr_list(add_instr));
-
-          result->type = DEREFERENCED_POINTER;
-          result->val = dst_ptr;
-          return instrs;
-        case SUB_OBJECT:
-          // AST:
-          // base.sub_object.field
-          // TAC:
-          // <base.field>
-          result->type = SUB_OBJECT;
-          result->sub_object_base = base_result->sub_object_base;
-          result->sub_object_offset = base_result->sub_object_offset + field_offset;
-          return instrs;
-        default:
-          tac_error_at(expr->loc, "invalid base expression for dot operator");
-          return tac_instr_list(NULL);
-      }
-    }
-    case ARROW_EXPR: {
-      // AST:
-      // base_ptr->field
-      // TAC:
-      // <base_ptr>
-      // Binary Add dst_ptr = base_ptr + offset
-      struct ArrowExpr* arrow_expr = &expr->expr.arrow_expr;
-      struct Val* base_ptr_val = (struct Val*)arena_alloc(sizeof(struct Val));
-      struct TACInstrList base_ptr_instrs = expr_to_TAC_convert(func_name, arrow_expr->pointer_expr, base_ptr_val);
-      struct Type* base_type = arrow_expr->pointer_expr->value_type;
-      if (base_type->type != POINTER_TYPE) {
-        tac_error_at(expr->loc, "arrow operator requires pointer to struct/union");
-        return tac_instr_list(NULL);
-      }
-      base_type = base_type->type_data.pointer_type.referenced_type;
-      struct MemberEntry* field_entry = get_struct_member(base_type, arrow_expr->member);
-      if (field_entry == NULL) {
-        tac_error_at(expr->loc, "struct/union has no field named '%.*s'", (int)arrow_expr->member->len, arrow_expr->member->start);
-        return tac_instr_list(NULL);
-      }
-      size_t field_offset = field_entry->offset;
-      struct TACInstrList instrs = base_ptr_instrs;
-      struct Val* dst_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
-      
-      struct TACInstr* add_instr = tac_instr_create(TACBINARY);
-      add_instr->instr.tac_binary.alu_op = binop_to_aluop(ADD_OP, dst_ptr->type);
-      add_instr->instr.tac_binary.dst = dst_ptr;
-      add_instr->instr.tac_binary.src1 = base_ptr_val;
-      add_instr->instr.tac_binary.src2 =
-          tac_make_const((uint64_t)field_offset, tac_builtin_type(UINT_TYPE));
-      concat_TAC_instrs(&instrs, tac_instr_list(add_instr));
-      result->type = DEREFERENCED_POINTER;
-      result->val = dst_ptr;
-      return instrs;
-    }
+    case STMT_EXPR:
+      return lower_stmt_expr_expr(func_name, expr, result);
+    case DOT_EXPR:
+      return lower_dot_expr_expr(func_name, expr, result);
+    case ARROW_EXPR:
+      return lower_arrow_expr_expr(func_name, expr, result);
     default:
       tac_error_at(expr->loc, "expression type %d not implemented in TAC lowering", expr->type);
       return tac_instr_list(NULL);
@@ -3290,9 +3174,8 @@ struct TACInstrList cond_to_TAC(struct Slice* func_name, struct Expr* condition,
         struct Slice* skip = tac_make_label(func_name, "short_circuit");
         concat_TAC_instrs(&instrs, cond_to_TAC(func_name, binary->left, skip, !invert));
         concat_TAC_instrs(&instrs, cond_to_TAC(func_name, binary->right, target, invert));
-        struct TACInstr* skip_instr = tac_instr_create(TACLABEL);
-        skip_instr->instr.tac_label.label = skip;
-        concat_TAC_instrs(&instrs, tac_instr_list(skip_instr));
+        struct TACInstr* skip_instr = tac_label_at(skip);
+        tac_emit(&instrs, skip_instr);
       }
       return instrs;
     }
@@ -3311,12 +3194,8 @@ struct TACInstrList cond_to_TAC(struct Slice* func_name, struct Expr* condition,
       if (invert) {
         op = invert_tac_condition(op);
       }
-      struct TACInstr* jump = tac_instr_create(TACCOND_JUMP);
-      jump->instr.tac_cond_jump.src1 = left;
-      jump->instr.tac_cond_jump.src2 = right;
-      jump->instr.tac_cond_jump.condition = op;
-      jump->instr.tac_cond_jump.label = target;
-      concat_TAC_instrs(&instrs, tac_instr_list(jump));
+      struct TACInstr* jump = tac_cond_jump_of(op, left, right, target);
+      tac_emit(&instrs, jump);
       return instrs;
     }
   }
@@ -3331,11 +3210,7 @@ struct TACInstrList cond_to_TAC(struct Slice* func_name, struct Expr* condition,
 
   struct Val* value = (struct Val*)arena_alloc(sizeof(struct Val));
   struct TACInstrList instrs = expr_to_TAC_convert(func_name, condition, value);
-  struct TACInstr* jump = tac_instr_create(TACCOND_JUMP);
-  jump->instr.tac_cond_jump.src1 = value;
-  jump->instr.tac_cond_jump.src2 = tac_make_const(0, value->type);
-  jump->instr.tac_cond_jump.condition = invert ? CondE : CondNE;
-  jump->instr.tac_cond_jump.label = target;
-  concat_TAC_instrs(&instrs, tac_instr_list(jump));
+  struct TACInstr* jump = tac_cond_jump_of(invert ? CondE : CondNE, value, tac_make_const(0, value->type), target);
+  tac_emit(&instrs, jump);
   return instrs;
 }

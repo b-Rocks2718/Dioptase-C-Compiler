@@ -1,0 +1,1 @@
+Preprocessor error at tests/preprocess_invalid/function_macro_too_many_args.c:2: macro "F" requires 0 arguments, but 1 was given

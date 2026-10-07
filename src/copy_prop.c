@@ -1,4 +1,7 @@
 #include "copy_prop.h"
+#include "slice_index.h"
+#include "checked_alloc.h"
+#include "exit_codes.h"
 #include "cfg.h"
 #include "arena.h"
 #include "AST.h"
@@ -100,11 +103,8 @@ struct CopyEffect {
 // identity (null_id) because TAC operand equality treats two NULL names as
 // equal; it is never killed, matching the previous implementation.
 struct NameIndex {
-  struct Slice** slot_names;
-  uint32_t* slot_ids;
-  size_t slot_count;  // power of two
-  uint32_t count;
-  uint32_t null_id;
+  struct SliceIndex ids;
+  uint32_t null_id; // id of the NULL name, or kCopyPropNone until it is numbered
 };
 
 // Per-invocation analysis state. Every pointer member is owned and freed by
@@ -145,27 +145,6 @@ struct CopyPropState {
   struct Val** rep_src;   // current substitution source per class
 };
 
-// Allocate zeroed pass-local storage or terminate with a contextual diagnostic.
-// Zero-sized requests return NULL. The caller releases the result with free.
-static void* cp_calloc(size_t count, size_t size, const char* purpose) {
-  if (count == 0 || size == 0) {
-    return NULL;
-  }
-  if (size > SIZE_MAX / count) {
-    fprintf(stderr,
-            "Copy propagation error: allocation size overflow while %s\n",
-            purpose);
-    exit(1);
-  }
-  void* allocation = calloc(count, size);
-  if (allocation == NULL) {
-    fprintf(stderr,
-            "Copy propagation error: unable to allocate %zu bytes while %s\n",
-            count * size, purpose);
-    exit(1);
-  }
-  return allocation;
-}
 
 // Return the smallest power of two >= max(value, kCopyPropMinHashSlots).
 static size_t hash_slot_count_for(size_t entries) {
@@ -189,48 +168,34 @@ static uint64_t mix64(uint64_t x) {
 
 // ----- Name index -----
 
-// Initialize a fixed-capacity name index able to hold max_names names.
+// Key standing in for a NULL name so absent operand names get an id from the
+// same dense sequence; no identifier can equal it.
+static struct Slice kNullNameKey = {"<null name>", 11};
+
+// Initialize an empty name index sized for about max_names names.
 static void name_index_init(struct NameIndex* index, size_t max_names) {
-  index->slot_count = hash_slot_count_for(max_names);
-  index->slot_names = cp_calloc(index->slot_count, sizeof(*index->slot_names),
-                                "creating the copy-propagation name index");
-  index->slot_ids = cp_calloc(index->slot_count, sizeof(*index->slot_ids),
-                              "creating the copy-propagation name index");
-  index->count = 0;
+  slice_index_init(&index->ids, max_names);
   index->null_id = kCopyPropNone;
 }
 
-// Release the name index's slot arrays. Slice names remain arena-owned.
+// Release the name index. Slice names remain arena-owned.
 static void name_index_destroy(struct NameIndex* index) {
-  free(index->slot_names);
-  free(index->slot_ids);
-  index->slot_names = NULL;
-  index->slot_ids = NULL;
+  slice_index_free(&index->ids);
 }
 
 // Return the id for name, inserting it when insert is true. Returns
 // kCopyPropNone when name is absent and insert is false.
 static uint32_t name_index_lookup(struct NameIndex* index, struct Slice* name, bool insert) {
-  if (name == NULL) {
-    if (index->null_id == kCopyPropNone && insert) {
-      index->null_id = index->count++;
+  const struct Slice* key = name != NULL ? name : &kNullNameKey;
+  if (insert) {
+    uint32_t id = slice_index_add(&index->ids, key, NULL);
+    if (name == NULL) {
+      index->null_id = id;
     }
-    return index->null_id;
+    return id;
   }
-  size_t mask = index->slot_count - 1;
-  size_t slot = hash_slice(name) & mask;
-  while (index->slot_names[slot] != NULL) {
-    if (compare_slice_to_slice(index->slot_names[slot], name)) {
-      return index->slot_ids[slot];
-    }
-    slot = (slot + 1) & mask;
-  }
-  if (!insert) {
-    return kCopyPropNone;
-  }
-  index->slot_names[slot] = name;
-  index->slot_ids[slot] = index->count;
-  return index->count++;
+  uint32_t id = slice_index_get(&index->ids, key);
+  return id == SLICE_INDEX_NONE ? kCopyPropNone : id;
 }
 
 // ----- Operand keys and class lookup -----
@@ -472,9 +437,9 @@ static void csr_push(uint32_t* list, uint32_t* cursor, uint32_t var, uint32_t c)
 // Build per-variable class lists from the finished class table. Each list is
 // filled in ascending class order because classes are visited in order.
 static void build_variable_lists(struct CopyPropState* s) {
-  uint32_t vars = s->names.count;
-  s->dst_start = cp_calloc((size_t)vars + 1, sizeof(uint32_t), "indexing copy destinations");
-  s->involve_start = cp_calloc((size_t)vars + 1, sizeof(uint32_t), "indexing copy operands");
+  uint32_t vars = s->names.ids.count;
+  s->dst_start = checked_calloc((size_t)vars + 1, sizeof(uint32_t), "Copy propagation", "indexing copy destinations");
+  s->involve_start = checked_calloc((size_t)vars + 1, sizeof(uint32_t), "Copy propagation", "indexing copy operands");
 
   // Count, then prefix-sum into start offsets (standard CSR construction).
   for (uint32_t c = 0; c < s->num_classes; ++c) {
@@ -496,10 +461,10 @@ static void build_variable_lists(struct CopyPropState* s) {
     s->involve_start[v + 1] += s->involve_start[v];
   }
 
-  s->dst_list = cp_calloc(s->dst_start[vars], sizeof(uint32_t), "indexing copy destinations");
-  s->involve_list = cp_calloc(s->involve_start[vars], sizeof(uint32_t), "indexing copy operands");
-  uint32_t* dst_cursor = cp_calloc(vars, sizeof(uint32_t), "indexing copy destinations");
-  uint32_t* involve_cursor = cp_calloc(vars, sizeof(uint32_t), "indexing copy operands");
+  s->dst_list = checked_calloc(s->dst_start[vars], sizeof(uint32_t), "Copy propagation", "indexing copy destinations");
+  s->involve_list = checked_calloc(s->involve_start[vars], sizeof(uint32_t), "Copy propagation", "indexing copy operands");
+  uint32_t* dst_cursor = checked_calloc(vars, sizeof(uint32_t), "Copy propagation", "indexing copy destinations");
+  uint32_t* involve_cursor = checked_calloc(vars, sizeof(uint32_t), "Copy propagation", "indexing copy operands");
   for (uint32_t v = 0; v < vars; ++v) {
     dst_cursor[v] = s->dst_start[v];
     involve_cursor[v] = s->involve_start[v];
@@ -528,16 +493,16 @@ static bool wants_mask(const struct CopyPropState* s, uint32_t len) {
 
 // Build bitset masks for variables with long destination/operand lists.
 static void build_variable_masks(struct CopyPropState* s) {
-  uint32_t vars = s->names.count;
-  s->dst_mask = cp_calloc(vars, sizeof(uint64_t*), "indexing heavily copied variables");
-  s->involve_mask = cp_calloc(vars, sizeof(uint64_t*), "indexing heavily copied variables");
+  uint32_t vars = s->names.ids.count;
+  s->dst_mask = checked_calloc(vars, sizeof(uint64_t*), "Copy propagation", "indexing heavily copied variables");
+  s->involve_mask = checked_calloc(vars, sizeof(uint64_t*), "Copy propagation", "indexing heavily copied variables");
   size_t masks = 0;
   for (uint32_t v = 0; v < vars; ++v) {
     masks += wants_mask(s, s->dst_start[v + 1] - s->dst_start[v]);
     masks += wants_mask(s, s->involve_start[v + 1] - s->involve_start[v]);
   }
-  // cp_calloc intentionally returns NULL for an empty allocation. Make the
-  // corresponding no-mask path explicit before deriving pointers from it.
+  // With no masks there is nothing to allocate; return before deriving
+  // pointers from mask storage.
   if (masks == 0) {
     return;
   }
@@ -546,18 +511,18 @@ static void build_variable_masks(struct CopyPropState* s) {
             "Copy propagation error: cannot build %zu variable masks with "
             "zero words per mask\n",
             masks);
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   if (masks > SIZE_MAX / s->words) {
     fprintf(stderr,
             "Copy propagation error: allocation size overflow while indexing "
             "heavily copied variables\n");
-    exit(1);
+    exit(BCC_EXIT_INTERNAL);
   }
   size_t mask_words = masks * s->words;
-  s->mask_storage = cp_calloc(mask_words, sizeof(uint64_t),
-                              "indexing heavily copied variables");
-  // The sizes above are nonzero and cp_calloc terminates on allocation
+  s->mask_storage = checked_calloc(mask_words, sizeof(uint64_t),
+                              "Copy propagation", "indexing heavily copied variables");
+  // The sizes above are nonzero and checked_calloc terminates on allocation
   // failure. Keep the sparse-list representation as a defensive fallback if
   // that helper's contract is not visible to a caller or static analyzer.
   if (s->mask_storage == NULL) {
@@ -585,8 +550,8 @@ static void build_variable_masks(struct CopyPropState* s) {
 // Mark classes that mention an aliased variable. aliased_vars is the set of
 // statics plus address-taken locals; calls and stores may modify any of them.
 static void build_aliased_mask(struct CopyPropState* s, struct SliceList aliased_vars) {
-  uint32_t vars = s->names.count;
-  bool* aliased = cp_calloc(vars, sizeof(bool), "marking aliased variables");
+  uint32_t vars = s->names.ids.count;
+  bool* aliased = checked_calloc(vars, sizeof(bool), "Copy propagation", "marking aliased variables");
   for (struct SliceListNode* node = aliased_vars.head; node != NULL; node = node->next) {
     if (node->slice == NULL) {
       continue;
@@ -596,7 +561,7 @@ static void build_aliased_mask(struct CopyPropState* s, struct SliceList aliased
       aliased[id] = true;
     }
   }
-  s->aliased_mask = cp_calloc(s->words, sizeof(uint64_t), "marking aliased copies");
+  s->aliased_mask = checked_calloc(s->words, sizeof(uint64_t), "Copy propagation", "marking aliased copies");
   for (uint32_t c = 0; c < s->num_classes; ++c) {
     const struct CopyClass* cls = &s->classes[c];
     uint32_t dst_var = (uint32_t)cls->dst_key.bits;
@@ -640,9 +605,9 @@ static bool copy_prop_state_init(struct CopyPropState* s, struct CFG* cfg,
   // Pass 1: discover classes in first-occurrence order. Each copy adds at
   // most two names and one class, which bounds both fixed-size tables.
   name_index_init(&s->names, num_copy_instrs * 2);
-  s->classes = cp_calloc(num_copy_instrs, sizeof(*s->classes), "collecting copies");
+  s->classes = checked_calloc(num_copy_instrs, sizeof(*s->classes), "Copy propagation", "collecting copies");
   s->pair_slot_count = hash_slot_count_for(num_copy_instrs);
-  s->pair_slots = cp_calloc(s->pair_slot_count, sizeof(uint32_t), "collecting copies");
+  s->pair_slots = checked_calloc(s->pair_slot_count, sizeof(uint32_t), "Copy propagation", "collecting copies");
   memset(s->pair_slots, 0xff, s->pair_slot_count * sizeof(uint32_t)); // kCopyPropNone
   for (unsigned i = 1; i + 1 < cfg->num_nodes; ++i) {
     for (struct TACInstr* instr = cfg->nodes[i]->body.head; instr != NULL; instr = instr->next) {
@@ -663,7 +628,7 @@ static bool copy_prop_state_init(struct CopyPropState* s, struct CFG* cfg,
                 "Copy propagation error: TACCOPY destination in CFG block %u is "
                 "not a variable (operand kind %d); expected a writable variable\n",
                 i, (int)dst->val_type);
-        exit(1);
+        exit(BCC_EXIT_INTERNAL);
       }
       class_lookup(s, dst_key, src_key, true, dst, src);
     }
@@ -673,7 +638,7 @@ static bool copy_prop_state_init(struct CopyPropState* s, struct CFG* cfg,
   }
 
   s->words = (s->num_classes + kCopyPropWordBits - 1) / kCopyPropWordBits;
-  s->all_mask = cp_calloc(s->words, sizeof(uint64_t), "building the copy universe");
+  s->all_mask = checked_calloc(s->words, sizeof(uint64_t), "Copy propagation", "building the copy universe");
   for (uint32_t c = 0; c < s->num_classes; ++c) {
     bit_set(s->all_mask, c);
   }
@@ -683,9 +648,9 @@ static bool copy_prop_state_init(struct CopyPropState* s, struct CFG* cfg,
 
   // Pass 2: precompute every instruction's effect now that all names and
   // classes are known (a later copy can create the reverse of an earlier one).
-  s->effects = cp_calloc(num_instrs, sizeof(*s->effects), "precomputing copy effects");
-  s->node_first_effect = cp_calloc((size_t)cfg->num_nodes + 1, sizeof(size_t),
-                                   "precomputing copy effects");
+  s->effects = checked_calloc(num_instrs, sizeof(*s->effects), "Copy propagation", "precomputing copy effects");
+  s->node_first_effect = checked_calloc((size_t)cfg->num_nodes + 1, sizeof(size_t),
+                                   "Copy propagation", "precomputing copy effects");
   size_t next_effect = 0;
   for (unsigned i = 0; i < cfg->num_nodes; ++i) {
     s->node_first_effect[i] = next_effect;
@@ -695,9 +660,9 @@ static bool copy_prop_state_init(struct CopyPropState* s, struct CFG* cfg,
   }
   s->node_first_effect[cfg->num_nodes] = next_effect;
 
-  s->node_out = cp_calloc((size_t)cfg->num_nodes * s->words, sizeof(uint64_t),
-                          "allocating block reaching-copy sets");
-  s->rep_src = cp_calloc(s->num_classes, sizeof(*s->rep_src), "tracking copy sources");
+  s->node_out = checked_calloc((size_t)cfg->num_nodes * s->words, sizeof(uint64_t),
+                          "Copy propagation", "allocating block reaching-copy sets");
+  s->rep_src = checked_calloc(s->num_classes, sizeof(*s->rep_src), "Copy propagation", "tracking copy sources");
   for (uint32_t c = 0; c < s->num_classes; ++c) {
     s->rep_src[c] = s->classes[c].src;
   }
@@ -814,7 +779,7 @@ static void meet(struct CopyPropState* s, const struct CFGNode* node, uint64_t* 
               "Copy propagation error: CFG block %u has the EXIT node as a "
               "predecessor; EXIT must not have successors\n",
               node->index);
-      exit(1);
+      exit(BCC_EXIT_INTERNAL);
     }
     const uint64_t* pred_out = node_out(s, pred->node->index);
     for (size_t w = 0; w < s->words; ++w) {
@@ -835,8 +800,8 @@ static void transfer_block(struct CopyPropState* s, unsigned node_index, uint64_
 static void find_reaching_copies(struct CopyPropState* s, uint64_t* state) {
   struct CFG* cfg = s->cfg;
   unsigned n = cfg->num_nodes;
-  unsigned* queue = cp_calloc(n, sizeof(unsigned), "allocating the copy worklist");
-  bool* queued = cp_calloc(n, sizeof(bool), "allocating the copy worklist");
+  unsigned* queue = checked_calloc(n, sizeof(unsigned), "Copy propagation", "allocating the copy worklist");
+  bool* queued = checked_calloc(n, sizeof(bool), "Copy propagation", "allocating the copy worklist");
   size_t head = 0;
   size_t count = 0;
 
@@ -872,7 +837,7 @@ static void find_reaching_copies(struct CopyPropState* s, uint64_t* state) {
                 "Copy propagation error: CFG block %u has the ENTRY node as a "
                 "successor; ENTRY must not have predecessors\n",
                 b);
-        exit(1);
+        exit(BCC_EXIT_INTERNAL);
       }
       unsigned succ_index = succ->node->index;
       if (!queued[succ_index]) {
@@ -961,7 +926,7 @@ static struct Val* replace_args(struct CopyPropState* s, struct Val* args, size_
                 "Copy propagation error: unable to allocate %zu bytes for a "
                 "rewritten %zu-argument call\n",
                 num_args * sizeof(struct Val), num_args);
-        exit(1);
+        exit(BCC_EXIT_INTERNAL);
       }
       memcpy(rewritten, args, num_args * sizeof(struct Val));
     }
@@ -975,90 +940,36 @@ static struct Val* replace_args(struct CopyPropState* s, struct Val* args, size_
 // Returns true if the instruction can be deleted (is redundant), false otherwise.
 static bool rewrite_instr(struct CopyPropState* s, struct TACInstr* instr,
                           const struct CopyEffect* effect, const uint64_t* state) {
-  switch (instr->type) {
-    case TACCOPY: {
-      // Redundant when x = y or y = x already reaches.
-      if ((effect->own_class != kCopyPropNone && bit_test(state, effect->own_class)) ||
-          (effect->rev_class != kCopyPropNone && bit_test(state, effect->rev_class))) {
-        return true;
-      }
-      instr->instr.tac_copy.src = replace_operand(s, instr->instr.tac_copy.src, state);
-      break;
+  // A copy is redundant when x = y or y = x already reaches.
+  if (instr->type == TACCOPY &&
+      ((effect->own_class != kCopyPropNone && bit_test(state, effect->own_class)) ||
+       (effect->rev_class != kCopyPropNone && bit_test(state, effect->rev_class)))) {
+    return true;
+  }
+
+  struct TACOperands ops = tac_instr_operands(instr);
+  for (size_t i = 0; i < ops.count; i++) {
+    struct TACOperand* op = &ops.op[i];
+    // Only values that are read can be replaced. Directly named aggregates
+    // (offset copies) and address-taken operands name storage, not values.
+    if (op->role != TAC_USE || op->kind == TAC_OPERAND_NAME) {
+      continue;
     }
-    case TACVOLATILE_READ:
-      // The source is the volatile object itself and must be read.
-      break;
-    case TACVOLATILE_WRITE:
-      instr->instr.tac_copy.src = replace_operand(s, instr->instr.tac_copy.src, state);
-      break;
-    case TACRETURN:
-      instr->instr.tac_return.src = replace_operand(s, instr->instr.tac_return.src, state);
-      break;
-    case TACUNARY:
-      instr->instr.tac_unary.src = replace_operand(s, instr->instr.tac_unary.src, state);
-      break;
-    case TACBINARY:
-      instr->instr.tac_binary.src1 = replace_operand(s, instr->instr.tac_binary.src1, state);
-      instr->instr.tac_binary.src2 = replace_operand(s, instr->instr.tac_binary.src2, state);
-      break;
-    case TACCOND_JUMP:
-      instr->instr.tac_cond_jump.src1 = replace_operand(s, instr->instr.tac_cond_jump.src1, state);
-      instr->instr.tac_cond_jump.src2 = replace_operand(s, instr->instr.tac_cond_jump.src2, state);
-      break;
-    case TACJUMP:
-    case TACLABEL:
-    case TACBOUNDARY:
-      // no operands to replace
-      break;
-    case TACLOAD:
-    case TACVOLATILE_LOAD:
-      instr->instr.tac_load.src_ptr = replace_operand(s, instr->instr.tac_load.src_ptr, state);
-      break;
-    case TACSTORE:
-    case TACVOLATILE_STORE:
-      instr->instr.tac_store.src = replace_operand(s, instr->instr.tac_store.src, state);
-      break;
-    case TACTRUNC:
-      instr->instr.tac_trunc.src = replace_operand(s, instr->instr.tac_trunc.src, state);
-      break;
-    case TACEXTEND:
-      instr->instr.tac_extend.src = replace_operand(s, instr->instr.tac_extend.src, state);
-      break;
-    case TACGET_ADDRESS:
-      // can't use copy propagation for get_address
-      break;
-    case TACCOPY_TO_OFFSET:
-    case TACVOLATILE_COPY_TO_OFFSET:
-      instr->instr.tac_copy_to_offset.src =
-          replace_operand(s, instr->instr.tac_copy_to_offset.src, state);
-      break;
-    case TACCOPY_FROM_OFFSET:
-    case TACVOLATILE_COPY_FROM_OFFSET:
-      // can't use copy propagation for copy_from_offset
-      break;
-    case TACCALL:
-      instr->instr.tac_call.args =
-          replace_args(s, instr->instr.tac_call.args, instr->instr.tac_call.num_args, state);
-      break;
-    case TACCALL_INDIRECT:
-      instr->instr.tac_call_indirect.args =
-          replace_args(s, instr->instr.tac_call_indirect.args,
-                       instr->instr.tac_call_indirect.num_args, state);
-      instr->instr.tac_call_indirect.func =
-          replace_operand(s, instr->instr.tac_call_indirect.func, state);
-      break;
-    case TACTAIL_CALL:
-      instr->instr.tac_tail_call.args =
-          replace_args(s, instr->instr.tac_tail_call.args,
-                       instr->instr.tac_tail_call.num_args, state);
-      break;
-    case TACTAIL_CALL_INDIRECT:
-      instr->instr.tac_tail_call_indirect.args =
-          replace_args(s, instr->instr.tac_tail_call_indirect.args,
-                       instr->instr.tac_tail_call_indirect.num_args, state);
-      instr->instr.tac_tail_call_indirect.func =
-          replace_operand(s, instr->instr.tac_tail_call_indirect.func, state);
-      break;
+    if (op->kind == TAC_OPERAND_ARGS) {
+      *op->args = replace_args(s, *op->args, op->num_args, state);
+      continue;
+    }
+    // A volatile read's source is the volatile object itself and must be read.
+    if (instr->type == TACVOLATILE_READ) {
+      continue;
+    }
+    // Store addresses are not rewritten; propagating into them would be a
+    // further optimization.
+    if ((instr->type == TACSTORE || instr->type == TACVOLATILE_STORE) &&
+        op->val == &instr->instr.tac_store.dst_ptr) {
+      continue;
+    }
+    *op->val = replace_operand(s, *op->val, state);
   }
   return false;
 }
@@ -1078,7 +989,7 @@ static void rewrite_blocks(struct CopyPropState* s, uint64_t* state) {
     }
   }
   // At most one override per generating instruction in a block.
-  undo.classes = cp_calloc(max_block_instrs, sizeof(uint32_t), "tracking copy sources");
+  undo.classes = checked_calloc(max_block_instrs, sizeof(uint32_t), "Copy propagation", "tracking copy sources");
 
   for (unsigned i = 1; i + 1 < cfg->num_nodes; ++i) {
     struct CFGNode* block = cfg->nodes[i];
@@ -1122,7 +1033,7 @@ struct CFG* copy_prop(struct CFG* cfg, struct SliceList aliased_vars) {
     return cfg;
   }
 
-  uint64_t* state = cp_calloc(s.words, sizeof(uint64_t), "allocating a reaching-copy set");
+  uint64_t* state = checked_calloc(s.words, sizeof(uint64_t), "Copy propagation", "allocating a reaching-copy set");
   find_reaching_copies(&s, state);
   rewrite_blocks(&s, state);
   free(state);

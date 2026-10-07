@@ -1,4 +1,5 @@
 #include "codegen.h"
+#include "exit_codes.h"
 #include "asm_gen.h"
 #include "arena.h"
 #include <stdio.h>
@@ -7,116 +8,33 @@
 #include <stdarg.h>
 #include <string.h>
 
-// Allocate a machine instruction node with predictable defaults.
-// Returns a zeroed instruction node owned by the arena.
-// arena has been initialized before codegen runs.
-static struct MachineInstr* alloc_machine_instr(enum MachineInstrType type) {
-  struct MachineInstr* instr = arena_alloc(sizeof(struct MachineInstr));
-  instr->type = type;
-  instr->next = NULL;
-  memset(&instr->instr, 0, sizeof(instr->instr));
-  return instr;
-}
+// Codegen lowers the ASM IR, after pseudo replacement, into Dioptase machine
+// instructions. Every operand reaching this pass is Reg, Lit, Memory, or Data.
+//
+// Most instructions go through one fixed scratch template (lower_via_scratch):
+// sources are loaded into kScratchRegA/kScratchRegB, the operation computes
+// into kScratchRegA, and kScratchRegA is written back to the destination. Mov
+// and GetAddress have direct lowerings that skip the template where the operand
+// shapes allow it. The scratch registers r9-r11 are caller-saved and are not
+// argument registers (docs/abi.md), so clobbering them never disturbs argument
+// setup for a pending call.
 
-// Append an instruction node to a single-instruction list builder.
-static void append_instr(struct MachineInstr** head,
-                         struct MachineInstr** tail,
-                         struct MachineInstr* instr) {
-  if (*head == NULL) {
-    *head = instr;
-    *tail = instr;
-    return;
-  }
-  (*tail)->next = instr;
-  *tail = instr;
-}
+// Accumulates machine instructions in emission order, plus the context that
+// diagnostics report.
+struct Emitter {
+  struct MachineInstr* head;
+  struct MachineInstr* tail;
+  // Function being lowered, or NULL while emitting data and directives.
+  const struct Slice* func_name;
+  // ASM instruction being lowered, or NULL outside instruction lowering.
+  const struct AsmInstr* cur;
+};
 
-// Materialize a data label address into a register, optionally with a byte offset.
-static void emit_label_address(struct MachineInstr** head,
-                               struct MachineInstr** tail,
-                               enum Reg addr_reg,
-                               enum Reg pc_reg,
-                               struct Slice* label,
-                               int offset) {
-  struct MachineInstr* movi = alloc_machine_instr(MACHINE_MOVI);
-  movi->instr.movi.ra = addr_reg;
-  movi->instr.movi.label = label;
-  append_instr(head, tail, movi);
-
-  struct MachineInstr* br = alloc_machine_instr(MACHINE_BR);
-  br->instr.reg2.ra = pc_reg;
-  br->instr.reg2.rb = R0;
-  append_instr(head, tail, br);
-
-  struct MachineInstr* add_pc = alloc_machine_instr(MACHINE_ADD);
-  add_pc->instr.alu.ra = addr_reg;
-  add_pc->instr.alu.rb = addr_reg;
-  add_pc->instr.alu.rc = pc_reg;
-  append_instr(head, tail, add_pc);
-
-  if (offset != 0) {
-    struct MachineInstr* add_off = alloc_machine_instr(MACHINE_ADD);
-    add_off->instr.alu.ra = addr_reg;
-    add_off->instr.alu.rb = addr_reg;
-    add_off->instr.alu.rc = R0;
-    add_off->instr.alu.imm = offset;
-    append_instr(head, tail, add_off);
-  }
-}
-
-// Find the first source location marker in a function body.
-// Returns the loc pointer for the first ASM_BOUNDARY, or NULL if none.
-static const char* find_function_entry_loc(const struct AsmInstr* instrs) {
-  for (const struct AsmInstr* cur = instrs; cur != NULL; cur = cur->next) {
-    if (cur->type == ASM_BOUNDARY) {
-      return cur->instr.asm_boundary.loc;
-    }
-  }
-  return NULL;
-}
-
-// Report a codegen error with context, then exit.
-// func_name is the current function (may be NULL), instr_type is the ASM opcode.
-// Prints an actionable message to stderr and terminates.
-ANALYSIS_NORETURN static void codegen_errorf(const struct Slice* func_name,
-                           enum AsmInstrType instr_type,
-                           const char* fmt,
-                           ...) {
-  fprintf(stderr, "Compiler Error: codegen: ");
-  va_list args;
-  va_start(args, fmt);
-  vfprintf(stderr, fmt, args);
-  va_end(args);
-  if (func_name != NULL) {
-    fprintf(stderr, " (asm=%d, func=%.*s)\n", (int)instr_type,
-            (int)func_name->len, func_name->start);
-  } else {
-    fprintf(stderr, " (asm=%d)\n", (int)instr_type);
-  }
-  exit(1);
-}
-
-// Select a scratch register that avoids two disallowed registers.
-// avoid_a/avoid_b are registers that must not be selected.
-// Returns a scratch register distinct from avoid_a and avoid_b.
-// At least one scratch register remains available.
-static enum Reg pick_scratch_reg(const struct Slice* func_name,
-                                 enum AsmInstrType instr_type,
-                                 enum Reg avoid_a,
-                                 enum Reg avoid_b) {
-  if (kScratchRegA != avoid_a && kScratchRegA != avoid_b) {
-    return kScratchRegA;
-  }
-  if (kScratchRegB != avoid_a && kScratchRegB != avoid_b) {
-    return kScratchRegB;
-  }
-  if (kScratchRegC != avoid_a && kScratchRegC != avoid_b) {
-    return kScratchRegC;
-  }
-  codegen_errorf(func_name, instr_type,
-                 "no scratch register available (avoid=%d,%d)", (int)avoid_a, (int)avoid_b);
-  return kScratchRegA;
-}
+// Addressing form of a load or store: [base, imm], or a PC-relative data label.
+enum MemForm {
+  MEM_BASE_OFFSET,
+  MEM_LABEL,
+};
 
 // Builtin helper names referenced by codegen-generated call sequences.
 static struct Slice kBuiltinSmul = {"smul", 4};
@@ -133,91 +51,343 @@ static struct Slice kFunctionEpilogueLabel = {"Function Epilogue", 17};
 static struct Slice kFunctionPrologueLabel = {"Function Prologue", 17};
 static struct Slice kFunctionBodyLabel = {"Function Body", 13};
 
-// Emit a call sequence for a binary builtin that expects args in R1/R2.
-static void append_builtin_call(struct MachineInstr** head,
-                                struct MachineInstr** tail,
-                                struct Slice* label) {
-  struct MachineInstr* mov_a = alloc_machine_instr(MACHINE_MOV);
-  mov_a->instr.reg2.ra = R1;
-  mov_a->instr.reg2.rb = kScratchRegA;
-  append_instr(head, tail, mov_a);
-
-  struct MachineInstr* mov_b = alloc_machine_instr(MACHINE_MOV);
-  mov_b->instr.reg2.ra = R2;
-  mov_b->instr.reg2.rb = kScratchRegB;
-  append_instr(head, tail, mov_b);
-
-  struct MachineInstr* call = alloc_machine_instr(MACHINE_CALL);
-  call->instr.target.label = label;
-  append_instr(head, tail, call);
-
-  struct MachineInstr* mov_result = alloc_machine_instr(MACHINE_MOV);
-  mov_result->instr.reg2.ra = kScratchRegA;
-  mov_result->instr.reg2.rb = R1;
-  append_instr(head, tail, mov_result);
-}
-
-// Constants derived from ABI stack layout and short-branch sequencing (byte offsets).
+// Byte offsets for the conditional-jump expansion in lower_cond_jump. Relative
+// branches add pc + 4 (docs/ISA.md). The skip over the long jump assumes
+// `movi rX, label` always expands to exactly two instructions (lui + addi).
 static const int kCondJumpBranchSkip = 4;
 static const int kCondJumpJmpSkip = 12;
-static const int kZeroOffset = 0;
+
+// Frame layout from the prologue: [bp] holds the caller's bp and [bp + 4] the
+// return address; together they occupy kEpilogueStackBytes above bp.
 static const int kSavedBpOffset = 0;
 static const int kSavedRaOffset = 4;
 static const int kEpilogueStackBytes = 8;
 
-// Load from a data label (optionally with an offset) into a register.
-static void emit_data_load(struct MachineInstr** head,
-                           struct MachineInstr** tail,
-                           const struct Slice* func_name,
-                           enum AsmInstrType instr_type,
-                           enum Reg dst_reg,
-                           const struct Operand* data) {
-  if (data->op.data.offset != 0) {
-    enum Reg pc_reg = (dst_reg == kScratchRegA) ? kScratchRegB : kScratchRegA;
-    emit_label_address(head, tail, dst_reg, pc_reg, data->op.data.label, data->op.data.offset);
-    struct MachineInstr* load;
-    switch (data->asm_type->type) {
-      case BYTE:
-        load = alloc_machine_instr(MACHINE_LBA);
-        break;
-      case DOUBLE:
-        load = alloc_machine_instr(MACHINE_LDA);
-        break;
-      case WORD:
-        load = alloc_machine_instr(MACHINE_LWA);
-        break;
-      default:
-        codegen_errorf(func_name, instr_type,
-                       "unsupported asm type %d for data operand load", (int)data->asm_type->type);
-        return;
-    }
-    load->instr.mem.ra = dst_reg;
-    load->instr.mem.rb = dst_reg;
-    load->instr.mem.imm = 0;
-    append_instr(head, tail, load);
+// Report a codegen error with the current function and ASM opcode, then exit.
+ANALYSIS_NORETURN static void codegen_errorf(const struct Emitter* e,
+                                             const char* fmt,
+                                             ...) {
+  fprintf(stderr, "Compiler Error: codegen: ");
+  va_list args;
+  va_start(args, fmt);
+  vfprintf(stderr, fmt, args);
+  va_end(args);
+  if (e->func_name != NULL && e->cur != NULL) {
+    fprintf(stderr, " (asm=%d, func=%.*s)\n", (int)e->cur->type,
+            (int)e->func_name->len, e->func_name->start);
+  } else if (e->func_name != NULL) {
+    fprintf(stderr, " (func=%.*s)\n", (int)e->func_name->len, e->func_name->start);
   } else {
-    struct MachineInstr* load;
-    switch (data->asm_type->type) {
-      case BYTE:
-        load = alloc_machine_instr(MACHINE_LB);
-        break;
-      case DOUBLE:
-        load = alloc_machine_instr(MACHINE_LD);
-        break;
-      case WORD:
-        load = alloc_machine_instr(MACHINE_LW);
-        break;
-      default:
-        codegen_errorf(func_name, instr_type,
-                       "unsupported asm type %d for data operand load", (int)data->asm_type->type);
-        return;
-    }
-    load->instr.mem.ra = dst_reg;
-    load->instr.mem.rb = R0;
-    load->instr.mem.imm = kZeroOffset;
-    load->instr.mem.label = data->op.data.label;
-    append_instr(head, tail, load);
+    fprintf(stderr, "\n");
   }
+  exit(BCC_EXIT_INTERNAL);
+}
+
+// ---------------------------------------------------------------------------
+// Instruction builders
+// ---------------------------------------------------------------------------
+
+// Append a zeroed instruction of the given kind; the caller fills its payload.
+static struct MachineInstr* emit(struct Emitter* e, enum MachineInstrType type) {
+  struct MachineInstr* instr = arena_alloc(sizeof(struct MachineInstr));
+  memset(instr, 0, sizeof(*instr));
+  instr->type = type;
+  if (e->head == NULL) {
+    e->head = instr;
+  } else {
+    e->tail->next = instr;
+  }
+  e->tail = instr;
+  return instr;
+}
+
+// Three-register ALU form: `op ra, rb, rc`.
+static void emit_alu_rrr(struct Emitter* e, enum MachineInstrType type,
+                         enum Reg ra, enum Reg rb, enum Reg rc) {
+  struct MachineInstr* instr = emit(e, type);
+  instr->instr.alu.ra = ra;
+  instr->instr.alu.rb = rb;
+  instr->instr.alu.rc = rc;
+}
+
+// ALU immediate form: `op ra, rb, imm`. An imm of 0 prints as the register
+// form with rc = r0, which computes the same result.
+static void emit_alu_rri(struct Emitter* e, enum MachineInstrType type,
+                         enum Reg ra, enum Reg rb, int imm) {
+  struct MachineInstr* instr = emit(e, type);
+  instr->instr.alu.ra = ra;
+  instr->instr.alu.rb = rb;
+  instr->instr.alu.imm = imm;
+}
+
+// Two-register form shared by mov, not, cmp, truncate/sign-extend, and register branches.
+static void emit_reg2(struct Emitter* e, enum MachineInstrType type, enum Reg ra, enum Reg rb) {
+  struct MachineInstr* instr = emit(e, type);
+  instr->instr.reg2.ra = ra;
+  instr->instr.reg2.rb = rb;
+}
+
+// Single-register form used by push and pop.
+static void emit_reg1(struct Emitter* e, enum MachineInstrType type, enum Reg ra) {
+  emit(e, type)->instr.reg.ra = ra;
+}
+
+// Load or store addressing [base, imm].
+static void emit_mem_base(struct Emitter* e, enum MachineInstrType type,
+                          enum Reg ra, enum Reg base, int imm) {
+  struct MachineInstr* instr = emit(e, type);
+  instr->instr.mem.ra = ra;
+  instr->instr.mem.rb = base;
+  instr->instr.mem.imm = imm;
+}
+
+// Load or store addressing a data label directly (offset 0 only).
+static void emit_mem_label(struct Emitter* e, enum MachineInstrType type,
+                           enum Reg ra, struct Slice* label) {
+  struct MachineInstr* instr = emit(e, type);
+  instr->instr.mem.ra = ra;
+  instr->instr.mem.rb = R0;
+  instr->instr.mem.label = label;
+}
+
+// Load an immediate; the assembler expands movi to as many instructions as the value needs.
+static void emit_movi_imm(struct Emitter* e, enum Reg ra, int imm) {
+  struct MachineInstr* instr = emit(e, MACHINE_MOVI);
+  instr->instr.movi.ra = ra;
+  instr->instr.movi.imm = imm;
+}
+
+// `movi ra, label` yields a PC-relative offset, not an absolute address
+// (docs/ISA.md); see emit_label_address for the absolute form.
+static void emit_movi_label(struct Emitter* e, enum Reg ra, struct Slice* label) {
+  struct MachineInstr* instr = emit(e, MACHINE_MOVI);
+  instr->instr.movi.ra = ra;
+  instr->instr.movi.label = label;
+}
+
+// Label-or-immediate payload shared by calls, jumps, branches, and directives.
+static void emit_target(struct Emitter* e, enum MachineInstrType type,
+                        struct Slice* label, int imm) {
+  struct MachineInstr* instr = emit(e, type);
+  instr->instr.target.label = label;
+  instr->instr.target.imm = imm;
+}
+
+// Assembler comment line; text is not copied and must outlive the machine program.
+static void emit_comment(struct Emitter* e, struct Slice* text) {
+  emit(e, MACHINE_COMMENT)->instr.comment.text = text;
+}
+
+// Label definition at the current position.
+static void emit_label(struct Emitter* e, struct Slice* name) {
+  emit(e, MACHINE_LABEL)->instr.label.name = name;
+}
+
+// Source-line marker consumed by the assembler's debug-info output.
+static void emit_debug_loc(struct Emitter* e, const char* loc) {
+  emit(e, MACHINE_DEBUG_LOC)->instr.debug_loc.loc = loc;
+}
+
+// ---------------------------------------------------------------------------
+// Opcode selection
+// ---------------------------------------------------------------------------
+
+// Select the load opcode for an access of the given width and addressing form.
+static enum MachineInstrType load_op(const struct Emitter* e,
+                                     const struct AsmType* type,
+                                     enum MemForm form) {
+  bool label = form == MEM_LABEL;
+  switch (type->type) {
+    case BYTE:
+      return label ? MACHINE_LB : MACHINE_LBA;
+    case DOUBLE:
+      return label ? MACHINE_LD : MACHINE_LDA;
+    case WORD:
+      return label ? MACHINE_LW : MACHINE_LWA;
+    default:
+      codegen_errorf(e, "unsupported asm type %d for load; expected BYTE, DOUBLE, or WORD",
+                     (int)type->type);
+  }
+  return MACHINE_LWA;
+}
+
+// Select the store opcode for an access of the given width and addressing form.
+static enum MachineInstrType store_op(const struct Emitter* e,
+                                      const struct AsmType* type,
+                                      enum MemForm form) {
+  bool label = form == MEM_LABEL;
+  switch (type->type) {
+    case BYTE:
+      return label ? MACHINE_SB : MACHINE_SBA;
+    case DOUBLE:
+      return label ? MACHINE_SD : MACHINE_SDA;
+    case WORD:
+      return label ? MACHINE_SW : MACHINE_SWA;
+    default:
+      codegen_errorf(e, "unsupported asm type %d for store; expected BYTE, DOUBLE, or WORD",
+                     (int)type->type);
+  }
+  return MACHINE_SWA;
+}
+
+// Select the push macro for a value of the given width.
+static enum MachineInstrType push_op(const struct Emitter* e, const struct AsmType* type) {
+  switch (type->type) {
+    case BYTE:
+      return MACHINE_PUSHB;
+    case DOUBLE:
+      return MACHINE_PUSHD;
+    case WORD:
+      return MACHINE_PUSH;
+    default:
+      codegen_errorf(e, "unsupported asm type %d for push; expected BYTE, DOUBLE, or WORD",
+                     (int)type->type);
+  }
+  return MACHINE_PUSH;
+}
+
+// Select the short conditional branch that tests flags set by a preceding cmp.
+static enum MachineInstrType cond_branch_op(const struct Emitter* e, enum TACCondition cond) {
+  switch (cond) {
+    case CondE:  return MACHINE_BZ;
+    case CondNE: return MACHINE_BNZ;
+    case CondG:  return MACHINE_BG;
+    case CondGE: return MACHINE_BGE;
+    case CondL:  return MACHINE_BL;
+    case CondLE: return MACHINE_BLE;
+    case CondA:  return MACHINE_BA;
+    case CondAE: return MACHINE_BAE;
+    case CondB:  return MACHINE_BB;
+    case CondBE: return MACHINE_BBE;
+  }
+  codegen_errorf(e, "unknown condition %d; expected TAC CondE..CondBE", (int)cond);
+  return MACHINE_BR;
+}
+
+// ---------------------------------------------------------------------------
+// Operand access
+// ---------------------------------------------------------------------------
+
+// Select a scratch register distinct from avoid_a and avoid_b (pass R0 for an
+// unused slot). With three scratch registers, one is always available.
+static enum Reg pick_scratch_reg(const struct Emitter* e, enum Reg avoid_a, enum Reg avoid_b) {
+  if (kScratchRegA != avoid_a && kScratchRegA != avoid_b) {
+    return kScratchRegA;
+  }
+  if (kScratchRegB != avoid_a && kScratchRegB != avoid_b) {
+    return kScratchRegB;
+  }
+  if (kScratchRegC != avoid_a && kScratchRegC != avoid_b) {
+    return kScratchRegC;
+  }
+  codegen_errorf(e, "no scratch register available (avoid=%d,%d)", (int)avoid_a, (int)avoid_b);
+  return kScratchRegA;
+}
+
+// Materialize the absolute address label + offset into addr_reg. pc_reg is
+// clobbered: `br pc_reg, r0` captures pc + 4, which turns movi's PC-relative
+// label offset into an absolute address (docs/ISA.md).
+static void emit_label_address(struct Emitter* e,
+                               enum Reg addr_reg,
+                               enum Reg pc_reg,
+                               struct Slice* label,
+                               int offset) {
+  emit_movi_label(e, addr_reg, label);
+  emit_reg2(e, MACHINE_BR, pc_reg, R0);
+  emit_alu_rrr(e, MACHINE_ADD, addr_reg, addr_reg, pc_reg);
+  if (offset != 0) {
+    emit_alu_rri(e, MACHINE_ADD, addr_reg, addr_reg, offset);
+  }
+}
+
+// Load opr's value into dst_reg. keep_reg names a register holding a live
+// value that must survive (R0 if none); a Data operand with a nonzero offset
+// needs a PC temporary, which is picked to avoid both dst_reg and keep_reg.
+static void load_operand(struct Emitter* e, const struct Operand* opr,
+                         enum Reg dst_reg, enum Reg keep_reg) {
+  switch (opr->type) {
+    case OPERAND_REG:
+      emit_reg2(e, MACHINE_MOV, dst_reg, opr->op.reg.reg);
+      return;
+    case OPERAND_LIT:
+      emit_movi_imm(e, dst_reg, opr->op.lit.value);
+      return;
+    case OPERAND_MEMORY:
+      emit_mem_base(e, load_op(e, opr->asm_type, MEM_BASE_OFFSET), dst_reg,
+                    opr->op.memory.base, opr->op.memory.offset);
+      return;
+    case OPERAND_DATA:
+      if (opr->op.data.offset == 0) {
+        emit_mem_label(e, load_op(e, opr->asm_type, MEM_LABEL), dst_reg, opr->op.data.label);
+      } else {
+        enum Reg pc_reg = pick_scratch_reg(e, dst_reg, keep_reg);
+        emit_label_address(e, dst_reg, pc_reg, opr->op.data.label, opr->op.data.offset);
+        emit_mem_base(e, load_op(e, opr->asm_type, MEM_BASE_OFFSET), dst_reg, dst_reg, 0);
+      }
+      return;
+    default:
+      codegen_errorf(e, "invalid source operand type %d; expected Reg, Lit, Memory, or Data",
+                     (int)opr->type);
+  }
+}
+
+// Store value_reg to a Data operand. A nonzero offset needs an absolute
+// address, which clobbers kScratchRegA as the PC temporary; when the value
+// itself lives in kScratchRegA it is saved on the stack around that sequence.
+static void store_to_data(struct Emitter* e, const struct Operand* dst, enum Reg value_reg) {
+  if (dst->op.data.offset == 0) {
+    emit_mem_label(e, store_op(e, dst->asm_type, MEM_LABEL), value_reg, dst->op.data.label);
+    return;
+  }
+
+  enum Reg addr_reg = (value_reg == kScratchRegB) ? kScratchRegC : kScratchRegB;
+  if (value_reg == kScratchRegA) {
+    emit_reg1(e, MACHINE_PUSH, kScratchRegA);
+    emit_label_address(e, addr_reg, kScratchRegA, dst->op.data.label, dst->op.data.offset);
+    emit_reg1(e, MACHINE_POP, kScratchRegA);
+  } else {
+    emit_label_address(e, addr_reg, kScratchRegA, dst->op.data.label, dst->op.data.offset);
+  }
+  emit_mem_base(e, store_op(e, dst->asm_type, MEM_BASE_OFFSET), value_reg, addr_reg, 0);
+}
+
+// Write value_reg to a destination operand.
+static void store_operand(struct Emitter* e, const struct Operand* dst, enum Reg value_reg) {
+  switch (dst->type) {
+    case OPERAND_REG:
+      emit_reg2(e, MACHINE_MOV, dst->op.reg.reg, value_reg);
+      return;
+    case OPERAND_MEMORY:
+      emit_mem_base(e, store_op(e, dst->asm_type, MEM_BASE_OFFSET), value_reg,
+                    dst->op.memory.base, dst->op.memory.offset);
+      return;
+    case OPERAND_DATA:
+      store_to_data(e, dst, value_reg);
+      return;
+    default:
+      codegen_errorf(e, "invalid destination operand type %d; expected Reg, Memory, or Data",
+                     (int)dst->type);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Control-flow sequences
+// ---------------------------------------------------------------------------
+
+// Jump to label anywhere in the address space: movi yields label's
+// PC-relative offset, which `br r0, rX` adds to the PC. Clobbers kScratchRegB.
+static void emit_long_jump(struct Emitter* e, struct Slice* label) {
+  emit_movi_label(e, kScratchRegB, label);
+  emit_reg2(e, MACHINE_BR, R0, kScratchRegB);
+}
+
+// Call a two-argument builtin with the ABI argument registers: scratch A and B
+// go to r1/r2 and the result comes back in r1, then moves to scratch A.
+static void emit_builtin_call(struct Emitter* e, struct Slice* label) {
+  emit_reg2(e, MACHINE_MOV, R1, kScratchRegA);
+  emit_reg2(e, MACHINE_MOV, R2, kScratchRegB);
+  emit_target(e, MACHINE_CALL, label, 0);
+  emit_reg2(e, MACHINE_MOV, kScratchRegA, R1);
 }
 
 // Tear down the current frame, leaving the machine as it was just before the
@@ -225,1289 +395,453 @@ static void emit_data_load(struct MachineInstr** head,
 // and ra holds the caller's return address. Only sp, bp, and ra are written, so
 // argument/return registers (r1-r8) survive. The caller of this helper emits
 // the final control transfer (ret, or a jump for a tail call).
-static void emit_function_epilogue(struct MachineInstr** head,
-                                   struct MachineInstr** tail) {
-  // Machine: Comment "Function Epilogue"
-  struct MachineInstr* comment = alloc_machine_instr(MACHINE_COMMENT);
-  comment->instr.comment.text = &kFunctionEpilogueLabel;
-  append_instr(head, tail, comment);
-
-  // Machine: Mov sp, bp; Lwa ra, [bp, 4]; Lwa bp, [bp]; Add sp, sp, 8
-  struct MachineInstr* mov = alloc_machine_instr(MACHINE_MOV);
-  mov->instr.reg2.ra = SP;
-  mov->instr.reg2.rb = BP;
-  append_instr(head, tail, mov);
-  struct MachineInstr* lw_ra = alloc_machine_instr(MACHINE_LWA);
-  lw_ra->instr.mem.ra = RA;
-  lw_ra->instr.mem.rb = BP;
-  lw_ra->instr.mem.imm = kSavedRaOffset;
-  append_instr(head, tail, lw_ra);
-  struct MachineInstr* lw_bp = alloc_machine_instr(MACHINE_LWA);
-  lw_bp->instr.mem.ra = BP;
-  lw_bp->instr.mem.rb = BP;
-  lw_bp->instr.mem.imm = kSavedBpOffset;
-  append_instr(head, tail, lw_bp);
-  struct MachineInstr* addi = alloc_machine_instr(MACHINE_ADD);
-  addi->instr.alu.ra = SP;
-  addi->instr.alu.rb = SP;
-  addi->instr.alu.imm = kEpilogueStackBytes;
-  append_instr(head, tail, addi);
+static void emit_function_epilogue(struct Emitter* e) {
+  emit_comment(e, &kFunctionEpilogueLabel);
+  emit_reg2(e, MACHINE_MOV, SP, BP);
+  emit_mem_base(e, MACHINE_LWA, RA, BP, kSavedRaOffset);
+  emit_mem_base(e, MACHINE_LWA, BP, BP, kSavedBpOffset);
+  emit_alu_rri(e, MACHINE_ADD, SP, SP, kEpilogueStackBytes);
 }
 
-static struct MachineInstr* make_data(struct InitList* init, struct AsmType* type);
+// Build the frame described by kSaved*Offset: push ra, push bp, then point bp
+// at the saved bp. Locals below bp are allocated by the `sub sp` that asm_gen
+// places at the start of the body.
+static void emit_function_prologue(struct Emitter* e, const struct AsmFunc* func) {
+  emit_comment(e, &kFunctionPrologueLabel);
+  emit_reg1(e, MACHINE_PUSH, RA);
+  emit_reg1(e, MACHINE_PUSH, BP);
+  emit_reg2(e, MACHINE_MOV, BP, SP);
 
-// Lower one TAC instruction to machine instructions.
-struct MachineProg* instr_to_machine(struct Slice* func_name, struct AsmInstr* instr){
-  // Uses R9/R10/R11 as scratch registers to avoid clobbering argument registers.
-  struct MachineProg* machine_prog = arena_alloc(sizeof(struct MachineProg));
-  machine_prog->head = NULL;
-  machine_prog->tail = NULL;
-
-  for (struct AsmInstr* cur = instr; cur != NULL; cur = cur->next) {
-    struct MachineInstr* head = NULL;
-    struct MachineInstr* tail = NULL;
-    bool handled = false;
-
-    if (cur->type == ASM_MOV && cur->instr.asm_mov.dst != NULL && cur->instr.asm_mov.src != NULL) {
-      if (cur->instr.asm_mov.dst->type == OPERAND_REG && cur->instr.asm_mov.src->type == OPERAND_REG) {
-        // Machine: Mov rDst, rSrc
-        struct MachineInstr* mov = alloc_machine_instr(MACHINE_MOV);
-        mov->instr.reg2.ra = cur->instr.asm_mov.dst->op.reg.reg;
-        mov->instr.reg2.rb = cur->instr.asm_mov.src->op.reg.reg;
-        append_instr(&head, &tail, mov);
-        handled = true;
-      } else if (cur->instr.asm_mov.dst->type == OPERAND_REG && cur->instr.asm_mov.src->type == OPERAND_LIT) {
-        // Machine: Movi rDst, imm
-        struct MachineInstr* movi = alloc_machine_instr(MACHINE_MOVI);
-        movi->instr.movi.ra = cur->instr.asm_mov.dst->op.reg.reg;
-        movi->instr.movi.imm = cur->instr.asm_mov.src->op.lit.value;
-        append_instr(&head, &tail, movi);
-        handled = true;
-      } else if (cur->instr.asm_mov.dst->type == OPERAND_MEMORY && cur->instr.asm_mov.src->type == OPERAND_REG) {
-        // Machine: Swa rSrc, [rBase, off]
-        struct MachineInstr* store;
-        switch (cur->instr.asm_mov.dst->asm_type->type) {
-          case BYTE:
-            // byte store
-            store = alloc_machine_instr(MACHINE_SBA);
-            break;
-          case DOUBLE:
-            // double store
-            store = alloc_machine_instr(MACHINE_SDA);
-            break;
-          case WORD:
-            // word store
-            store = alloc_machine_instr(MACHINE_SWA);
-            break;
-          default:
-            codegen_errorf(func_name, cur->type,
-                           "unsupported asm type %d for memory operand store", (int)cur->instr.asm_mov.dst->asm_type->type);
-            break;
-        }
-        store->instr.mem.ra = cur->instr.asm_mov.src->op.reg.reg;
-        store->instr.mem.rb = cur->instr.asm_mov.dst->op.memory.base;
-        store->instr.mem.imm = cur->instr.asm_mov.dst->op.memory.offset;
-        append_instr(&head, &tail, store);
-        handled = true;
-      } else if (cur->instr.asm_mov.dst->type == OPERAND_DATA && cur->instr.asm_mov.src->type == OPERAND_REG) {
-        if (cur->instr.asm_mov.dst->op.data.offset != 0) {
-          // Store through a computed absolute address for label+offset.
-          emit_label_address(&head, &tail, kScratchRegB, kScratchRegA,
-                             cur->instr.asm_mov.dst->op.data.label, cur->instr.asm_mov.dst->op.data.offset);
-          struct MachineInstr* store;
-          switch (cur->instr.asm_mov.dst->asm_type->type) {
-            case BYTE:
-              store = alloc_machine_instr(MACHINE_SBA);
-              break;
-            case DOUBLE:
-              store = alloc_machine_instr(MACHINE_SDA);
-              break;
-            case WORD:
-              store = alloc_machine_instr(MACHINE_SWA);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for data operand store", (int)cur->instr.asm_mov.dst->asm_type->type);
-              break;
-          }
-          store->instr.mem.ra = cur->instr.asm_mov.src->op.reg.reg;
-          store->instr.mem.rb = kScratchRegB;
-          store->instr.mem.imm = 0;
-          append_instr(&head, &tail, store);
-        } else {
-          // Machine: Store rSrc, [label]
-          struct MachineInstr* store;
-          switch (cur->instr.asm_mov.dst->asm_type->type) {
-            case BYTE:
-              // byte store
-              store = alloc_machine_instr(MACHINE_SB);
-              break;
-            case DOUBLE:
-              // double store
-              store = alloc_machine_instr(MACHINE_SD);
-              break;
-            case WORD:
-              // word store
-              store = alloc_machine_instr(MACHINE_SW);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for data operand store", (int)cur->instr.asm_mov.dst->asm_type->type);
-              break;
-          }
-          store->instr.mem.ra = cur->instr.asm_mov.src->op.reg.reg;
-          store->instr.mem.rb = R0;
-          store->instr.mem.imm = kZeroOffset;
-          store->instr.mem.label = cur->instr.asm_mov.dst->op.data.label;
-          append_instr(&head, &tail, store);
-        }
-        handled = true;
-      } else if (cur->instr.asm_mov.dst->type == OPERAND_MEMORY &&
-                 (cur->instr.asm_mov.src->type == OPERAND_DATA ||
-                  cur->instr.asm_mov.src->type == OPERAND_LIT ||
-                  cur->instr.asm_mov.src->type == OPERAND_MEMORY)) {
-        enum Reg value_reg = kScratchRegA;
-        if (cur->instr.asm_mov.src->type == OPERAND_MEMORY) {
-          value_reg = pick_scratch_reg(func_name, cur->type, cur->instr.asm_mov.dst->op.memory.base, cur->instr.asm_mov.src->op.memory.base);
-        } else {
-          value_reg = pick_scratch_reg(func_name, cur->type, cur->instr.asm_mov.dst->op.memory.base, R0);
-        }
-        if (cur->instr.asm_mov.src->type == OPERAND_DATA) {
-          if (cur->instr.asm_mov.src->op.data.offset == 0) {
-            struct MachineInstr* load;
-            switch (cur->instr.asm_mov.src->asm_type->type) {
-              case BYTE:
-                load = alloc_machine_instr(MACHINE_LB);
-                break;
-              case DOUBLE:
-                load = alloc_machine_instr(MACHINE_LD);
-                break;
-              case WORD:
-                load = alloc_machine_instr(MACHINE_LW);
-                break;
-              default:
-                codegen_errorf(func_name, cur->type,
-                               "unsupported asm type %d for data operand load",
-                               (int)cur->instr.asm_mov.src->asm_type->type);
-                break;
-            }
-            load->instr.mem.ra = value_reg;
-            load->instr.mem.rb = R0;
-            load->instr.mem.imm = kZeroOffset;
-            load->instr.mem.label = cur->instr.asm_mov.src->op.data.label;
-            append_instr(&head, &tail, load);
-          } else {
-            enum Reg pc_reg = pick_scratch_reg(func_name, cur->type, cur->instr.asm_mov.dst->op.memory.base, value_reg);
-            emit_label_address(&head, &tail, value_reg, pc_reg,
-                               cur->instr.asm_mov.src->op.data.label, cur->instr.asm_mov.src->op.data.offset);
-            struct MachineInstr* load;
-            switch (cur->instr.asm_mov.src->asm_type->type) {
-              case BYTE:
-                load = alloc_machine_instr(MACHINE_LBA);
-                break;
-              case DOUBLE:
-                load = alloc_machine_instr(MACHINE_LDA);
-                break;
-              case WORD:
-                load = alloc_machine_instr(MACHINE_LWA);
-                break;
-              default:
-                codegen_errorf(func_name, cur->type,
-                               "unsupported asm type %d for data operand load",
-                               (int)cur->instr.asm_mov.src->asm_type->type);
-                break;
-            }
-            load->instr.mem.ra = value_reg;
-            load->instr.mem.rb = value_reg;
-            load->instr.mem.imm = 0;
-            append_instr(&head, &tail, load);
-          }
-        } else if (cur->instr.asm_mov.src->type == OPERAND_LIT) {
-          struct MachineInstr* movi = alloc_machine_instr(MACHINE_MOVI);
-          movi->instr.movi.ra = value_reg;
-          movi->instr.movi.imm = cur->instr.asm_mov.src->op.lit.value;
-          append_instr(&head, &tail, movi);
-        } else if (cur->instr.asm_mov.src->type == OPERAND_MEMORY) {
-          struct MachineInstr* load;
-          switch (cur->instr.asm_mov.src->asm_type->type) {
-            case BYTE:
-              load = alloc_machine_instr(MACHINE_LBA);
-              break;
-            case DOUBLE:
-              load = alloc_machine_instr(MACHINE_LDA);
-              break;
-            case WORD:
-              load = alloc_machine_instr(MACHINE_LWA);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for memory operand load",
-                             (int)cur->instr.asm_mov.src->asm_type->type);
-              break;
-          }
-          load->instr.mem.ra = value_reg;
-          load->instr.mem.rb = cur->instr.asm_mov.src->op.memory.base;
-          load->instr.mem.imm = cur->instr.asm_mov.src->op.memory.offset;
-          append_instr(&head, &tail, load);
-        }
-
-        struct MachineInstr* store;
-        switch (cur->instr.asm_mov.dst->asm_type->type) {
-          case BYTE:
-            store = alloc_machine_instr(MACHINE_SBA);
-            break;
-          case DOUBLE:
-            store = alloc_machine_instr(MACHINE_SDA);
-            break;
-          case WORD:
-            store = alloc_machine_instr(MACHINE_SWA);
-            break;
-          default:
-            codegen_errorf(func_name, cur->type,
-                           "unsupported asm type %d for memory operand store", (int)cur->instr.asm_mov.dst->asm_type->type);
-            break;
-        }
-        store->instr.mem.ra = value_reg;
-        store->instr.mem.rb = cur->instr.asm_mov.dst->op.memory.base;
-        store->instr.mem.imm = cur->instr.asm_mov.dst->op.memory.offset;
-        append_instr(&head, &tail, store);
-        handled = true;
-      } 
-      else if (cur->instr.asm_mov.dst->type == OPERAND_REG && cur->instr.asm_mov.src->type == OPERAND_MEMORY) {
-         // Machine: Lwa rDst, [rBase, off]
-         struct MachineInstr* load;
-         switch (cur->instr.asm_mov.src->asm_type->type) {
-           case BYTE:
-             // byte load
-             load = alloc_machine_instr(MACHINE_LBA);
-             break;
-           case DOUBLE:
-             // double load
-             load = alloc_machine_instr(MACHINE_LDA);
-             break;
-           case WORD:
-             // word load
-             load = alloc_machine_instr(MACHINE_LWA);
-             break;
-           default:
-             codegen_errorf(func_name, cur->type,
-                            "unsupported asm type %d for memory operand load",
-                            (int)cur->instr.asm_mov.src->asm_type->type);
-             break;
-         }
-         load->instr.mem.ra = cur->instr.asm_mov.dst->op.reg.reg;
-         load->instr.mem.rb = cur->instr.asm_mov.src->op.memory.base;
-         load->instr.mem.imm = cur->instr.asm_mov.src->op.memory.offset;
-         append_instr(&head, &tail, load);
-         handled = true;
-       } 
-      else if (cur->instr.asm_mov.dst->type == OPERAND_REG && cur->instr.asm_mov.src->type == OPERAND_DATA) {
-        emit_data_load(&head, &tail, func_name, cur->type, cur->instr.asm_mov.dst->op.reg.reg, cur->instr.asm_mov.src);
-        handled = true;
-      }
-      
-      if (!handled && cur->type == ASM_PUSH && cur->instr.asm_push.src != NULL) {
-        if (cur->instr.asm_push.src->type == OPERAND_REG) {
-          // Machine: Push rSrc
-          struct MachineInstr* push = alloc_machine_instr(MACHINE_PUSH);
-          push->instr.reg.ra = cur->instr.asm_push.src->op.reg.reg;
-          append_instr(&head, &tail, push);
-          handled = true;
-        }
-      }
-    }
-
-    if (!handled && cur->type == ASM_GET_ADDRESS && cur->instr.asm_get_address.dst != NULL && cur->instr.asm_get_address.src != NULL) {
-      if (cur->instr.asm_get_address.dst->type == OPERAND_MEMORY && cur->instr.asm_get_address.src->type == OPERAND_MEMORY) {
-        // Machine: Add rTmp, rBase, off; Swa rTmp, [rDstBase, dstOff]
-        struct MachineInstr* add = alloc_machine_instr(MACHINE_ADD);
-        add->instr.alu.ra = kScratchRegB;
-        add->instr.alu.rb = cur->instr.asm_get_address.src->op.memory.base;
-        add->instr.alu.imm = cur->instr.asm_get_address.src->op.memory.offset;
-        append_instr(&head, &tail, add);
-        struct MachineInstr* sw = alloc_machine_instr(MACHINE_SWA);
-        sw->instr.mem.ra = kScratchRegB;
-        sw->instr.mem.rb = cur->instr.asm_get_address.dst->op.memory.base;
-        sw->instr.mem.imm = cur->instr.asm_get_address.dst->op.memory.offset;
-        append_instr(&head, &tail, sw);
-        handled = true;
-      } else if (cur->instr.asm_get_address.dst->type == OPERAND_MEMORY && cur->instr.asm_get_address.src->type == OPERAND_DATA) {
-        emit_label_address(&head, &tail, kScratchRegB, kScratchRegA,
-                           cur->instr.asm_get_address.src->op.data.label, cur->instr.asm_get_address.src->op.data.offset);
-        struct MachineInstr* sw = alloc_machine_instr(MACHINE_SWA);
-        sw->instr.mem.ra = kScratchRegB;
-        sw->instr.mem.rb = cur->instr.asm_get_address.dst->op.memory.base;
-        sw->instr.mem.imm = cur->instr.asm_get_address.dst->op.memory.offset;
-        append_instr(&head, &tail, sw);
-        handled = true;
-      } else if (cur->instr.asm_get_address.dst->type == OPERAND_REG && cur->instr.asm_get_address.src->type == OPERAND_MEMORY) {
-        struct MachineInstr* add = alloc_machine_instr(MACHINE_ADD);
-        add->instr.alu.ra = cur->instr.asm_get_address.dst->op.reg.reg;
-        add->instr.alu.rb = cur->instr.asm_get_address.src->op.memory.base;
-        add->instr.alu.imm = cur->instr.asm_get_address.src->op.memory.offset;
-        append_instr(&head, &tail, add);
-        handled = true;
-      } else if (cur->instr.asm_get_address.dst->type == OPERAND_REG && cur->instr.asm_get_address.src->type == OPERAND_DATA) {
-        enum Reg pc_reg = (cur->instr.asm_get_address.dst->op.reg.reg == kScratchRegA) ? kScratchRegB : kScratchRegA;
-        emit_label_address(&head, &tail, cur->instr.asm_get_address.dst->op.reg.reg, pc_reg,
-                           cur->instr.asm_get_address.src->op.data.label, cur->instr.asm_get_address.src->op.data.offset);
-        handled = true;
-      }
-    }
-
-    if (!handled) {
-      // Generic lowering: load sources into scratch regs, emit op, then store scratch A.
-      size_t src_count = 0;
-      struct Operand** srcs = get_srcs(cur, &src_count);
-      if (src_count == 2) {
-        struct Operand* a = srcs[0];
-        struct Operand* b = srcs[1];
-        if (a->type == OPERAND_REG) {
-          // Machine: Mov rScratchA, RA
-          struct MachineInstr* mov = alloc_machine_instr(MACHINE_MOV);
-          mov->instr.reg2.ra = kScratchRegA;
-          mov->instr.reg2.rb = a->op.reg.reg;
-          append_instr(&head, &tail, mov);
-        } else if (a->type == OPERAND_MEMORY) {
-          // Machine: Lwa rScratchA, [rBase, off]
-          struct MachineInstr* load;
-          switch (a->asm_type->type) {
-            case BYTE:
-              load = alloc_machine_instr(MACHINE_LBA);
-              break;
-            case DOUBLE:
-              load = alloc_machine_instr(MACHINE_LDA);
-              break;
-            case WORD:
-              load = alloc_machine_instr(MACHINE_LWA);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for source operand", (int)a->asm_type->type);
-              break;
-          }
-          load->instr.mem.ra = kScratchRegA;
-          load->instr.mem.rb = a->op.memory.base;
-          load->instr.mem.imm = a->op.memory.offset;
-          append_instr(&head, &tail, load);
-        } else if (a->type == OPERAND_LIT) {
-          // Machine: Movi rScratchA, imm
-          struct MachineInstr* movi = alloc_machine_instr(MACHINE_MOVI);
-          movi->instr.movi.ra = kScratchRegA;
-          movi->instr.movi.imm = a->op.lit.value;
-          append_instr(&head, &tail, movi);
-        } else if (a->type == OPERAND_DATA) {
-          emit_data_load(&head, &tail, func_name, cur->type, kScratchRegA, a);
-        } else {
-          codegen_errorf(func_name, cur->type,
-                         "invalid first source operand type %d; expected Reg, Memory, Lit, or Data",
-                         (int)a->type);
-        }
-
-        if (b->type == OPERAND_REG) {
-          // Machine: Mov rScratchB, RB
-          struct MachineInstr* mov = alloc_machine_instr(MACHINE_MOV);
-          mov->instr.reg2.ra = kScratchRegB;
-          mov->instr.reg2.rb = b->op.reg.reg;
-          append_instr(&head, &tail, mov);
-        } else if (b->type == OPERAND_MEMORY) {
-          // Machine: Load rScratchB, [rBase, off]
-          struct MachineInstr* load;
-          switch (b->asm_type->type) {
-            case BYTE:
-              load = alloc_machine_instr(MACHINE_LBA);
-              break;
-            case DOUBLE:
-              load = alloc_machine_instr(MACHINE_LDA);
-              break;
-            case WORD:
-              load = alloc_machine_instr(MACHINE_LWA);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for source operand", (int)b->asm_type->type);
-              break;
-          }
-          load->instr.mem.ra = kScratchRegB;
-          load->instr.mem.rb = b->op.memory.base;
-          load->instr.mem.imm = b->op.memory.offset;
-          append_instr(&head, &tail, load);
-        } else if (b->type == OPERAND_LIT) {
-          // Machine: Movi rScratchB, imm
-          struct MachineInstr* movi = alloc_machine_instr(MACHINE_MOVI);
-          movi->instr.movi.ra = kScratchRegB;
-          movi->instr.movi.imm = b->op.lit.value;
-          append_instr(&head, &tail, movi);
-        } else if (b->type == OPERAND_DATA) {
-          emit_data_load(&head, &tail, func_name, cur->type, kScratchRegB, b);
-        } else {
-          codegen_errorf(func_name, cur->type,
-                         "invalid second source operand type %d; expected Reg, Memory, Lit, or Data",
-                         (int)b->type);
-        }
-      } else if (src_count == 1) {
-        struct Operand* a = srcs[0];
-        if (a->type == OPERAND_REG) {
-          // Machine: Mov rScratchA, RA
-          struct MachineInstr* mov = alloc_machine_instr(MACHINE_MOV);
-          mov->instr.reg2.ra = kScratchRegA;
-          mov->instr.reg2.rb = a->op.reg.reg;
-          append_instr(&head, &tail, mov);
-        } else if (a->type == OPERAND_MEMORY) {
-          // Machine: Lwa rScratchA, [rBase, off]
-          struct MachineInstr* load;
-          switch (a->asm_type->type) {
-            case BYTE:
-              load = alloc_machine_instr(MACHINE_LBA);
-              break;
-            case DOUBLE:
-              load = alloc_machine_instr(MACHINE_LDA);
-              break;
-            case WORD:
-              load = alloc_machine_instr(MACHINE_LWA);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for source operand", (int)a->asm_type->type);
-              break;
-          }
-          load->instr.mem.ra = kScratchRegA;
-          load->instr.mem.rb = a->op.memory.base;
-          load->instr.mem.imm = a->op.memory.offset;
-          append_instr(&head, &tail, load);
-        } else if (a->type == OPERAND_LIT) {
-          // Machine: Movi rScratchA, imm
-          struct MachineInstr* movi = alloc_machine_instr(MACHINE_MOVI);
-          movi->instr.movi.ra = kScratchRegA;
-          movi->instr.movi.imm = a->op.lit.value;
-          append_instr(&head, &tail, movi);
-        } else if (a->type == OPERAND_DATA) {
-          emit_data_load(&head, &tail, func_name, cur->type, kScratchRegA, a);
-        } else {
-          codegen_errorf(func_name, cur->type,
-                         "invalid source operand type %d; expected Reg, Memory, Lit, or Data",
-                         (int)a->type);
-        }
-      }
-
-      switch (cur->type) {
-        case ASM_MOV:
-        case ASM_VOLATILE_READ:
-        case ASM_VOLATILE_WRITE:
-          // Same machine move as Mov. The opcode stays distinct until this point.
-          break;
-        case ASM_CMP: {
-          // Machine: Cmp rScratchA, rScratchB
-          struct MachineInstr* cmp = alloc_machine_instr(MACHINE_CMP);
-          cmp->instr.reg2.ra = kScratchRegA;
-          cmp->instr.reg2.rb = kScratchRegB;
-          append_instr(&head, &tail, cmp);
-          break;
-        }
-        case ASM_UNARY:
-          if (cur->instr.asm_unary.op == COMPLEMENT) {
-            // Machine: Not rScratchA, rScratchA
-            struct MachineInstr* not_instr = alloc_machine_instr(MACHINE_NOT);
-            not_instr->instr.reg2.ra = kScratchRegA;
-            not_instr->instr.reg2.rb = kScratchRegA;
-            append_instr(&head, &tail, not_instr);
-          } else if (cur->instr.asm_unary.op == NEGATE) {
-            // Machine: Sub rScratchA, R0, rScratchA
-            struct MachineInstr* sub = alloc_machine_instr(MACHINE_SUB);
-            sub->instr.alu.ra = kScratchRegA;
-            sub->instr.alu.rb = R0;
-            sub->instr.alu.rc = kScratchRegA;
-            append_instr(&head, &tail, sub);
-          } else if (cur->instr.asm_unary.op == UNARY_PLUS) {
-            // no-op
-          } else {
-            codegen_errorf(func_name, cur->type,
-                           "unsupported unary op %d; expected COMPLEMENT, NEGATE, or UNARY_PLUS",
-                           (int)cur->instr.asm_unary.op);
-          }
-          break;
-        case ASM_BINARY:
-          switch (cur->instr.asm_binary.alu_op) {
-            case ALU_ADD: {
-              // Machine: Add rScratchA, rScratchA, rScratchB
-              struct MachineInstr* add = alloc_machine_instr(MACHINE_ADD);
-              add->instr.alu.ra = kScratchRegA;
-              add->instr.alu.rb = kScratchRegA;
-              add->instr.alu.rc = kScratchRegB;
-              append_instr(&head, &tail, add);
-              break;
-            }
-            case ALU_SUB: {
-              // Machine: Sub rScratchA, rScratchA, rScratchB
-              struct MachineInstr* sub = alloc_machine_instr(MACHINE_SUB);
-              sub->instr.alu.ra = kScratchRegA;
-              sub->instr.alu.rb = kScratchRegA;
-              sub->instr.alu.rc = kScratchRegB;
-              append_instr(&head, &tail, sub);
-              break;
-            }
-            case ALU_AND: {
-              // Machine: And rScratchA, rScratchA, rScratchB
-              struct MachineInstr* and_instr = alloc_machine_instr(MACHINE_AND);
-              and_instr->instr.alu.ra = kScratchRegA;
-              and_instr->instr.alu.rb = kScratchRegA;
-              and_instr->instr.alu.rc = kScratchRegB;
-              append_instr(&head, &tail, and_instr);
-              break;
-            }
-            case ALU_OR: {
-              // Machine: Or rScratchA, rScratchA, rScratchB
-              struct MachineInstr* or_instr = alloc_machine_instr(MACHINE_OR);
-              or_instr->instr.alu.ra = kScratchRegA;
-              or_instr->instr.alu.rb = kScratchRegA;
-              or_instr->instr.alu.rc = kScratchRegB;
-              append_instr(&head, &tail, or_instr);
-              break;
-            }
-            case ALU_XOR: {
-              // Machine: Xor rScratchA, rScratchA, rScratchB
-              struct MachineInstr* xor_instr = alloc_machine_instr(MACHINE_XOR);
-              xor_instr->instr.alu.ra = kScratchRegA;
-              xor_instr->instr.alu.rb = kScratchRegA;
-              xor_instr->instr.alu.rc = kScratchRegB;
-              append_instr(&head, &tail, xor_instr);
-              break;
-            }
-            case ALU_SMUL: {
-              // Machine: Move args into R1/R2, call smul, move result into scratch A.
-              append_builtin_call(&head, &tail, &kBuiltinSmul);
-              break;
-            }
-            case ALU_SDIV: {
-              // Machine: Move args into R1/R2, call sdiv, move result into scratch A.
-              append_builtin_call(&head, &tail, &kBuiltinSdiv);
-              break;
-            }
-            case ALU_SMOD: {
-              // Machine: Move args into R1/R2, call smod, move result into scratch A.
-              append_builtin_call(&head, &tail, &kBuiltinSmod);
-              break;
-            }
-            case ALU_UMUL: {
-              // Machine: Move args into R1/R2, call umul, move result into scratch A.
-              append_builtin_call(&head, &tail, &kBuiltinUmul);
-              break;
-            }
-            case ALU_UDIV: {
-              // Machine: Move args into R1/R2, call udiv, move result into scratch A.
-              append_builtin_call(&head, &tail, &kBuiltinUdiv);
-              break;
-            }
-            case ALU_UMOD: {
-              // Machine: Move args into R1/R2, call umod, move result into scratch A.
-              append_builtin_call(&head, &tail, &kBuiltinUmod);
-              break;
-            }
-            case ALU_LSL: {
-              // Machine: Move args into R1/R2, call uleft_shift, move result into scratch A.
-              append_builtin_call(&head, &tail, &kBuiltinULeftShift);
-              break;
-            }
-            case ALU_LSR: {
-              // Machine: Move args into R1/R2, call uright_shift, move result into scratch A.
-              append_builtin_call(&head, &tail, &kBuiltinURightShift);
-              break;
-            }
-            case ALU_ASL: {
-              // Machine: Move args into R1/R2, call sleft_shift, move result into scratch A.
-              append_builtin_call(&head, &tail, &kBuiltinSLeftShift);
-              break;
-            }
-            case ALU_ASR: {
-              // Machine: Move args into R1/R2, call sright_shift, move result into scratch A.
-              append_builtin_call(&head, &tail, &kBuiltinSRightShift);
-              break;
-            }
-            case ALU_MOV: {
-              // Mov rB to rA
-              struct MachineInstr* mov = alloc_machine_instr(MACHINE_MOV);
-              mov->instr.reg2.ra = kScratchRegA;
-              mov->instr.reg2.rb = kScratchRegB;
-              append_instr(&head, &tail, mov);
-              break;
-            }
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unknown ALU op %d; expected a defined ALU_* variant",
-                             (int)cur->instr.asm_binary.alu_op);
-          }
-          break;
-        case ASM_JUMP: {
-          // Machine: Movi rScratchB, label; Br r0, rScratchB
-          struct MachineInstr* movi = alloc_machine_instr(MACHINE_MOVI);
-          movi->instr.movi.ra = kScratchRegB;
-          movi->instr.movi.label = cur->instr.asm_jump.label;
-          append_instr(&head, &tail, movi);
-          struct MachineInstr* br = alloc_machine_instr(MACHINE_BR);
-          br->instr.reg2.ra = R0;
-          br->instr.reg2.rb = kScratchRegB;
-          append_instr(&head, &tail, br);
-          break;
-        }
-        case ASM_COND_JUMP: {
-          // Expand conditional jump into a short branch-over sequence plus relative jump.
-          enum MachineInstrType branch_type = MACHINE_BR;
-          switch (cur->instr.asm_cond_jump.cond) {
-            case CondE:
-              branch_type = MACHINE_BZ;
-              break;
-            case CondNE:
-              branch_type = MACHINE_BNZ;
-              break;
-            case CondG:
-              branch_type = MACHINE_BG;
-              break;
-            case CondGE:
-              branch_type = MACHINE_BGE;
-              break;
-            case CondL:
-              branch_type = MACHINE_BL;
-              break;
-            case CondLE:
-              branch_type = MACHINE_BLE;
-              break;
-            case CondA:
-              branch_type = MACHINE_BA;
-              break;
-            case CondAE:
-              branch_type = MACHINE_BAE;
-              break;
-            case CondB:
-              branch_type = MACHINE_BB;
-              break;
-            case CondBE:
-              branch_type = MACHINE_BBE;
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unknown condition %d; expected TAC CondE..CondBE",
-                             (int)cur->instr.asm_cond_jump.cond);
-          }
-          // Machine: B<cond> +4
-          struct MachineInstr* cond = alloc_machine_instr(branch_type);
-          cond->instr.target.imm = kCondJumpBranchSkip;
-          append_instr(&head, &tail, cond);
-          // Machine: Jmp +12
-          struct MachineInstr* jmp = alloc_machine_instr(MACHINE_JMP);
-          jmp->instr.target.imm = kCondJumpJmpSkip;
-          append_instr(&head, &tail, jmp);
-          // Machine: Movi rScratchB, label; Br r0, rScratchB
-          struct MachineInstr* movi = alloc_machine_instr(MACHINE_MOVI);
-          movi->instr.movi.ra = kScratchRegB;
-          movi->instr.movi.label = cur->instr.asm_cond_jump.label;
-          append_instr(&head, &tail, movi);
-          struct MachineInstr* br = alloc_machine_instr(MACHINE_BR);
-          br->instr.reg2.ra = R0;
-          br->instr.reg2.rb = kScratchRegB;
-          append_instr(&head, &tail, br);
-          break;
-        }
-        case ASM_LABEL: {
-          // Machine: Label
-          struct MachineInstr* label = alloc_machine_instr(MACHINE_LABEL);
-          label->instr.label.name = cur->instr.asm_label.label;
-          append_instr(&head, &tail, label);
-          break;
-        }
-        case ASM_CALL: {
-          // Machine: Call label
-          struct MachineInstr* call = alloc_machine_instr(MACHINE_CALL);
-          call->instr.target.label = cur->instr.asm_call.label;
-          append_instr(&head, &tail, call);
-          break;
-        }
-        case ASM_INDIRECT_CALL: {
-          // Machine: Bra RA, rScratchA
-          struct MachineInstr* call = alloc_machine_instr(MACHINE_BRA);
-          call->instr.reg2.ra = RA;
-          call->instr.reg2.rb = kScratchRegA;
-          append_instr(&head, &tail, call);
-          break;
-        }
-        case ASM_TAIL_CALL: {
-          // Machine:
-          // <function epilogue>
-          // tail call
-          emit_function_epilogue(&head, &tail);
-          // Machine: Jmp label
-          struct MachineInstr* jmp = alloc_machine_instr(MACHINE_JMP);
-          jmp->instr.target.label = cur->instr.asm_tail_call.label;
-          append_instr(&head, &tail, jmp);
-          break;
-        }
-        case ASM_TAIL_CALL_INDIRECT: {
-          // Machine:
-          // <function epilogue>
-          emit_function_epilogue(&head, &tail);
-          // Machine: Bra R0, rScratchA
-          struct MachineInstr* bra = alloc_machine_instr(MACHINE_BRA);
-          bra->instr.reg2.ra = R0;
-          bra->instr.reg2.rb = kScratchRegA;
-          append_instr(&head, &tail, bra);
-          break;
-        }
-        case ASM_PUSH: {
-          // Machine: Push rScratchA
-          struct MachineInstr* push;
-          switch (cur->instr.asm_push.src->asm_type->type) {
-            case BYTE:
-              push = alloc_machine_instr(MACHINE_PUSHB);
-              break;
-            case DOUBLE:
-              push = alloc_machine_instr(MACHINE_PUSHD);
-              break;
-            case WORD:
-              push = alloc_machine_instr(MACHINE_PUSH);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for push operand",
-                             (int)cur->instr.asm_push.src->asm_type->type);
-          }
-          push->instr.reg.ra = kScratchRegA;
-          append_instr(&head, &tail, push);
-          break;
-        }
-        case ASM_RET: {
-          // Machine: <epilogue>; ret
-          emit_function_epilogue(&head, &tail);
-          struct MachineInstr* ret = alloc_machine_instr(MACHINE_RET);
-          append_instr(&head, &tail, ret);
-          break;
-        }
-        case ASM_BOUNDARY: {
-          if (cur->instr.asm_boundary.loc == NULL) {
-            break;
-          }
-          struct MachineInstr* marker = alloc_machine_instr(MACHINE_DEBUG_LOC);
-          marker->instr.debug_loc.loc = cur->instr.asm_boundary.loc;
-          append_instr(&head, &tail, marker);
-          break;
-        }
-        case ASM_TRUNC: {
-          if (cur->instr.asm_trunc.size == 1) {
-            // Machine: tncb rScratchA, rScratchA
-            struct MachineInstr* trunc_instr = alloc_machine_instr(MACHINE_TNCB);
-            trunc_instr->instr.reg2.ra = kScratchRegA;
-            trunc_instr->instr.reg2.rb = kScratchRegA;
-            append_instr(&head, &tail, trunc_instr);
-          } else if (cur->instr.asm_trunc.size == 2) {
-            // Machine: tncd rScratchA, rScratchA
-            struct MachineInstr* trunc_instr = alloc_machine_instr(MACHINE_TNCD);
-            trunc_instr->instr.reg2.ra = kScratchRegA;
-            trunc_instr->instr.reg2.rb = kScratchRegA;
-            append_instr(&head, &tail, trunc_instr);
-          } else {
-            codegen_errorf(func_name, cur->type,
-                           "unsupported truncation size %d; expected 1 or 2",
-                           (int)cur->instr.asm_trunc.size);
-          }
-          break;
-        }
-        case ASM_EXTEND: {
-          if (cur->instr.asm_extend.size == 1) {
-            // Machine: tncb rScratchA, rScratchA
-            struct MachineInstr* ext_instr = alloc_machine_instr(MACHINE_SXTB);
-            ext_instr->instr.reg2.ra = kScratchRegA;
-            ext_instr->instr.reg2.rb = kScratchRegA;
-            append_instr(&head, &tail, ext_instr);
-          } else if (cur->instr.asm_extend.size == 2) {
-            // Machine: tncd rScratchA, rScratchA
-            struct MachineInstr* ext_instr = alloc_machine_instr(MACHINE_SXTD);
-            ext_instr->instr.reg2.ra = kScratchRegA;
-            ext_instr->instr.reg2.rb = kScratchRegA;
-            append_instr(&head, &tail, ext_instr);
-          } else {
-            codegen_errorf(func_name, cur->type,
-                           "unsupported extend size %d; expected 1 or 2",
-                           (int)cur->instr.asm_extend.size);
-          }
-          break;
-        }
-        case ASM_LOAD:
-        case ASM_VOLATILE_LOAD: {
-          // Pointer operand is loaded into rScratchA; copy to rScratchB for the base register.
-          struct Operand* load_dst = cur->type == ASM_VOLATILE_LOAD
-              ? cur->instr.asm_volatile_load.dst
-              : cur->instr.asm_load.dst;
-          struct MachineInstr* mov_ptr = alloc_machine_instr(MACHINE_MOV);
-          mov_ptr->instr.reg2.ra = kScratchRegB;
-          mov_ptr->instr.reg2.rb = kScratchRegA;
-          append_instr(&head, &tail, mov_ptr);
-
-          struct MachineInstr* load;
-          switch (load_dst->asm_type->type) {
-            case BYTE:
-              load = alloc_machine_instr(MACHINE_LBA);
-              break;
-            case DOUBLE:
-              load = alloc_machine_instr(MACHINE_LDA);
-              break;
-            case WORD:
-              load = alloc_machine_instr(MACHINE_LWA);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for load destination",
-                             (int)load_dst->asm_type->type);
-          }
-          load->instr.mem.ra = kScratchRegA;
-          load->instr.mem.rb = kScratchRegB;
-          load->instr.mem.imm = 0;
-          append_instr(&head, &tail, load);
-          break;
-        }
-        case ASM_STORE:
-        case ASM_VOLATILE_STORE: {
-          struct Operand* store_src = cur->type == ASM_VOLATILE_STORE
-              ? cur->instr.asm_volatile_store.src
-              : cur->instr.asm_store.src;
-          struct Operand* store_dst = cur->type == ASM_VOLATILE_STORE
-              ? cur->instr.asm_volatile_store.dst
-              : cur->instr.asm_store.dst;
-          struct MachineInstr* store;
-          switch (store_src->asm_type->type) {
-            case BYTE:
-              store = alloc_machine_instr(MACHINE_SBA);
-              break;
-            case DOUBLE:
-              store = alloc_machine_instr(MACHINE_SDA);
-              break;
-            case WORD:
-              store = alloc_machine_instr(MACHINE_SWA);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for store destination",
-                             (int)store_dst->asm_type->type);
-          }
-          store->instr.mem.ra = kScratchRegA;
-          store->instr.mem.rb = kScratchRegB;
-          store->instr.mem.imm = 0;
-          append_instr(&head, &tail, store);
-          break;
-        }
-        case ASM_GET_ADDRESS:
-          codegen_errorf(func_name, cur->type,
-                         "unsupported GetAddress operands; expected dst=Memory and src=Memory or Data");
-        default:
-          codegen_errorf(func_name, cur->type,
-                         "unknown ASM instruction type %d", (int)cur->type);
-      }
-
-      struct Operand* dst = get_dst(cur);
-      if (dst != NULL) {
-        if (dst->type == OPERAND_REG) {
-          // Machine: Mov dst, rScratchA
-          struct MachineInstr* mov = alloc_machine_instr(MACHINE_MOV);
-          mov->instr.reg2.ra = dst->op.reg.reg;
-          mov->instr.reg2.rb = kScratchRegA;
-          append_instr(&head, &tail, mov);
-        } else if (dst->type == OPERAND_MEMORY) {
-          // Machine: Swa rScratchA, [rBase, off]
-          struct MachineInstr* store;
-          switch (dst->asm_type->type) {
-            case BYTE:
-              store = alloc_machine_instr(MACHINE_SBA);
-              break;
-            case DOUBLE:
-              store = alloc_machine_instr(MACHINE_SDA);
-              break;
-            case WORD:
-              store = alloc_machine_instr(MACHINE_SWA);
-              break;
-            default:
-              codegen_errorf(func_name, cur->type,
-                             "unsupported asm type %d for destination operand", (int)dst->asm_type->type);
-              break;
-          }
-          store->instr.mem.ra = kScratchRegA;
-          store->instr.mem.rb = dst->op.memory.base;
-          store->instr.mem.imm = dst->op.memory.offset;
-          append_instr(&head, &tail, store);
-        } else if (dst->type == OPERAND_DATA) {
-          if (dst->op.data.offset != 0) {
-            // Preserve scratch A while computing address for label+offset.
-            struct MachineInstr* push = alloc_machine_instr(MACHINE_PUSH);
-            push->instr.reg.ra = kScratchRegA;
-            append_instr(&head, &tail, push);
-
-            emit_label_address(&head, &tail, kScratchRegB, kScratchRegA,
-                               dst->op.data.label, dst->op.data.offset);
-
-            struct MachineInstr* pop = alloc_machine_instr(MACHINE_POP);
-            pop->instr.reg.ra = kScratchRegA;
-            append_instr(&head, &tail, pop);
-
-            struct MachineInstr* store;
-            switch (dst->asm_type->type) {
-              case BYTE:
-                store = alloc_machine_instr(MACHINE_SBA);
-                break;
-              case DOUBLE:
-                store = alloc_machine_instr(MACHINE_SDA);
-                break;
-              case WORD:
-                store = alloc_machine_instr(MACHINE_SWA);
-                break;
-              default:
-                codegen_errorf(func_name, cur->type,
-                               "unsupported asm type %d for destination operand", (int)dst->asm_type->type);
-                break;
-            }
-            store->instr.mem.ra = kScratchRegA;
-            store->instr.mem.rb = kScratchRegB;
-            store->instr.mem.imm = 0;
-            append_instr(&head, &tail, store);
-          } else {
-            // Machine: Sw rScratchA, [label]
-            struct MachineInstr* store;
-            switch (dst->asm_type->type) {
-              case BYTE:
-                store = alloc_machine_instr(MACHINE_SB);
-                break;
-              case DOUBLE:
-                store = alloc_machine_instr(MACHINE_SD);
-                break;
-              case WORD:
-                store = alloc_machine_instr(MACHINE_SW);
-                break;
-              default:
-                codegen_errorf(func_name, cur->type,
-                               "unsupported asm type %d for destination operand", (int)dst->asm_type->type);
-                break;
-            }
-            store->instr.mem.ra = kScratchRegA;
-            store->instr.mem.rb = R0;
-            store->instr.mem.imm = kZeroOffset;
-            store->instr.mem.label = dst->op.data.label;
-            append_instr(&head, &tail, store);
-          }
-        } else {
-          codegen_errorf(func_name, cur->type,
-                         "invalid destination operand type %d; expected Reg, Memory, or Data",
-                         (int)dst->type);
-        }
-      }
-    }
-
-    if (head != NULL) {
-      if (machine_prog->head == NULL) {
-        machine_prog->head = head;
-        machine_prog->tail = tail;
-      } else {
-        machine_prog->tail->next = head;
-        machine_prog->tail = tail;
-      }
-    }
+  // Stack layout comments for user-visible locals (present only with debug info).
+  for (struct DebugLocal* local = func->locals; local != NULL; local = local->next) {
+    struct MachineInstr* instr = emit(e, MACHINE_DEBUG_LOCAL);
+    instr->instr.debug_local.name = local->name;
+    instr->instr.debug_local.offset = local->offset;
+    instr->instr.debug_local.size = local->size;
   }
 
-  return machine_prog;
+  emit_comment(e, &kFunctionBodyLabel);
 }
 
-// Lower one top-level TAC object to machine code.
-struct MachineProg* top_level_to_machine(struct AsmTopLevel* asm_top){
-  struct MachineProg* machine_prog = arena_alloc(sizeof(struct MachineProg));
-  machine_prog->head = NULL;
-  machine_prog->tail = NULL;
+// ---------------------------------------------------------------------------
+// Instruction lowering
+// ---------------------------------------------------------------------------
 
-  if (asm_top->type == ASM_FUNC){
-    //  .global func         # optional global label
-    //  func:
-    //    # function prologue
-    //    push ra            # save return address
-    //    push bp            # save base pointer
-    //    mov  bp, sp        # set base pointer to current stack pointer
-    //    # function body
+// Lower a move directly, without staging through scratch registers when either
+// side is a register.
+static void lower_mov(struct Emitter* e, const struct AsmMov* mov) {
+  const struct Operand* dst = mov->dst;
+  const struct Operand* src = mov->src;
+  if (dst == NULL || src == NULL) {
+    codegen_errorf(e, "Mov has a NULL %s operand; asm_gen must set both dst and src",
+                   dst == NULL ? "dst" : "src");
+  }
 
-    struct MachineInstr* newline = arena_alloc(sizeof(struct MachineInstr));
-    newline->type = MACHINE_NEWLINE;
+  if (dst->type == OPERAND_REG) {
+    load_operand(e, src, dst->op.reg.reg, R0);
+    return;
+  }
+  if (src->type == OPERAND_REG) {
+    store_operand(e, dst, src->op.reg.reg);
+    return;
+  }
 
-    struct MachineInstr* label = arena_alloc(sizeof(struct MachineInstr));
-    if (asm_top->top.asm_func.global) {
-      // Machine: Label <func>
-      struct MachineInstr* global = arena_alloc(sizeof(struct MachineInstr));
-      global->type = MACHINE_GLOBAL;
-      global->instr.target.label = asm_top->top.asm_func.name;
-      global->next = label;
-      newline->next = global;
-    } else {
-      newline->next = label;
-    }
+  // Neither side is a register: stage the value through a scratch register
+  // that cannot alias either side's address base.
+  enum Reg value_reg = kScratchRegA;
+  enum Reg keep_reg = R0;
+  if (dst->type == OPERAND_MEMORY) {
+    enum Reg src_base = src->type == OPERAND_MEMORY ? src->op.memory.base : R0;
+    value_reg = pick_scratch_reg(e, dst->op.memory.base, src_base);
+    keep_reg = dst->op.memory.base;
+  }
+  load_operand(e, src, value_reg, keep_reg);
+  store_operand(e, dst, value_reg);
+}
 
-    // Machine: Label <func>
-    label->type = MACHINE_LABEL;
-    label->instr.label.name = asm_top->top.asm_func.name;
+// Compute the address of a Memory or Data operand into a register or a word slot.
+static void lower_get_address(struct Emitter* e, const struct AsmGetAddress* ga) {
+  const struct Operand* dst = ga->dst;
+  const struct Operand* src = ga->src;
+  if (dst == NULL || src == NULL ||
+      (dst->type != OPERAND_REG && dst->type != OPERAND_MEMORY) ||
+      (src->type != OPERAND_MEMORY && src->type != OPERAND_DATA)) {
+    codegen_errorf(e, "unsupported GetAddress operands (dst=%d, src=%d); "
+                   "expected dst=Reg or Memory and src=Memory or Data",
+                   dst == NULL ? -1 : (int)dst->type, src == NULL ? -1 : (int)src->type);
+  }
 
-    const char* entry_loc = find_function_entry_loc(asm_top->top.asm_func.body);
-
-    // Machine: Comment "Function Prologue"
-    struct MachineInstr* prologue_comment = arena_alloc(sizeof(struct MachineInstr));
-    prologue_comment->type = MACHINE_COMMENT;
-    prologue_comment->instr.comment.text = &kFunctionPrologueLabel;
-    if (entry_loc != NULL) {
-      // Emit a line marker at function entry so debugger locations are valid at the label.
-      struct MachineInstr* entry_marker = alloc_machine_instr(MACHINE_DEBUG_LOC);
-      entry_marker->instr.debug_loc.loc = entry_loc;
-      label->next = entry_marker;
-      entry_marker->next = prologue_comment;
-    } else {
-      label->next = prologue_comment;
-    }
-    
-    // Machine: Push ra
-    struct MachineInstr* push_ra = arena_alloc(sizeof(struct MachineInstr));
-    push_ra->type = MACHINE_PUSH;
-    push_ra->instr.reg.ra = RA;
-    prologue_comment->next = push_ra;
-
-    // Machine: Push bp
-    struct MachineInstr* push_bp = arena_alloc(sizeof(struct MachineInstr));
-    push_bp->type = MACHINE_PUSH;
-    push_bp->instr.reg.ra = BP;
-    push_ra->next = push_bp;
-
-    // Machine: Mov bp, sp
-    struct MachineInstr* set_bp = arena_alloc(sizeof(struct MachineInstr));
-    set_bp->type = MACHINE_MOV;
-    set_bp->instr.reg2.ra = BP;
-    set_bp->instr.reg2.rb = SP;
-    push_bp->next = set_bp;
-    set_bp->next = NULL;
-
-    // Emit stack layout comments for user-visible locals (if debug markers exist).
-    struct MachineInstr* locals_tail = set_bp;
-    if (asm_top->top.asm_func.locals != NULL) {
-      for (struct DebugLocal* local = asm_top->top.asm_func.locals; local != NULL; local = local->next) {
-        struct MachineInstr* local_instr = alloc_machine_instr(MACHINE_DEBUG_LOCAL);
-        local_instr->instr.debug_local.name = local->name;
-        local_instr->instr.debug_local.offset = local->offset;
-        local_instr->instr.debug_local.size = local->size;
-        locals_tail->next = local_instr;
-        locals_tail = local_instr;
-      }
-    }
-
-    // Machine: Comment "Function Body"
-    struct MachineInstr* body_comment = arena_alloc(sizeof(struct MachineInstr));
-    body_comment->type = MACHINE_COMMENT;
-    body_comment->instr.comment.text = &kFunctionBodyLabel;
-    locals_tail->next = body_comment;
-
-    // append prologue to machine_prog
-    machine_prog->head = newline;
-    machine_prog->tail = body_comment;
-
-    // function body
-    struct MachineProg* body_instrs = instr_to_machine(asm_top->top.asm_func.name, asm_top->top.asm_func.body);
-    machine_prog->tail->next = body_instrs->head;
-    machine_prog->tail = body_instrs->tail;
-
-  } else if (asm_top->type == ASM_STATIC_VAR || asm_top->type == ASM_STATIC_CONST){
-    struct Slice* name;
-    bool global;
-    struct InitList* init;
-    if (asm_top->type == ASM_STATIC_VAR) {
-      name = asm_top->top.asm_static_var.name;
-      global = asm_top->top.asm_static_var.global;
-      init = asm_top->top.asm_static_var.init_values;
-    } else {
-      name = asm_top->top.asm_static_const.name;
-      global = asm_top->top.asm_static_const.global;
-      init = asm_top->top.asm_static_const.init_values;
-    }
-    struct AsmSymbolEntry* sym_entry = asm_symbol_table_get(asm_symbol_table, name);
-    if (sym_entry == NULL) {
-      printf("Compiler Error: Undefined symbol '%.*s' in codegen\n", 
-        (int)name->len, name->start);
-      exit(1);
-    }
-    struct AsmType* type = sym_entry->type;
-
-    // emit .align directive
-    struct MachineInstr* align_instr = arena_alloc(sizeof(struct MachineInstr));
-    align_instr->type = MACHINE_ALIGN;
-    align_instr->instr.target.imm = asm_type_alignment(type);
-    machine_prog->head = align_instr;
-    machine_prog->tail = align_instr;
-
-    if (global) {
-      // Machine: .global var
-      struct MachineInstr* global_dir = arena_alloc(sizeof(struct MachineInstr));
-      global_dir->type = MACHINE_GLOBAL;
-      global_dir->instr.target.label = name;
-
-      // append global to machine_prog
-      machine_prog->tail->next = global_dir;
-      machine_prog->tail = global_dir;
-    }
-
-    // static variable
-    struct MachineInstr* data_label = alloc_machine_instr(MACHINE_LABEL);
-    data_label->instr.label.name = name;
-    machine_prog->tail->next = data_label;
-    machine_prog->tail = data_label;
-
-    // Machine: .space or .fill for static data
-    struct MachineInstr* data_instr = make_data(init, type);
-
-    // append data instructions to machine_prog
-    struct MachineInstr* data_tail = data_instr;
-    while (data_tail->next != NULL) {
-      data_tail = data_tail->next;
-    }
-    machine_prog->tail->next = data_instr;
-    machine_prog->tail = data_tail;
-  } else if (asm_top->type == ASM_SECTION){
-    // directive
-    struct MachineInstr* dir_instr = arena_alloc(sizeof(struct MachineInstr));
-    dir_instr->type = MACHINE_SECTION;
-    dir_instr->instr.target.label = asm_top->top.asm_section.name;
-
-    // append data_instr to machine_prog
-    machine_prog->head = dir_instr;
-    machine_prog->tail = dir_instr;
-  } else if (asm_top->type == ASM_ALIGN) {
-    // directive
-    struct MachineInstr* align_instr = arena_alloc(sizeof(struct MachineInstr));
-    align_instr->type = MACHINE_ALIGN;
-    align_instr->instr.target.imm = asm_top->top.asm_align.alignment;
-
-    // append data_instr to machine_prog
-    machine_prog->head = align_instr;
-    machine_prog->tail = align_instr;
+  enum Reg addr_reg = dst->type == OPERAND_REG ? dst->op.reg.reg : kScratchRegB;
+  if (src->type == OPERAND_MEMORY) {
+    emit_alu_rri(e, MACHINE_ADD, addr_reg, src->op.memory.base, src->op.memory.offset);
   } else {
-    // Error
-    printf("Compiler Error: Unknown AsmTopLevelType in codegen\n");
-    exit(1);
+    emit_label_address(e, addr_reg, pick_scratch_reg(e, addr_reg, R0),
+                       src->op.data.label, src->op.data.offset);
   }
-
-  return machine_prog;
+  if (dst->type == OPERAND_MEMORY) {
+    emit_mem_base(e, MACHINE_SWA, addr_reg, dst->op.memory.base, dst->op.memory.offset);
+  }
 }
 
-// Convert a static initializer into an assembly data declaration.
-static struct MachineInstr* make_data(struct InitList* init, struct AsmType* type){
-  if (init == NULL) {
-    // Tentative definitions emit zero-filled storage for the full symbol size.
-    struct MachineInstr* instr = alloc_machine_instr(MACHINE_SPACE);
-    instr->instr.target.imm = (int)asm_type_size(type);
-    return instr;
+// Expand a conditional jump into a short branch over a long jump, since the
+// short branch range may not reach the label:
+//   b<cond> +4      ; taken -> the long jump
+//   jmp +12         ; not taken -> past the long jump
+//   movi rB, label
+//   br r0, rB
+static void lower_cond_jump(struct Emitter* e, const struct AsmCondJump* jump) {
+  emit_target(e, cond_branch_op(e, jump->cond), NULL, kCondJumpBranchSkip);
+  emit_target(e, MACHINE_JMP, NULL, kCondJumpJmpSkip);
+  emit_long_jump(e, jump->label);
+}
+
+// Emit an ALU operation on scratch A and B with the result in scratch A.
+// Operations with no single machine instruction call a builtin helper, which
+// clobbers all caller-saved registers.
+static void emit_binary_op(struct Emitter* e, enum ALUOp op) {
+  switch (op) {
+    case ALU_ADD:
+      emit_alu_rrr(e, MACHINE_ADD, kScratchRegA, kScratchRegA, kScratchRegB);
+      return;
+    case ALU_SUB:
+      emit_alu_rrr(e, MACHINE_SUB, kScratchRegA, kScratchRegA, kScratchRegB);
+      return;
+    case ALU_AND:
+      emit_alu_rrr(e, MACHINE_AND, kScratchRegA, kScratchRegA, kScratchRegB);
+      return;
+    case ALU_OR:
+      emit_alu_rrr(e, MACHINE_OR, kScratchRegA, kScratchRegA, kScratchRegB);
+      return;
+    case ALU_XOR:
+      emit_alu_rrr(e, MACHINE_XOR, kScratchRegA, kScratchRegA, kScratchRegB);
+      return;
+    case ALU_MOV:
+      emit_reg2(e, MACHINE_MOV, kScratchRegA, kScratchRegB);
+      return;
+    case ALU_SMUL: emit_builtin_call(e, &kBuiltinSmul); return;
+    case ALU_SDIV: emit_builtin_call(e, &kBuiltinSdiv); return;
+    case ALU_SMOD: emit_builtin_call(e, &kBuiltinSmod); return;
+    case ALU_UMUL: emit_builtin_call(e, &kBuiltinUmul); return;
+    case ALU_UDIV: emit_builtin_call(e, &kBuiltinUdiv); return;
+    case ALU_UMOD: emit_builtin_call(e, &kBuiltinUmod); return;
+    case ALU_LSL: emit_builtin_call(e, &kBuiltinULeftShift); return;
+    case ALU_LSR: emit_builtin_call(e, &kBuiltinURightShift); return;
+    case ALU_ASL: emit_builtin_call(e, &kBuiltinSLeftShift); return;
+    case ALU_ASR: emit_builtin_call(e, &kBuiltinSRightShift); return;
+    default:
+      codegen_errorf(e, "unknown ALU op %d; expected a defined ALU_* variant", (int)op);
+  }
+}
+
+// Emit the operation step of the scratch template: sources are already in
+// scratch A (and B), and the result must be left in scratch A.
+static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
+  switch (cur->type) {
+    case ASM_VOLATILE_READ:
+    case ASM_VOLATILE_WRITE:
+      // A plain copy; the opcode stays distinct only so earlier passes keep the access.
+      return;
+    case ASM_CMP:
+      emit_reg2(e, MACHINE_CMP, kScratchRegA, kScratchRegB);
+      return;
+    case ASM_UNARY:
+      switch (cur->instr.asm_unary.op) {
+        case COMPLEMENT:
+          emit_reg2(e, MACHINE_NOT, kScratchRegA, kScratchRegA);
+          return;
+        case NEGATE:
+          emit_alu_rrr(e, MACHINE_SUB, kScratchRegA, R0, kScratchRegA);
+          return;
+        case UNARY_PLUS:
+          return;
+        default:
+          codegen_errorf(e, "unsupported unary op %d; expected COMPLEMENT, NEGATE, or UNARY_PLUS",
+                         (int)cur->instr.asm_unary.op);
+      }
+      return;
+    case ASM_BINARY:
+      emit_binary_op(e, cur->instr.asm_binary.alu_op);
+      return;
+    case ASM_PUSH:
+      emit_reg1(e, push_op(e, cur->instr.asm_push.src->asm_type), kScratchRegA);
+      return;
+    case ASM_INDIRECT_CALL:
+      emit_reg2(e, MACHINE_BRA, RA, kScratchRegA);
+      return;
+    case ASM_TAIL_CALL_INDIRECT:
+      // The target was read into scratch A before the frame is torn down,
+      // because the source operand may be BP-relative.
+      emit_function_epilogue(e);
+      emit_reg2(e, MACHINE_BRA, R0, kScratchRegA);
+      return;
+    case ASM_TRUNC:
+      if (cur->instr.asm_trunc.size == 1) {
+        emit_reg2(e, MACHINE_TNCB, kScratchRegA, kScratchRegA);
+      } else if (cur->instr.asm_trunc.size == 2) {
+        emit_reg2(e, MACHINE_TNCD, kScratchRegA, kScratchRegA);
+      } else {
+        codegen_errorf(e, "unsupported truncation size %d; expected 1 or 2",
+                       (int)cur->instr.asm_trunc.size);
+      }
+      return;
+    case ASM_EXTEND:
+      if (cur->instr.asm_extend.size == 1) {
+        emit_reg2(e, MACHINE_SXTB, kScratchRegA, kScratchRegA);
+      } else if (cur->instr.asm_extend.size == 2) {
+        emit_reg2(e, MACHINE_SXTD, kScratchRegA, kScratchRegA);
+      } else {
+        codegen_errorf(e, "unsupported extend size %d; expected 1 or 2",
+                       (int)cur->instr.asm_extend.size);
+      }
+      return;
+    case ASM_LOAD:
+    case ASM_VOLATILE_LOAD: {
+      // The pointer arrives in scratch A; move it to B so the loaded value can land in A.
+      const struct Operand* load_dst = cur->type == ASM_VOLATILE_LOAD
+          ? cur->instr.asm_volatile_load.dst
+          : cur->instr.asm_load.dst;
+      emit_reg2(e, MACHINE_MOV, kScratchRegB, kScratchRegA);
+      emit_mem_base(e, load_op(e, load_dst->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegB, 0);
+      return;
+    }
+    case ASM_STORE:
+    case ASM_VOLATILE_STORE: {
+      // The slot order puts the value first (scratch A) and the address second (scratch B).
+      const struct Operand* store_src = cur->type == ASM_VOLATILE_STORE
+          ? cur->instr.asm_volatile_store.src
+          : cur->instr.asm_store.src;
+      emit_mem_base(e, store_op(e, store_src->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegB, 0);
+      return;
+    }
+    default:
+      codegen_errorf(e, "ASM instruction type %d has no scratch-template lowering", (int)cur->type);
+  }
+}
+
+// Lower an instruction through the fixed scratch template: load the operands
+// it reads into scratch A (and B), emit the operation, then write scratch A to
+// the operand it writes.
+static void lower_via_scratch(struct Emitter* e, struct AsmInstr* cur) {
+  struct OperandSlots slots = asm_operand_slots(cur);
+  struct Operand* dst = NULL;
+  size_t loaded = 0;
+  for (size_t i = 0; i < slots.count; i++) {
+    struct Operand* opr = *slots.slot[i].field;
+    if (slots.slot[i].role == OPERAND_DEF) {
+      dst = opr;
+    } else if (loaded == 0) {
+      load_operand(e, opr, kScratchRegA, R0);
+      loaded++;
+    } else {
+      load_operand(e, opr, kScratchRegB, kScratchRegA);
+      loaded++;
+    }
   }
 
-  struct MachineInstr* instr = NULL;
-  struct MachineInstr* tail = NULL;
-  for (struct InitList* cur = init; cur != NULL; cur = cur->next){
-    struct MachineInstr* cur_instr = alloc_machine_instr(MACHINE_FILL);
+  emit_scratch_op(e, cur);
 
-    bool was_string = false;
+  if (dst != NULL) {
+    store_operand(e, dst, kScratchRegA);
+  }
+}
 
-    switch (cur->value->int_type) {
+// Lower one ASM instruction to machine instructions.
+static void lower_instr(struct Emitter* e, struct AsmInstr* cur) {
+  e->cur = cur;
+  switch (cur->type) {
+    case ASM_MOV:
+      lower_mov(e, &cur->instr.asm_mov);
+      break;
+    case ASM_GET_ADDRESS:
+      lower_get_address(e, &cur->instr.asm_get_address);
+      break;
+    case ASM_LABEL:
+      emit_label(e, cur->instr.asm_label.label);
+      break;
+    case ASM_JUMP:
+      emit_long_jump(e, cur->instr.asm_jump.label);
+      break;
+    case ASM_COND_JUMP:
+      lower_cond_jump(e, &cur->instr.asm_cond_jump);
+      break;
+    case ASM_CALL:
+      emit_target(e, MACHINE_CALL, cur->instr.asm_call.label, 0);
+      break;
+    case ASM_TAIL_CALL:
+      emit_function_epilogue(e);
+      emit_target(e, MACHINE_JMP, cur->instr.asm_tail_call.label, 0);
+      break;
+    case ASM_RET:
+      emit_function_epilogue(e);
+      emit(e, MACHINE_RET);
+      break;
+    case ASM_BOUNDARY:
+      if (cur->instr.asm_boundary.loc != NULL) {
+        emit_debug_loc(e, cur->instr.asm_boundary.loc);
+      }
+      break;
+    case ASM_VOLATILE_READ:
+    case ASM_VOLATILE_WRITE:
+    case ASM_VOLATILE_LOAD:
+    case ASM_VOLATILE_STORE:
+    case ASM_UNARY:
+    case ASM_BINARY:
+    case ASM_CMP:
+    case ASM_PUSH:
+    case ASM_INDIRECT_CALL:
+    case ASM_TAIL_CALL_INDIRECT:
+    case ASM_LOAD:
+    case ASM_STORE:
+    case ASM_TRUNC:
+    case ASM_EXTEND:
+      lower_via_scratch(e, cur);
+      break;
+    default:
+      codegen_errorf(e, "unknown ASM instruction type %d", (int)cur->type);
+  }
+  e->cur = NULL;
+}
+
+// ---------------------------------------------------------------------------
+// Top-level lowering
+// ---------------------------------------------------------------------------
+
+// Find the first source location marker in a function body, or NULL if none.
+static const char* find_function_entry_loc(const struct AsmInstr* instrs) {
+  for (const struct AsmInstr* cur = instrs; cur != NULL; cur = cur->next) {
+    if (cur->type == ASM_BOUNDARY) {
+      return cur->instr.asm_boundary.loc;
+    }
+  }
+  return NULL;
+}
+
+// Emit a function: optional .global, label, entry line marker, prologue, then the body.
+static void lower_function(struct Emitter* e, const struct AsmFunc* func) {
+  e->func_name = func->name;
+
+  emit(e, MACHINE_NEWLINE);
+  if (func->global) {
+    emit_target(e, MACHINE_GLOBAL, func->name, 0);
+  }
+  emit_label(e, func->name);
+
+  // A line marker at the label keeps debugger locations valid at function entry.
+  const char* entry_loc = find_function_entry_loc(func->body);
+  if (entry_loc != NULL) {
+    emit_debug_loc(e, entry_loc);
+  }
+
+  emit_function_prologue(e, func);
+  for (struct AsmInstr* cur = func->body; cur != NULL; cur = cur->next) {
+    lower_instr(e, cur);
+  }
+
+  e->func_name = NULL;
+}
+
+// Emit data directives for a static initializer list. A NULL list is a
+// tentative definition and becomes zero-filled storage of the full symbol size.
+static void emit_static_data(struct Emitter* e, const struct InitList* init, struct AsmType* type) {
+  if (init == NULL) {
+    emit_target(e, MACHINE_SPACE, NULL, (int)asm_type_size(type));
+    return;
+  }
+
+  for (const struct InitList* cur = init; cur != NULL; cur = cur->next) {
+    const struct StaticInit* value = cur->value;
+    switch (value->int_type) {
       case CHAR_INIT:
       case UCHAR_INIT:
-        cur_instr->type = MACHINE_FILB;
+        emit_target(e, MACHINE_FILB, NULL, (int)value->value.num);
         break;
       case SHORT_INIT:
       case USHORT_INIT:
-        cur_instr->type = MACHINE_FILD;
+        emit_target(e, MACHINE_FILD, NULL, (int)value->value.num);
         break;
       case INT_INIT:
       case UINT_INIT:
-        cur_instr->type = MACHINE_FILL;
+        emit_target(e, MACHINE_FILL, NULL, (int)value->value.num);
         break;
-      case POINTER_INIT:
-        cur_instr->type = MACHINE_FILL;
-        cur_instr->instr.target.label = cur->value->value.pointer;
+      case POINTER_INIT: {
+        // A NULL label is a null pointer constant; emit its numeric value instead.
+        struct Slice* label = value->value.pointer;
+        emit_target(e, MACHINE_FILL, label, label == NULL ? (int)value->value.num : 0);
         break;
+      }
       case LONG_INIT:
-      case ULONG_INIT:
-        {
-          uint64_t raw = cur->value->value.num;
-          uint32_t low = (uint32_t)(raw & 0xFFFFFFFFu);
-          uint32_t high = (uint32_t)((raw >> 32) & 0xFFFFFFFFu);
-
-          struct MachineInstr* low_instr = alloc_machine_instr(MACHINE_FILL);
-          low_instr->instr.target.imm = (int32_t)low;
-
-          struct MachineInstr* high_instr = alloc_machine_instr(MACHINE_FILL);
-          high_instr->instr.target.imm = (int32_t)high;
-
-          if (instr == NULL) {
-            instr = low_instr;
-            tail = low_instr;
-          } else {
-            tail->next = low_instr;
-            tail = low_instr;
-          }
-          tail->next = high_instr;
-          tail = high_instr;
-          was_string = true;
-          break;
-        }
+      case ULONG_INIT: {
+        // 64-bit values are two words, low word first (little-endian).
+        uint64_t raw = value->value.num;
+        emit_target(e, MACHINE_FILL, NULL, (int32_t)(uint32_t)(raw & 0xFFFFFFFFu));
+        emit_target(e, MACHINE_FILL, NULL, (int32_t)(uint32_t)((raw >> 32) & 0xFFFFFFFFu));
+        break;
+      }
       case ZERO_INIT:
-        cur_instr->type = MACHINE_SPACE;
+        emit_target(e, MACHINE_SPACE, NULL, (int)value->value.num);
         break;
       case STRING_INIT:
-        was_string = true;
-        // emit sequence of FILB instructions for each character in the string
-        // padding/null bytes are emitted explicitly via ZERO_INIT nodes
-        for (size_t i = 0; i < cur->value->value.string->len; i++) {
-          struct MachineInstr* char_instr = alloc_machine_instr(MACHINE_FILB);
-          char_instr->instr.target.imm = (int)(unsigned char)cur->value->value.string->start[i];
-          if (instr == NULL){
-            instr = char_instr;
-            tail = char_instr;
-          } else {
-            tail->next = char_instr;
-            tail = char_instr;
-          }
+        // One byte per character; padding and the terminator come from ZERO_INIT entries.
+        for (size_t i = 0; i < value->value.string->len; i++) {
+          emit_target(e, MACHINE_FILB, NULL, (int)(unsigned char)value->value.string->start[i]);
         }
-
         break;
       default:
-        codegen_errorf(NULL, 0,
-                       "unsupported static initializer type %d", (int)cur->value->int_type);
-    }
-
-    if (!was_string){
-      // set value and append to list (string does this on its own)
-      if (cur_instr->instr.target.label == NULL) {
-        cur_instr->instr.target.imm = (int)cur->value->value.num;
-      }
-
-      if (instr == NULL){
-        instr = cur_instr;
-        tail = cur_instr;
-      } else {
-        tail->next = cur_instr;
-        tail = cur_instr;
-      }
+        codegen_errorf(e, "unsupported static initializer type %d", (int)value->int_type);
     }
   }
-
-  return instr;
 }
 
-// Lower the complete TAC program to machine code.
-struct MachineProg* prog_to_machine(struct AsmProg* asm_prog){
-  struct MachineProg* machine_prog = arena_alloc(sizeof(struct MachineProg));
-  machine_prog->head = NULL;
-  machine_prog->tail = NULL;
-
-  for (struct AsmTopLevel* top = asm_prog->head; top != NULL; top = top->next){
-    struct MachineProg* top_instrs = top_level_to_machine(top);
-    if (machine_prog->head == NULL){
-      machine_prog->head = top_instrs->head;
-      machine_prog->tail = top_instrs->tail;
-    } else {
-      machine_prog->tail->next = top_instrs->head;
-      machine_prog->tail = top_instrs->tail;
-    }
+// Emit an aligned, labeled static object. Alignment and size come from the ASM
+// symbol table entry, which asm_gen must have created for every static object.
+static void lower_static_object(struct Emitter* e, struct Slice* name, bool global,
+                                const struct InitList* init) {
+  struct AsmSymbolEntry* sym_entry = asm_symbol_table_get(asm_symbol_table, name);
+  if (sym_entry == NULL) {
+    codegen_errorf(e, "static object '%.*s' is missing from the ASM symbol table",
+                   (int)name->len, name->start);
   }
 
+  emit_target(e, MACHINE_ALIGN, NULL, (int)asm_type_alignment(sym_entry->type));
+  if (global) {
+    emit_target(e, MACHINE_GLOBAL, name, 0);
+  }
+  emit_label(e, name);
+  emit_static_data(e, init, sym_entry->type);
+}
+
+// Lower one ASM top-level item (function, static object, or directive).
+static void lower_top_level(struct Emitter* e, const struct AsmTopLevel* top) {
+  switch (top->type) {
+    case ASM_FUNC:
+      lower_function(e, &top->top.asm_func);
+      return;
+    case ASM_STATIC_VAR:
+      lower_static_object(e, top->top.asm_static_var.name, top->top.asm_static_var.global,
+                          top->top.asm_static_var.init_values);
+      return;
+    case ASM_STATIC_CONST:
+      lower_static_object(e, top->top.asm_static_const.name, top->top.asm_static_const.global,
+                          top->top.asm_static_const.init_values);
+      return;
+    case ASM_SECTION:
+      emit_target(e, MACHINE_SECTION, top->top.asm_section.name, 0);
+      return;
+    case ASM_ALIGN:
+      emit_target(e, MACHINE_ALIGN, NULL, top->top.asm_align.alignment);
+      return;
+  }
+  codegen_errorf(e, "unknown ASM top-level type %d", (int)top->type);
+}
+
+struct MachineProg* prog_to_machine(struct AsmProg* asm_prog) {
+  struct Emitter e = {0};
+  for (struct AsmTopLevel* top = asm_prog->head; top != NULL; top = top->next) {
+    lower_top_level(&e, top);
+  }
+
+  struct MachineProg* machine_prog = arena_alloc(sizeof(struct MachineProg));
+  machine_prog->head = e.head;
+  machine_prog->tail = e.tail;
   return machine_prog;
 }

@@ -1,0 +1,9 @@
+ 
+printf("x" "1" "= %d, x" "2" "= %s", x1, x2);
+fputs("strncmp(\"abc\\0d\", \"abc\", '\\4') == 0" ": @\n", s);
+"vers2.h"
+"hello";
+"hello" ", world"
+int j[] = { 123, 45, 67, 89, 10, 11, 12,  };
+puts("The first, second, and third items.");
+((x>y)?puts("x>y"): printf("x is %d but y is %d", x, y));

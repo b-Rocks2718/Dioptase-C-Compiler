@@ -7,6 +7,7 @@
 
 #include "slice.h"
 #include "types.h"
+#include "slice_map.h"
 
 // Provide scoped identifier lookup for identifier resolution.
 // Supports stack-based scoping and hash map operations.
@@ -20,8 +21,8 @@ struct IdentStack {
   size_t capacity;
 };
 
-// Entry in an identifier hash map.
-// Stored in IdentMap buckets for lookups.
+// What one identifier means in a scope. Entries are updated in place when an
+// identifier is redeclared, so pointers to them stay valid.
 struct IdentMapEntry{
   struct Slice* key;
   struct Slice* entry_name;
@@ -29,14 +30,12 @@ struct IdentMapEntry{
   bool is_const; // used by var map
   unsigned value; // used by var map for enum constant value
   enum TypeType type; // used by type map
-  struct IdentMapEntry* next;
 };
 
-// Hash map of identifiers for a single scope.
-// Supports scoped identifier lookup.
+// Identifiers declared in a single scope (SliceMap values are IdentMapEntry*).
+// Iterate with slice_map_iter(&map->map).
 struct IdentMap{
-	size_t size;
-  struct IdentMapEntry** arr;
+  struct SliceMap map;
 };
 
 // Create an identifier stack with a given initial capacity.

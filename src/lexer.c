@@ -176,12 +176,14 @@ static enum TokenType classify_identifier(const char* start, size_t len) {
       break;
     case 'i':
       if (span_equals(start, len, "if")) return IF_TOK;
+      if (span_equals(start, len, "inline")) return INLINE_TOK;
       if (span_equals(start, len, "int")) return INT_TOK;
       break;
     case 'l':
       if (span_equals(start, len, "long")) return LONG_TOK;
       break;
     case 'r':
+      if (span_equals(start, len, "restrict")) return RESTRICT_TOK;
       if (span_equals(start, len, "return")) return RETURN_TOK;
       break;
     case 's':

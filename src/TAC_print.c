@@ -89,6 +89,15 @@ static void print_tac_bin_op(enum ALUOp op) {
     case ALU_SMUL:
       printf("SmulOp");
       break;
+    case ALU_SDIV:
+      printf("SDivOp");
+      break;
+    case ALU_SMOD:
+      printf("SModOp");
+      break;
+    case ALU_UMUL:
+      printf("UMulOp");
+      break;
     case ALU_UDIV:
       printf("UDivOp");
       break;

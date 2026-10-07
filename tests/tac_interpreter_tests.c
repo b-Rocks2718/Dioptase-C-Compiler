@@ -701,6 +701,19 @@ static bool tac_test_constant_folding(void) {
   ok = tac_expect_folded_constant("signed division", &instr, &int_dst,
                                   &kTestIntType, UINT64_MAX - UINT64_C(2)) && ok;
 
+  // `int /= long` is lowered as an int-typed SDiv with a long divisor; C
+  // divides in long, so 2147483647 / -34359738367 is 0. Narrowing the divisor
+  // to int first would divide by 1 and leave the dividend unchanged.
+  struct Val int_max = tac_val_const(2147483647, &kTestIntType);
+  struct Val wide_divisor = tac_val_const_bits((uint64_t)(int64_t)-34359738367LL, &long_type);
+  tac_init_instr(&instr, TACBINARY);
+  instr.instr.tac_binary.alu_op = ALU_SDIV;
+  instr.instr.tac_binary.dst = &int_dst;
+  instr.instr.tac_binary.src1 = &int_max;
+  instr.instr.tac_binary.src2 = &wide_divisor;
+  ok = tac_expect_folded_constant("division by a wider operand", &instr, &int_dst,
+                                  &kTestIntType, 0) && ok;
+
   tac_init_instr(&instr, TACBINARY);
   instr.instr.tac_binary.alu_op = ALU_ASR;
   instr.instr.tac_binary.dst = &int_dst;

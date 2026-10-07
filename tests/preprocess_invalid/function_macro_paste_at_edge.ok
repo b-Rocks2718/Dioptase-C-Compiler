@@ -1,0 +1,1 @@
+Preprocessor error at tests/preprocess_invalid/function_macro_paste_at_edge.c:1: '##' cannot appear at either end of the replacement list of macro "F"

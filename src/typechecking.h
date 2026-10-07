@@ -3,6 +3,7 @@
 
 #include "AST.h"
 #include "slice.h"
+#include "slice_map.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -16,7 +17,6 @@ struct SymbolEntry{
   struct Slice* key;
   struct Type* type;
   struct IdentAttr* attrs;
-  struct SymbolEntry* next;
 };
 
 // Distinguish struct, union, and named-type table entries.
@@ -53,21 +53,21 @@ struct TypeEntry{
   struct Slice* key;
   enum TypeEntryType type;
   union TypeEntryVariant data;
-  struct TypeEntry* next;
 };
 
 // Hash table mapping type names to type entries.
 // Used as a type table in typechecking.
+// Iterate with slice_map_iter(&table->map); values are TypeEntry*.
 struct TypeTable{
-  size_t size;
-  struct TypeEntry** arr;
+  struct SliceMap map;
 };
 
 // Hash table mapping identifier names to symbol entries.
 // Used as the global symbol table in typechecking.
+// Iterate with slice_map_iter(&table->map); values are SymbolEntry*. Inserting
+// an existing name adds a second entry; lookups return the first.
 struct SymbolTable{
-	size_t size;
-  struct SymbolEntry** arr;
+  struct SliceMap map;
 };
 
 // Describe the category of identifier in the symbol table.
@@ -250,6 +250,9 @@ bool is_null_pointer_constant(struct Expr* expr);
 // Apply assignment conversions to an expression.
 // Returns true on success; false on invalid conversions.
 bool convert_by_assignment(struct Expr** expr, struct Type* target_type);
+
+// Apply the integer promotions: char and short types become int.
+struct Type* promote_integer_type(struct Type* type);
 
 // Compute the common arithmetic type of two types.
 // Returns the common type or NULL on incompatibility.

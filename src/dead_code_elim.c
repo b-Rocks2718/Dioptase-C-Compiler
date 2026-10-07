@@ -1,4 +1,5 @@
 #include "dead_code_elim.h"
+#include "exit_codes.h"
 #include "arena.h"
 #include "TAC.h"
 #include "cfg.h"
@@ -67,7 +68,7 @@ static void cfg_block_remove_last_instr(struct CFGNode* block) {
       fprintf(stderr,
               "CFG error: cannot remove a block's last instruction because it "
               "is not reachable from the block body\n");
-      exit(1);
+      exit(BCC_EXIT_INTERNAL);
     }
     prev->next = NULL;
     block->body.last = prev;

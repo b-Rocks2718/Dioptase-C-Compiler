@@ -1,0 +1,2 @@
+Typechecking failed
+Type error at tests/types_invalid/switch_duplicate_case.c:5:5: duplicate case value 1 in switch
