@@ -651,7 +651,7 @@ int main(int argc, const char *const *const argv) {
     }
     // Instruction selection leaves pseudos; the allocator assigns some to
     // registers and assign_stack_slots places the rest in the frame.
-    allocate_registers(asm_prog);
+    allocate_registers(asm_prog); // TODO: this should only happen with regalloc optimization enabled
     assign_stack_slots(asm_prog);
     if (show[DIAG_ASM]) {
       print_asm_symbol_table(asm_symbol_table);
