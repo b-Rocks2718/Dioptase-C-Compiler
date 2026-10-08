@@ -844,6 +844,57 @@ static bool func_returns_in_memory(struct Slice* func_name) {
   return return_in_memory;
 }
 
+// Return true if codegen lowers op to a call to a runtime builtin (smul, sdiv,
+// umod, ...) because Dioptase has no single instruction for it. Must
+// agree with emit_binary_op in codegen.c.
+static bool alu_op_needs_builtin_call(enum ALUOp op) {
+  switch (op) {
+    case ALU_SMUL:
+    case ALU_SDIV:
+    case ALU_SMOD:
+    case ALU_UMUL:
+    case ALU_UDIV:
+    case ALU_UMOD:
+      return true;
+    case ALU_ADD:
+    case ALU_SUB:
+    case ALU_AND:
+    case ALU_OR:
+    case ALU_XOR:
+    case ALU_MOV:
+    case ALU_LSL:
+    case ALU_LSR:
+    case ALU_ASL:
+    case ALU_ASR:
+      return false;
+  }
+  // Unknown ops are reported by codegen; assume a call so callers stay conservative.
+  return true;
+}
+
+// Return true if the asm body contains any instruction that codegen lowers to a
+// `call`: explicit calls, tail calls (which may be demoted to calls), and ALU
+// ops implemented by builtins (multiply, divide, modulo).
+static bool asm_body_makes_calls(const struct AsmInstr* body) {
+  for (const struct AsmInstr* instr = body; instr != NULL; instr = instr->next) {
+    switch (instr->type) {
+      case ASM_CALL:
+      case ASM_INDIRECT_CALL:
+      case ASM_TAIL_CALL:
+      case ASM_TAIL_CALL_INDIRECT:
+        return true;
+      case ASM_BINARY:
+        if (alu_op_needs_builtin_call(instr->instr.asm_binary.alu_op)) {
+          return true;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return false;
+}
+
 // Return true if body takes the address of any frame-allocated variable
 // (local, parameter, or temporary).
 static bool body_takes_frame_address(struct TACInstr* body) {
@@ -1025,6 +1076,8 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
     asm_top->top.asm_func.locals = NULL;
     asm_top->top.asm_func.num_locals = 0;
     asm_top->top.asm_func.reserved_stack_bytes = 0;
+    asm_top->top.asm_func.frame_bytes = 0;
+    asm_top->top.asm_func.uses_bp = false;
 
     struct AsmSymbolEntry* func_entry = asm_symbol_table_get(asm_symbol_table, func->name);
     if (func_entry == NULL) {
@@ -1045,6 +1098,7 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
     // Pseudos stay in the body; assign_stack_slots places them after
     // register allocation. The return-buffer pointer occupies BP-4.
     asm_top->top.asm_func.body = body.head;
+    asm_top->top.asm_func.makes_calls = asm_body_makes_calls(body.head);
     asm_top->top.asm_func.reserved_stack_bytes = return_in_memory ? kStackSlotBytes : 0;
     return asm_top;
   } else if (tac_top->type == STATIC_VAR) {
@@ -1325,10 +1379,25 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
   }
 }
 
+// Return true if any operand in body is a BP-relative memory operand. Must run
+// after replace_pseudo so stack slots appear as Mem(BP, offset).
+static bool body_uses_bp(struct AsmInstr* body) {
+  for (struct AsmInstr* instr = body; instr != NULL; instr = instr->next) {
+    struct OperandSlots slots = asm_operand_slots(instr);
+    for (size_t i = 0; i < slots.count; i++) {
+      const struct Operand* opr = *slots.slot[i].field;
+      if (opr != NULL && opr->type == OPERAND_MEMORY && opr->op.memory.base == BP) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Give every pseudo left in each function a home, then finish the frame:
 // static symbols become Data operands and everything else gets a BP-relative
 // stack slot (create_maps), debug locals are recorded when the body has line
-// markers, `Sub SP, SP, <frame bytes>` is prepended, and pseudos are replaced
+// markers, the frame size is recorded for codegen's prologue, and pseudos are replaced
 // in place. Runs after register allocation, so only unallocated pseudos take
 // stack space.
 void assign_stack_slots(struct AsmProg* prog) {
@@ -1341,12 +1410,9 @@ void assign_stack_slots(struct AsmProg* prog) {
     if (asm_has_debug_markers(func->body)) {
       func->locals = collect_debug_locals(pseudo_map, &func->num_locals);
     }
-    if (stack_size > 0) {
-      struct AsmInstr* alloc_instr = asm_adjust_sp(ALU_SUB, (int)stack_size);
-      alloc_instr->next = func->body;
-      func->body = alloc_instr;
-    }
+    func->frame_bytes = stack_size;
     replace_pseudo(func->body);
+    func->uses_bp = stack_size > 0 || body_uses_bp(func->body);
 
     // Pseudo maps are per-function.
     destroy_pseudo_map(pseudo_map);

@@ -25,7 +25,7 @@ struct Emitter {
   struct MachineInstr* head;
   struct MachineInstr* tail;
   // Function being lowered, or NULL while emitting data and directives.
-  const struct Slice* func_name;
+  const struct AsmFunc* func;
   // ASM instruction being lowered, or NULL outside instruction lowering.
   const struct AsmInstr* cur;
 };
@@ -43,10 +43,6 @@ static struct Slice kBuiltinSmod = {"smod", 4};
 static struct Slice kBuiltinUmul = {"umul", 4};
 static struct Slice kBuiltinUdiv = {"udiv", 4};
 static struct Slice kBuiltinUmod = {"umod", 4};
-static struct Slice kBuiltinSLeftShift = {"sleft_shift", 11};
-static struct Slice kBuiltinSRightShift = {"sright_shift", 12};
-static struct Slice kBuiltinULeftShift = {"uleft_shift", 11};
-static struct Slice kBuiltinURightShift = {"uright_shift", 12};
 static struct Slice kFunctionEpilogueLabel = {"Function Epilogue", 17};
 static struct Slice kFunctionPrologueLabel = {"Function Prologue", 17};
 static struct Slice kFunctionBodyLabel = {"Function Body", 13};
@@ -63,6 +59,11 @@ static const int kSavedBpOffset = 0;
 static const int kSavedRaOffset = 4;
 static const int kEpilogueStackBytes = 8;
 
+// Range of the 12-bit sign-extended immediate in ALU arithmetic instructions
+// (docs/ISA.md, "ALU immediate instructions").
+static const int kAluImm12Min = -2048;
+static const int kAluImm12Max = 2047;
+
 // Report a codegen error with the current function and ASM opcode, then exit.
 ANALYSIS_NORETURN static void codegen_errorf(const struct Emitter* e,
                                              const char* fmt,
@@ -72,11 +73,11 @@ ANALYSIS_NORETURN static void codegen_errorf(const struct Emitter* e,
   va_start(args, fmt);
   vfprintf(stderr, fmt, args);
   va_end(args);
-  if (e->func_name != NULL && e->cur != NULL) {
+  if (e->func != NULL && e->cur != NULL) {
     fprintf(stderr, " (asm=%d, func=%.*s)\n", (int)e->cur->type,
-            (int)e->func_name->len, e->func_name->start);
-  } else if (e->func_name != NULL) {
-    fprintf(stderr, " (func=%.*s)\n", (int)e->func_name->len, e->func_name->start);
+            (int)e->func->name->len, e->func->name->start);
+  } else if (e->func != NULL) {
+    fprintf(stderr, " (func=%.*s)\n", (int)e->func->name->len, e->func->name->start);
   } else {
     fprintf(stderr, "\n");
   }
@@ -390,12 +391,23 @@ static void emit_builtin_call(struct Emitter* e, struct Slice* label) {
   emit_reg2(e, MACHINE_MOV, kScratchRegA, R1);
 }
 
+// A leaf function that never touches bp can skip the frame entirely: ra is
+// never overwritten and nothing is addressed relative to bp.
+static bool function_needs_prologue(const struct AsmFunc* func) {
+  return func->makes_calls || func->uses_bp;
+}
+
 // Tear down the current frame, leaving the machine as it was just before the
 // caller's `call`: sp points at our incoming stack args, bp is the caller's bp,
 // and ra holds the caller's return address. Only sp, bp, and ra are written, so
 // argument/return registers (r1-r8) survive. The caller of this helper emits
-// the final control transfer (ret, or a jump for a tail call).
+// the final control transfer (ret, or a jump for a tail call). Emits nothing
+// for a frameless function, which is already in that state.
 static void emit_function_epilogue(struct Emitter* e) {
+  if (!function_needs_prologue(e->func)) {
+    return;
+  }
+
   emit_comment(e, &kFunctionEpilogueLabel);
   emit_reg2(e, MACHINE_MOV, SP, BP);
   emit_mem_base(e, MACHINE_LWA, RA, BP, kSavedRaOffset);
@@ -403,17 +415,31 @@ static void emit_function_epilogue(struct Emitter* e) {
   emit_alu_rri(e, MACHINE_ADD, SP, SP, kEpilogueStackBytes);
 }
 
-// Build the frame described by kSaved*Offset: push ra, push bp, then point bp
-// at the saved bp. Locals below bp are allocated by the `sub sp` that asm_gen
-// places at the start of the body.
-static void emit_function_prologue(struct Emitter* e, const struct AsmFunc* func) {
+// Build the frame described by kSaved*Offset: push ra, push bp, point bp at the
+// saved bp, then allocate func->frame_bytes of locals below bp.
+static void emit_function_prologue(struct Emitter* e) {
+  if (!function_needs_prologue(e->func)) {
+    return;
+  }
+
   emit_comment(e, &kFunctionPrologueLabel);
   emit_reg1(e, MACHINE_PUSH, RA);
   emit_reg1(e, MACHINE_PUSH, BP);
   emit_reg2(e, MACHINE_MOV, BP, SP);
 
+  // use immediate `add` when possible, 
+  // otherwise fall back to register sub
+  if (e->func->frame_bytes > 0) {
+    if (e->func->frame_bytes <= (size_t)-kAluImm12Min) {
+      emit_alu_rri(e, MACHINE_ADD, SP, SP, -(int)e->func->frame_bytes);
+    } else {
+      emit_movi_imm(e, kScratchRegB, (int)e->func->frame_bytes);
+      emit_alu_rrr(e, MACHINE_SUB, SP, SP, kScratchRegB);
+    }
+  }
+
   // Stack layout comments for user-visible locals (present only with debug info).
-  for (struct DebugLocal* local = func->locals; local != NULL; local = local->next) {
+  for (struct DebugLocal* local = e->func->locals; local != NULL; local = local->next) {
     struct MachineInstr* instr = emit(e, MACHINE_DEBUG_LOCAL);
     instr->instr.debug_local.name = local->name;
     instr->instr.debug_local.offset = local->offset;
@@ -473,7 +499,17 @@ static void lower_get_address(struct Emitter* e, const struct AsmGetAddress* ga)
 
   enum Reg addr_reg = dst->type == OPERAND_REG ? dst->op.reg.reg : kScratchRegB;
   if (src->type == OPERAND_MEMORY) {
-    emit_alu_rri(e, MACHINE_ADD, addr_reg, src->op.memory.base, src->op.memory.offset);
+    // Unlike loads and stores, `add` does not scale its immediate, so frame
+    // offsets beyond 2048 bytes need the offset materialized in a register.
+    int offset = src->op.memory.offset;
+    enum Reg base = src->op.memory.base;
+    if (offset >= kAluImm12Min && offset <= kAluImm12Max) {
+      emit_alu_rri(e, MACHINE_ADD, addr_reg, base, offset);
+    } else {
+      enum Reg offset_reg = pick_scratch_reg(e, addr_reg, base);
+      emit_movi_imm(e, offset_reg, offset);
+      emit_alu_rrr(e, MACHINE_ADD, addr_reg, base, offset_reg);
+    }
   } else {
     emit_label_address(e, addr_reg, pick_scratch_reg(e, addr_reg, R0),
                        src->op.data.label, src->op.data.offset);
@@ -497,7 +533,8 @@ static void lower_cond_jump(struct Emitter* e, const struct AsmCondJump* jump) {
 
 // Emit an ALU operation on scratch A and B with the result in scratch A.
 // Operations with no single machine instruction call a builtin helper, which
-// clobbers all caller-saved registers.
+// clobbers all caller-saved registers. The set of builtin ops must match
+// alu_op_needs_builtin_call in asm_gen.c, which leaf detection relies on.
 static void emit_binary_op(struct Emitter* e, enum ALUOp op) {
   switch (op) {
     case ALU_ADD:
@@ -524,10 +561,16 @@ static void emit_binary_op(struct Emitter* e, enum ALUOp op) {
     case ALU_UMUL: emit_builtin_call(e, &kBuiltinUmul); return;
     case ALU_UDIV: emit_builtin_call(e, &kBuiltinUdiv); return;
     case ALU_UMOD: emit_builtin_call(e, &kBuiltinUmod); return;
-    case ALU_LSL: emit_builtin_call(e, &kBuiltinULeftShift); return;
-    case ALU_LSR: emit_builtin_call(e, &kBuiltinURightShift); return;
-    case ALU_ASL: emit_builtin_call(e, &kBuiltinSLeftShift); return;
-    case ALU_ASR: emit_builtin_call(e, &kBuiltinSRightShift); return;
+    case ALU_LSL:
+    case ALU_ASL:
+      emit_alu_rrr(e, MACHINE_LSL, kScratchRegA, kScratchRegA, kScratchRegB);
+      return;
+    case ALU_LSR:
+      emit_alu_rrr(e, MACHINE_LSR, kScratchRegA, kScratchRegA, kScratchRegB);
+      return;
+    case ALU_ASR:
+      emit_alu_rrr(e, MACHINE_ASR, kScratchRegA, kScratchRegA, kScratchRegB);
+      return;
     default:
       codegen_errorf(e, "unknown ALU op %d; expected a defined ALU_* variant", (int)op);
   }
@@ -718,7 +761,7 @@ static const char* find_function_entry_loc(const struct AsmInstr* instrs) {
 
 // Emit a function: optional .global, label, entry line marker, prologue, then the body.
 static void lower_function(struct Emitter* e, const struct AsmFunc* func) {
-  e->func_name = func->name;
+  e->func = func;
 
   emit(e, MACHINE_NEWLINE);
   if (func->global) {
@@ -732,12 +775,12 @@ static void lower_function(struct Emitter* e, const struct AsmFunc* func) {
     emit_debug_loc(e, entry_loc);
   }
 
-  emit_function_prologue(e, func);
+  emit_function_prologue(e);
   for (struct AsmInstr* cur = func->body; cur != NULL; cur = cur->next) {
     lower_instr(e, cur);
   }
 
-  e->func_name = NULL;
+  e->func = NULL;
 }
 
 // Emit data directives for a static initializer list. A NULL list is a

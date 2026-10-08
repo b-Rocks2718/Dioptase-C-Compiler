@@ -82,6 +82,14 @@ struct AsmFunc {
   // Frame bytes below BP reserved before any pseudo gets a slot: 4 when the
   // function returns through a caller buffer whose pointer is kept at BP-4.
   size_t reserved_stack_bytes;
+  // Total bytes below BP (stack slots plus reserved_stack_bytes). Set by
+  // assign_stack_slots; codegen allocates them in the prologue.
+  size_t frame_bytes;
+  bool makes_calls;
+  // True if any final operand is addressed relative to BP (stack slots,
+  // address-taken locals, incoming stack args, the return-buffer pointer).
+  // Set by assign_stack_slots once pseudos are replaced.
+  bool uses_bp;
 };
 
 // Store a file-scope static variable and its initializer.
