@@ -64,6 +64,14 @@ static const int kEpilogueStackBytes = 8;
 static const int kAluImm12Min = -2048;
 static const int kAluImm12Max = 2047;
 
+// Largest amount the 5-bit shift immediate can hold (docs/ISA.md, "Shifts").
+static const int kShiftImmMax = 31;
+
+// Bitwise immediates are one byte placed at byte lane 0-3 (docs/ISA.md,
+// "Bitwise logic").
+static const uint32_t kBitwiseImmByteMask = 0xFF;
+static const int kBitwiseImmLanes = 4;
+
 // Report a codegen error with the current function and ASM opcode, then exit.
 ANALYSIS_NORETURN static void codegen_errorf(const struct Emitter* e,
                                              const char* fmt,
@@ -535,7 +543,7 @@ static void lower_cond_jump(struct Emitter* e, const struct AsmCondJump* jump) {
 // Operations with no single machine instruction call a builtin helper, which
 // clobbers all caller-saved registers. The set of builtin ops must match
 // alu_op_needs_builtin_call in asm_gen.c, which leaf detection relies on.
-static void emit_binary_op(struct Emitter* e, enum ALUOp op) {
+static void emit_binary_reg_op(struct Emitter* e, enum ALUOp op) {
   switch (op) {
     case ALU_ADD:
       emit_alu_rrr(e, MACHINE_ADD, kScratchRegA, kScratchRegA, kScratchRegB);
@@ -576,6 +584,95 @@ static void emit_binary_op(struct Emitter* e, enum ALUOp op) {
   }
 }
 
+// Emit an ALU operation on scratch A and imm with the result in scratch A
+static void emit_binary_imm_op(struct Emitter* e, enum ALUOp op, int imm) {
+  switch (op) {
+    case ALU_ADD:
+      emit_alu_rri(e, MACHINE_ADD, kScratchRegA, kScratchRegA, imm);
+      return;
+    case ALU_SUB:
+      // Immediate `sub` computes `imm - rB` (docs/ISA.md), so subtract by
+      // adding the negation; is_encodable_imm guarantees -imm fits.
+      emit_alu_rri(e, MACHINE_ADD, kScratchRegA, kScratchRegA, -imm);
+      return;
+    case ALU_AND:
+      emit_alu_rri(e, MACHINE_AND, kScratchRegA, kScratchRegA, imm);
+      return;
+    case ALU_OR:
+      emit_alu_rri(e, MACHINE_OR, kScratchRegA, kScratchRegA, imm);
+      return;
+    case ALU_XOR:
+      emit_alu_rri(e, MACHINE_XOR, kScratchRegA, kScratchRegA, imm);
+      return;
+    case ALU_MOV:
+      emit_movi_imm(e, kScratchRegA, imm);
+      return;
+    case ALU_SMUL:
+    case ALU_SDIV:
+    case ALU_SMOD:
+    case ALU_UMUL:
+    case ALU_UDIV:
+    case ALU_UMOD: 
+      codegen_errorf(e, "ALU op %d has no immediate form; requires a builtin call", (int)op);
+      return;
+    case ALU_LSL:
+    case ALU_ASL:
+      emit_alu_rri(e, MACHINE_LSL, kScratchRegA, kScratchRegA, imm);
+      return;
+    case ALU_LSR:
+      emit_alu_rri(e, MACHINE_LSR, kScratchRegA, kScratchRegA, imm);
+      return;
+    case ALU_ASR:
+      emit_alu_rri(e, MACHINE_ASR, kScratchRegA, kScratchRegA, imm);
+      return;
+    default:
+      codegen_errorf(e, "unknown ALU op %d; expected a defined ALU_* variant", (int)op);
+  }
+}
+
+// Return true if emit_binary_imm_op can encode imm directly for op. The ranges
+// follow the ALU immediate encodings in docs/ISA.md. Bitwise immediates must
+// also be nonnegative, because the printer writes imm as a signed decimal and
+// the assembler rejects negative bitwise immediates.
+static bool is_encodable_imm(enum ALUOp op, int imm) {
+  switch (op) {
+    case ALU_ADD:
+      return imm >= kAluImm12Min && imm <= kAluImm12Max;
+    case ALU_SUB:
+      // Emitted as `add -imm`; written this way to avoid overflowing on -INT_MIN.
+      return imm >= -kAluImm12Max && imm <= -kAluImm12Min;
+    case ALU_AND:
+    case ALU_OR:
+    case ALU_XOR:
+      if (imm < 0) {
+        return false;
+      }
+      for (int lane = 0; lane < kBitwiseImmLanes; lane++) {
+        uint32_t lane_mask = kBitwiseImmByteMask << (8 * lane);
+        if (((uint32_t)imm & ~lane_mask) == 0) {
+          return true;
+        }
+      }
+      return false;
+    case ALU_LSL:
+    case ALU_ASL:
+    case ALU_LSR:
+    case ALU_ASR:
+      return imm >= 0 && imm <= kShiftImmMax;
+    case ALU_MOV:
+      // The immediate is the copied value; movi materializes any 32-bit value.
+      return true;
+    case ALU_SMUL:
+    case ALU_SDIV:
+    case ALU_SMOD:
+    case ALU_UMUL:
+    case ALU_UDIV:
+    case ALU_UMOD:
+      return false;
+  }
+  return false;
+}
+
 // Emit the operation step of the scratch template: sources are already in
 // scratch A (and B), and the result must be left in scratch A.
 static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
@@ -603,7 +700,7 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
       }
       return;
     case ASM_BINARY:
-      emit_binary_op(e, cur->instr.asm_binary.alu_op);
+      emit_binary_reg_op(e, cur->instr.asm_binary.alu_op);
       return;
     case ASM_PUSH:
       emit_reg1(e, push_op(e, cur->instr.asm_push.src->asm_type), kScratchRegA);
@@ -668,10 +765,23 @@ static void lower_via_scratch(struct Emitter* e, struct AsmInstr* cur) {
   struct OperandSlots slots = asm_operand_slots(cur);
   struct Operand* dst = NULL;
   size_t loaded = 0;
+
+  bool use_imm = false;
+  int imm = 0;
+
   for (size_t i = 0; i < slots.count; i++) {
     struct Operand* opr = *slots.slot[i].field;
     if (slots.slot[i].role == OPERAND_DEF) {
       dst = opr;
+    } else if (
+      i == 2 && 
+      slots.slot[i].role == OPERAND_USE &&
+      cur->type == ASM_BINARY &&
+      opr->type == OPERAND_LIT &&
+      is_encodable_imm(cur->instr.asm_binary.alu_op, opr->op.lit.value)) {
+      // skip loading, and let the immediate be used directly in the instruction
+      use_imm = true;
+      imm = opr->op.lit.value;
     } else if (loaded == 0) {
       load_operand(e, opr, kScratchRegA, R0);
       loaded++;
@@ -681,7 +791,11 @@ static void lower_via_scratch(struct Emitter* e, struct AsmInstr* cur) {
     }
   }
 
-  emit_scratch_op(e, cur);
+  if (use_imm) {
+    emit_binary_imm_op(e, cur->instr.asm_binary.alu_op, imm);
+  } else {
+    emit_scratch_op(e, cur);
+  }
 
   if (dst != NULL) {
     store_operand(e, dst, kScratchRegA);
