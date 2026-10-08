@@ -443,6 +443,12 @@ static void print_asm_top_level(const struct AsmTopLevel* top, unsigned tabs) {
       printf(top->top.asm_func.global ? " global\n" : " local\n");
 
       print_tabs(tabs + 1);
+      printf("Makes Calls: %s\n", top->top.asm_func.makes_calls ? "true" : "false");
+
+      print_tabs(tabs + 1);
+      printf("Frame Bytes: %zu\n", top->top.asm_func.frame_bytes);
+
+      print_tabs(tabs + 1);
       printf("Body:\n");
       print_asm_instrs(top->top.asm_func.body, tabs + 2);
       break;
