@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <string.h>
 
@@ -59,10 +60,14 @@ static const int kSavedBpOffset = 0;
 static const int kSavedRaOffset = 4;
 static const int kEpilogueStackBytes = 8;
 
-// Range of the 12-bit sign-extended immediate in ALU arithmetic instructions
-// (docs/ISA.md, "ALU immediate instructions").
-static const int kAluImm12Min = -2048;
-static const int kAluImm12Max = 2047;
+// Immediate field widths from docs/ISA.md. All are sign-extended except the
+// shift amount and the bitwise byte.
+static const unsigned kAluArithImmBits = 12;   // add/addc/sub/subb, "Arithmetic"
+static const unsigned kAbsMemImmBits = 12;     // swa/lwa/..., "Absolute Addressing"
+static const unsigned kAbsMemMaxScaleShift = 3; // the zz field: imm scaled by 2^0..2^3
+static const unsigned kPcRelMemImmBits = 16;   // sw/lw/... with a base, "PC-Relative Addressing"
+static const unsigned kBranchImmBits = 22;     // "Immediate Branches", counted in instructions
+static const int kBranchImmScale = 4;          // the assembler takes byte offsets: imm = 4 * i
 
 // Largest amount the 5-bit shift immediate can hold (docs/ISA.md, "Shifts").
 static const int kShiftImmMax = 31;
@@ -71,6 +76,9 @@ static const int kShiftImmMax = 31;
 // "Bitwise logic").
 static const uint32_t kBitwiseImmByteMask = 0xFF;
 static const int kBitwiseImmLanes = 4;
+
+// Low 10 bits that lui cannot set; its 22-bit field supplies bits 10-31.
+static const uint32_t kLuiLowMask = 0x3FF;
 
 // Report a codegen error with the current function and ASM opcode, then exit.
 ANALYSIS_NORETURN static void codegen_errorf(const struct Emitter* e,
@@ -95,6 +103,124 @@ ANALYSIS_NORETURN static void codegen_errorf(const struct Emitter* e,
 // ---------------------------------------------------------------------------
 // Instruction builders
 // ---------------------------------------------------------------------------
+
+// Return true if value fits a sign-extended field of the given width.
+static bool fits_signed_bits(int64_t value, unsigned bits) {
+  int64_t min = -((int64_t)1 << (bits - 1));
+  int64_t max = ((int64_t)1 << (bits - 1)) - 1;
+  return value >= min && value <= max;
+}
+
+// Return true if `type` can carry imm in its immediate field, following the
+// encodings in docs/ISA.md and the assembler macros in
+// Dioptase-Assembler/docs/syntax.md. Instructions with no immediate form
+// (register-only ops, register branches, extends) and non-instructions
+// (directives, labels, comments) return false. Bitwise immediates must also be
+// nonnegative, because the printer writes imm as a signed decimal and the
+// assembler rejects negative bitwise immediates.
+static bool is_encodable_imm(enum MachineInstrType type, int imm) {
+  switch (type) {
+    // Arithmetic: 12-bit signed. Immediate sub/subb compute `imm - rB`.
+    case MACHINE_ADD:
+    case MACHINE_ADDC:
+    case MACHINE_SUB:
+    case MACHINE_SUBB:
+    // `cmp rA, imm` is a sub with the arithmetic immediate.
+    case MACHINE_CMP:
+      return fits_signed_bits(imm, kAluArithImmBits);
+
+    // Bitwise: one byte at any of the four byte lanes.
+    case MACHINE_AND:
+    case MACHINE_NAND:
+    case MACHINE_OR:
+    case MACHINE_NOR:
+    case MACHINE_XOR:
+    case MACHINE_XNOR:
+    case MACHINE_NOT:
+      if (imm < 0) {
+        return false;
+      }
+      for (int lane = 0; lane < kBitwiseImmLanes; lane++) {
+        uint32_t lane_mask = kBitwiseImmByteMask << (8 * lane);
+        if (((uint32_t)imm & ~lane_mask) == 0) {
+          return true;
+        }
+      }
+      return false;
+
+    // Shifts and rotates: 5-bit unsigned amount.
+    case MACHINE_LSL:
+    case MACHINE_LSR:
+    case MACHINE_ASR:
+    case MACHINE_ROTL:
+    case MACHINE_ROTR:
+    case MACHINE_LSLC:
+    case MACHINE_LSRC:
+      return imm >= 0 && imm <= kShiftImmMax;
+
+    case MACHINE_LUI:
+      return ((uint32_t)imm & kLuiLowMask) == 0;
+
+    // Absolute addressing: a 12-bit signed field scaled by 2^z, z in 0..3. The
+    // assembler picks the smallest z that represents imm exactly.
+    case MACHINE_SWA:
+    case MACHINE_LWA:
+    case MACHINE_SDA:
+    case MACHINE_LDA:
+    case MACHINE_SBA:
+    case MACHINE_LBA:
+      for (unsigned shift = 0; shift <= kAbsMemMaxScaleShift; shift++) {
+        int64_t scale = (int64_t)1 << shift;
+        if (imm % scale == 0 && fits_signed_bits(imm / scale, kAbsMemImmBits)) {
+          return true;
+        }
+      }
+      return false;
+
+    // PC-relative with a base register: 16-bit signed. (The base-less form has
+    // a 21-bit field, but codegen always prints a base when imm is numeric.)
+    case MACHINE_SW:
+    case MACHINE_LW:
+    case MACHINE_SD:
+    case MACHINE_LD:
+    case MACHINE_SB:
+    case MACHINE_LB:
+      return fits_signed_bits(imm, kPcRelMemImmBits);
+
+    // Immediate branches and `jmp imm` (an alias for `br imm`): a byte offset
+    // that is a multiple of 4 and fits the 22-bit instruction count.
+    case MACHINE_BR:
+    case MACHINE_BZ:
+    case MACHINE_BNZ:
+    case MACHINE_BS:
+    case MACHINE_BNS:
+    case MACHINE_BC:
+    case MACHINE_BNC:
+    case MACHINE_BO:
+    case MACHINE_BNO:
+    case MACHINE_BPS:
+    case MACHINE_BNPS:
+    case MACHINE_BG:
+    case MACHINE_BGE:
+    case MACHINE_BL:
+    case MACHINE_BLE:
+    case MACHINE_BA:
+    case MACHINE_BAE:
+    case MACHINE_BB:
+    case MACHINE_BBE:
+    case MACHINE_JMP:
+      return imm % kBranchImmScale == 0 && fits_signed_bits(imm / kBranchImmScale, kBranchImmBits);
+
+    // Macros that materialize a full 32-bit value (movi: lui + addi; call:
+    // movu + movl).
+    case MACHINE_MOVI:
+    case MACHINE_CALL:
+      return true;
+
+    default:
+      return false;
+  }
+}
 
 // Append a zeroed instruction of the given kind; the caller fills its payload.
 static struct MachineInstr* emit(struct Emitter* e, enum MachineInstrType type) {
@@ -129,6 +255,13 @@ static void emit_alu_rri(struct Emitter* e, enum MachineInstrType type,
   instr->instr.alu.imm = imm;
 }
 
+// Load upper immediate: `lui ra, imm`.
+static void emit_lui(struct Emitter* e, enum Reg ra, int imm) {
+  struct MachineInstr* instr = emit(e, MACHINE_LUI);
+  instr->instr.movi.ra = ra;
+  instr->instr.movi.imm = imm;
+}
+
 // Two-register form shared by mov, not, cmp, truncate/sign-extend, and register branches.
 static void emit_reg2(struct Emitter* e, enum MachineInstrType type, enum Reg ra, enum Reg rb) {
   struct MachineInstr* instr = emit(e, type);
@@ -159,8 +292,20 @@ static void emit_mem_label(struct Emitter* e, enum MachineInstrType type,
   instr->instr.mem.label = label;
 }
 
-// Load an immediate; the assembler expands movi to as many instructions as the value needs.
+// Load an immediate. Values that fit the 12-bit add immediate use a single
+// `add ra, r0, imm`; anything else uses movi, which the assembler always
+// expands to two instructions (lui + addi).
 static void emit_movi_imm(struct Emitter* e, enum Reg ra, int imm) {
+  if (is_encodable_imm(MACHINE_ADD, imm)) {
+    emit_alu_rri(e, MACHINE_ADD, ra, R0, imm);
+    return;
+  }
+
+  if (is_encodable_imm(MACHINE_LUI, imm)) {
+    emit_lui(e, ra, imm);
+    return;
+  }
+
   struct MachineInstr* instr = emit(e, MACHINE_MOVI);
   instr->instr.movi.ra = ra;
   instr->instr.movi.imm = imm;
@@ -438,7 +583,7 @@ static void emit_function_prologue(struct Emitter* e) {
   // use immediate `add` when possible, 
   // otherwise fall back to register sub
   if (e->func->frame_bytes > 0) {
-    if (e->func->frame_bytes <= (size_t)-kAluImm12Min) {
+    if (e->func->frame_bytes <= INT_MAX && is_encodable_imm(MACHINE_ADD, -(int)e->func->frame_bytes)) {
       emit_alu_rri(e, MACHINE_ADD, SP, SP, -(int)e->func->frame_bytes);
     } else {
       emit_movi_imm(e, kScratchRegB, (int)e->func->frame_bytes);
@@ -511,7 +656,7 @@ static void lower_get_address(struct Emitter* e, const struct AsmGetAddress* ga)
     // offsets beyond 2048 bytes need the offset materialized in a register.
     int offset = src->op.memory.offset;
     enum Reg base = src->op.memory.base;
-    if (offset >= kAluImm12Min && offset <= kAluImm12Max) {
+    if (is_encodable_imm(MACHINE_ADD, offset)) {
       emit_alu_rri(e, MACHINE_ADD, addr_reg, base, offset);
     } else {
       enum Reg offset_reg = pick_scratch_reg(e, addr_reg, base);
@@ -584,84 +729,32 @@ static void emit_binary_reg_op(struct Emitter* e, enum ALUOp op) {
   }
 }
 
-// Emit an ALU operation on scratch A and imm with the result in scratch A
-static void emit_binary_imm_op(struct Emitter* e, enum ALUOp op, int imm) {
+// Choose the machine instruction and immediate that compute `x <op> imm` in
+// one instruction. Returns false if op has no immediate form (multiply,
+// divide, modulo are builtin calls; ALU_MOV lowers to movi instead) or if imm
+// does not fit the chosen instruction's encoding.
+static bool binary_imm_form(enum ALUOp op, int imm, enum MachineInstrType* type, int* encoded_imm) {
+  *encoded_imm = imm;
   switch (op) {
-    case ALU_ADD:
-      emit_alu_rri(e, MACHINE_ADD, kScratchRegA, kScratchRegA, imm);
-      return;
+    case ALU_ADD: *type = MACHINE_ADD; break;
     case ALU_SUB:
       // Immediate `sub` computes `imm - rB` (docs/ISA.md), so subtract by
-      // adding the negation; is_encodable_imm guarantees -imm fits.
-      emit_alu_rri(e, MACHINE_ADD, kScratchRegA, kScratchRegA, -imm);
-      return;
-    case ALU_AND:
-      emit_alu_rri(e, MACHINE_AND, kScratchRegA, kScratchRegA, imm);
-      return;
-    case ALU_OR:
-      emit_alu_rri(e, MACHINE_OR, kScratchRegA, kScratchRegA, imm);
-      return;
-    case ALU_XOR:
-      emit_alu_rri(e, MACHINE_XOR, kScratchRegA, kScratchRegA, imm);
-      return;
-    case ALU_MOV:
-      emit_movi_imm(e, kScratchRegA, imm);
-      return;
-    case ALU_SMUL:
-    case ALU_SDIV:
-    case ALU_SMOD:
-    case ALU_UMUL:
-    case ALU_UDIV:
-    case ALU_UMOD: 
-      codegen_errorf(e, "ALU op %d has no immediate form; requires a builtin call", (int)op);
-      return;
-    case ALU_LSL:
-    case ALU_ASL:
-      emit_alu_rri(e, MACHINE_LSL, kScratchRegA, kScratchRegA, imm);
-      return;
-    case ALU_LSR:
-      emit_alu_rri(e, MACHINE_LSR, kScratchRegA, kScratchRegA, imm);
-      return;
-    case ALU_ASR:
-      emit_alu_rri(e, MACHINE_ASR, kScratchRegA, kScratchRegA, imm);
-      return;
-    default:
-      codegen_errorf(e, "unknown ALU op %d; expected a defined ALU_* variant", (int)op);
-  }
-}
-
-// Return true if emit_binary_imm_op can encode imm directly for op. The ranges
-// follow the ALU immediate encodings in docs/ISA.md. Bitwise immediates must
-// also be nonnegative, because the printer writes imm as a signed decimal and
-// the assembler rejects negative bitwise immediates.
-static bool is_encodable_imm(enum ALUOp op, int imm) {
-  switch (op) {
-    case ALU_ADD:
-      return imm >= kAluImm12Min && imm <= kAluImm12Max;
-    case ALU_SUB:
-      // Emitted as `add -imm`; written this way to avoid overflowing on -INT_MIN.
-      return imm >= -kAluImm12Max && imm <= -kAluImm12Min;
-    case ALU_AND:
-    case ALU_OR:
-    case ALU_XOR:
-      if (imm < 0) {
+      // adding the negation, which INT_MIN does not have.
+      if (imm == INT_MIN) {
         return false;
       }
-      for (int lane = 0; lane < kBitwiseImmLanes; lane++) {
-        uint32_t lane_mask = kBitwiseImmByteMask << (8 * lane);
-        if (((uint32_t)imm & ~lane_mask) == 0) {
-          return true;
-        }
-      }
-      return false;
+      *type = MACHINE_ADD;
+      *encoded_imm = -imm;
+      break;
+    case ALU_AND: *type = MACHINE_AND; break;
+    case ALU_OR: *type = MACHINE_OR; break;
+    case ALU_XOR: *type = MACHINE_XOR; break;
+    // C left shifts are the same bit operation for signed and unsigned values.
     case ALU_LSL:
-    case ALU_ASL:
-    case ALU_LSR:
-    case ALU_ASR:
-      return imm >= 0 && imm <= kShiftImmMax;
+    case ALU_ASL: *type = MACHINE_LSL; break;
+    case ALU_LSR: *type = MACHINE_LSR; break;
+    case ALU_ASR: *type = MACHINE_ASR; break;
     case ALU_MOV:
-      // The immediate is the copied value; movi materializes any 32-bit value.
-      return true;
     case ALU_SMUL:
     case ALU_SDIV:
     case ALU_SMOD:
@@ -670,7 +763,31 @@ static bool is_encodable_imm(enum ALUOp op, int imm) {
     case ALU_UMOD:
       return false;
   }
-  return false;
+  return is_encodable_imm(*type, *encoded_imm);
+}
+
+// Return true if `x <op> imm` can be lowered without loading imm into a
+// register: through binary_imm_form, or as movi for ALU_MOV.
+static bool binary_op_takes_imm(enum ALUOp op, int imm) {
+  enum MachineInstrType type;
+  int encoded_imm;
+  return op == ALU_MOV || binary_imm_form(op, imm, &type, &encoded_imm);
+}
+
+// Emit an ALU operation on scratch A and imm with the result in scratch A.
+// The caller must have checked binary_op_takes_imm.
+static void emit_binary_imm_op(struct Emitter* e, enum ALUOp op, int imm) {
+  if (op == ALU_MOV) {
+    emit_movi_imm(e, kScratchRegA, imm);
+    return;
+  }
+  enum MachineInstrType type;
+  int encoded_imm;
+  if (!binary_imm_form(op, imm, &type, &encoded_imm)) {
+    codegen_errorf(e, "ALU op %d has no immediate form that encodes %d; "
+                   "expected the operand to be loaded into a register", (int)op, imm);
+  }
+  emit_alu_rri(e, type, kScratchRegA, kScratchRegA, encoded_imm);
 }
 
 // Emit the operation step of the scratch template: sources are already in
@@ -778,7 +895,7 @@ static void lower_via_scratch(struct Emitter* e, struct AsmInstr* cur) {
       slots.slot[i].role == OPERAND_USE &&
       cur->type == ASM_BINARY &&
       opr->type == OPERAND_LIT &&
-      is_encodable_imm(cur->instr.asm_binary.alu_op, opr->op.lit.value)) {
+      binary_op_takes_imm(cur->instr.asm_binary.alu_op, opr->op.lit.value)) {
       // skip loading, and let the immediate be used directly in the instruction
       use_imm = true;
       imm = opr->op.lit.value;
