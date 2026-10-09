@@ -397,23 +397,6 @@ static void operand_list_append(struct OperandList** head, struct OperandList** 
   *tail = entry;
 }
 
-// Check whether a symbol name refers to a static or constant storage symbol.
-// Returns true if the symbol is static/const or a function.
-static bool is_static_symbol_name(struct Slice* name) {
-  if (name == NULL || global_symbol_table == NULL) {
-    return false;
-  }
-  struct SymbolEntry* entry = symbol_table_get(global_symbol_table, name);
-  if (entry == NULL || entry->attrs == NULL) {
-    return false;
-  }
-  if (entry->type != NULL && entry->type->type == FUN_TYPE) {
-    return true;
-  }
-  return entry->attrs->attr_type == STATIC_ATTR ||
-         entry->attrs->attr_type == CONST_ATTR;
-}
-
 // Forward declaration for aggregate classification helpers.
 static struct VarClassList* classify_struct(struct StructEntry* struct_entry);
 static struct AsmType* get_fourbyte_type(size_t offset, size_t struct_size);
@@ -1128,23 +1111,6 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
   }
 }
 
-// Address of a member at a nonzero offset inside a static object, computed
-// into a fresh word temp as GetAddress base + offset. Used by CopyToOffset and
-// CopyFromOffset, which then access the member through a Store or Load.
-static struct Operand* emit_static_member_address(struct AsmList* out, struct Slice* func_name,
-                                                  struct Slice* base_name, int offset) {
-  struct AsmSymbolEntry* base_entry = asm_symbol_table_get(asm_symbol_table, base_name);
-  if (base_entry == NULL || base_entry->type == NULL) {
-    asm_gen_error("instruction", func_name, "missing asm type for static base %.*s",
-                  (int)base_name->len, base_name->start);
-  }
-  struct Operand* addr = make_asm_temp(func_name, &kWordType);
-  struct Operand* base = make_pseudo_mem(base_name, base_entry->type, 0);
-  asm_emit(out, asm_get_address(addr, base));
-  asm_emit(out, asm_binary(ALU_ADD, addr, addr, lit_operand(offset, &kWordType)));
-  return addr;
-}
-
 // Byte-wise copy of an aggregate between two operands of the given C type.
 static struct AsmInstr* copy_aggregate(struct Slice* func_name, struct Operand* src,
                                        struct Operand* dst, struct Type* type) {
@@ -1318,12 +1284,6 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
         return copy_aggregate(func_name, tac_val_to_asm(copy->src),
                               make_pseudo_mem(copy->dst, member_type, copy->offset), store_type);
       }
-      if (copy->offset != 0 && is_static_symbol_name(copy->dst)) {
-        struct AsmList out = { NULL, NULL };
-        struct Operand* addr = emit_static_member_address(&out, func_name, copy->dst, copy->offset);
-        asm_emit(&out, asm_store(is_volatile, addr, tac_val_to_asm(copy->src)));
-        return out.head;
-      }
       struct Operand* dst = make_pseudo_mem(copy->dst, member_type, copy->offset);
       struct Operand* src = tac_val_to_asm(copy->src);
       return is_volatile ? asm_volatile_copy(true, dst, src) : asm_mov(dst, src);
@@ -1341,12 +1301,6 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
       if (load_type->type == STRUCT_TYPE || load_type->type == UNION_TYPE) {
         return copy_aggregate(func_name, make_pseudo_mem(copy->src, member_type, copy->offset),
                               tac_val_to_asm(copy->dst), load_type);
-      }
-      if (copy->offset != 0 && is_static_symbol_name(copy->src)) {
-        struct AsmList out = { NULL, NULL };
-        struct Operand* addr = emit_static_member_address(&out, func_name, copy->src, copy->offset);
-        asm_emit(&out, asm_load(is_volatile, tac_val_to_asm(copy->dst), addr));
-        return out.head;
       }
       struct Operand* dst = tac_val_to_asm(copy->dst);
       dst->asm_type = member_type;
