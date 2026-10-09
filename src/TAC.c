@@ -1877,14 +1877,15 @@ static struct TACInstrList load_indirect_lvalue(struct ExprResult* location,
         is_volatile ? TACVOLATILE_LOAD : TACLOAD);
     load_instr->instr.tac_load.dst = dst;
     load_instr->instr.tac_load.src_ptr = location->val;
+    load_instr->instr.tac_load.offset = location->offset;
     return tac_instr_list(load_instr);
   }
 
   struct TACInstr* copy_instr = tac_instr_create(
       is_volatile ? TACVOLATILE_COPY_FROM_OFFSET : TACCOPY_FROM_OFFSET);
   copy_instr->instr.tac_copy_from_offset.dst = dst;
-  copy_instr->instr.tac_copy_from_offset.src = location->sub_object_base;
-  copy_instr->instr.tac_copy_from_offset.offset = location->sub_object_offset;
+  copy_instr->instr.tac_copy_from_offset.src = location->base;
+  copy_instr->instr.tac_copy_from_offset.offset = location->offset;
   return tac_instr_list(copy_instr);
 }
 
@@ -1899,13 +1900,14 @@ static struct TACInstrList store_indirect_lvalue(struct ExprResult* location,
         is_volatile ? TACVOLATILE_STORE : TACSTORE);
     store_instr->instr.tac_store.dst_ptr = location->val;
     store_instr->instr.tac_store.src = src;
+    store_instr->instr.tac_store.offset = location->offset;
     return tac_instr_list(store_instr);
   }
 
   struct TACInstr* copy_instr = tac_instr_create(
       is_volatile ? TACVOLATILE_COPY_TO_OFFSET : TACCOPY_TO_OFFSET);
-  copy_instr->instr.tac_copy_to_offset.dst = location->sub_object_base;
-  copy_instr->instr.tac_copy_to_offset.offset = location->sub_object_offset;
+  copy_instr->instr.tac_copy_to_offset.dst = location->base;
+  copy_instr->instr.tac_copy_to_offset.offset = location->offset;
   copy_instr->instr.tac_copy_to_offset.src = src;
   copy_instr->instr.tac_copy_to_offset.dst_type = object_type;
   return tac_instr_list(copy_instr);
@@ -1956,7 +1958,7 @@ struct TACInstrList expr_to_TAC_convert(struct Slice* func_name, struct Expr* ex
       // AST:
       // *ptr, struct.field, or ptr->field used as a value
       // TAC:
-      // Load dst, [ptr]  or  CopyFromOffset dst, base, offset
+      // Load dst, [ptr + offset]  or  CopyFromOffset dst, base, offset
       // (volatile forms when the object is volatile)
       struct Type* value_type = type_is_volatile(expr->value_type)
                                     ? unqualify_type(expr->value_type)
@@ -2273,7 +2275,7 @@ static struct TACInstrList lower_assign_expr(struct Slice* func_name, struct Exp
     // TAC:
     // <ptr or base>
     // <rhs>
-    // Store [ptr], rhs  or  CopyToOffset base, offset, rhs
+    // Store [ptr + offset], rhs  or  CopyToOffset base, offset, rhs
     // (volatile forms when the object is volatile)
     concat_TAC_instrs(&instrs, store_indirect_lvalue(&lhs_result, assign_expr->left->value_type,
                                                      rhs_val));
@@ -2611,9 +2613,21 @@ static struct TACInstrList lower_addr_of_expr(struct Slice* func_name, struct Ex
   }
 
   if (inner_result.type == DEREFERENCED_POINTER) {
-    // &(*p) collapses to p, so reuse the pointer operand directly.
+    // &(*p) collapses to p, so reuse the pointer operand directly. A folded
+    // member or constant-index offset (&p->field, &p[3]) must be added now,
+    // since the address itself is the value.
+    if (inner_result.offset != 0) {
+      struct Val* adjusted_ptr = make_temp(func_name, expr->value_type);
+      struct TACInstr* offset_instr = tac_binary_of(ALU_ADD, adjusted_ptr, inner_result.val,
+                                                    tac_make_const((uint64_t)inner_result.offset,
+                                                                   tac_builtin_type(UINT_TYPE)));
+      tac_emit(&instrs, offset_instr);
+      result->val = adjusted_ptr;
+    } else {
+      result->val = inner_result.val;
+    }
+
     result->type = PLAIN_OPERAND;
-    result->val = inner_result.val;
     return instrs;
   }
 
@@ -2627,12 +2641,12 @@ static struct TACInstrList lower_addr_of_expr(struct Slice* func_name, struct Ex
     // Binary Add dst, dst, offset
     struct TACInstr* addr_instr = tac_instr_create(TACGET_ADDRESS);
     addr_instr->instr.tac_get_address.dst = dst;
-    addr_instr->instr.tac_get_address.src = tac_make_var(inner_result.sub_object_base, 
+    addr_instr->instr.tac_get_address.src = tac_make_var(inner_result.base, 
       tac_builtin_type(UINT_TYPE));
 
 
 
-    struct TACInstr* offset_instr = tac_binary_of(ALU_ADD, dst, dst, tac_make_const((uint64_t)inner_result.sub_object_offset, tac_builtin_type(UINT_TYPE)));
+    struct TACInstr* offset_instr = tac_binary_of(ALU_ADD, dst, dst, tac_make_const((uint64_t)inner_result.offset, tac_builtin_type(UINT_TYPE)));
 
     tac_emit(&instrs, addr_instr);
     tac_emit(&instrs, offset_instr);
@@ -2654,20 +2668,31 @@ static struct TACInstrList lower_subscript_expr(struct Slice* func_name, struct 
 
   struct TACInstrList instrs = tac_instr_list(NULL);
 
-  // A literal index into a named object (`arr[3]`, where `arr` decays to
-  // &arr) is a fixed subobject of that variable, like a struct member. Lower
-  // it to SUB_OBJECT so reads and writes become CopyFrom/ToOffset with no
-  // pointer arithmetic. C literals are never negative, so the offset is too.
-  if (sub_expr->array->type == ADDR_OF &&
-      sub_expr->array->expr.addr_of_expr.expr->type == VAR &&
-      sub_expr->index->type == LIT) {
-    result->type = SUB_OBJECT;
-    result->sub_object_base = sub_expr->array->expr.addr_of_expr.expr->expr.var_expr.name;
-    result->sub_object_offset = sub_expr->index->expr.lit_expr.value.uint_val * get_type_size(expr->value_type);
-    return instrs;
+  // A literal index needs no runtime arithmetic: its byte offset is a
+  // constant. C literals are never negative, so neither is the offset.
+  if (sub_expr->index->type == LIT) {
+    if (sub_expr->array->type == ADDR_OF &&
+        sub_expr->array->expr.addr_of_expr.expr->type == VAR) {
+      // `arr[3]` on a named array (which decays to &arr) is a fixed subobject
+      // of that variable, like a struct member: CopyFrom/ToOffset, no pointer.
+      result->type = SUB_OBJECT;
+      result->base = sub_expr->array->expr.addr_of_expr.expr->expr.var_expr.name;
+      result->offset = sub_expr->index->expr.lit_expr.value.uint_val * get_type_size(expr->value_type);
+      return instrs;
+    } else {
+      // `p[3]`: evaluate the pointer and fold the offset into the Load/Store.
+      struct Val* base_ptr_val = (struct Val*)arena_alloc(sizeof(struct Val));
+      struct TACInstrList base_ptr_instrs = expr_to_TAC_convert(func_name, sub_expr->array, base_ptr_val);
+      concat_TAC_instrs(&instrs, base_ptr_instrs);
+
+      result->type = DEREFERENCED_POINTER;
+      result->val = base_ptr_val;
+      result->offset = sub_expr->index->expr.lit_expr.value.uint_val * get_type_size(expr->value_type);
+      return instrs;
+    }
   }
 
-  
+  // Variable index: evaluate the pointer and index, scale the index, and add.
   struct Val* base_ptr_val = (struct Val*)arena_alloc(sizeof(struct Val));
   struct TACInstrList base_ptr_instrs = expr_to_TAC_convert(func_name, sub_expr->array, base_ptr_val);
   concat_TAC_instrs(&instrs, base_ptr_instrs);
@@ -2703,6 +2728,7 @@ static struct TACInstrList lower_subscript_expr(struct Slice* func_name, struct 
 
   result->type = DEREFERENCED_POINTER;
   result->val = addr;
+  result->offset = 0;
   return instrs;
 }
 
@@ -2861,21 +2887,18 @@ static struct TACInstrList lower_dot_expr_expr(struct Slice* func_name, struct E
         return tac_instr_list(NULL);
       }
       result->type = SUB_OBJECT;  
-      result->sub_object_base = base_result->val->val.var_name;
-      result->sub_object_offset = field_offset;
+      result->base = base_result->val->val.var_name;
+      result->offset = field_offset;
       return instrs;
     case DEREFERENCED_POINTER:
-      struct Val* dst_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
       // AST:
-      // (base_ptr)->field
+      // (*base_ptr).field, or a member of one (p->in.field, q[2].field)
       // TAC:
-      // <base_ptr>
-      // Binary Add dst_ptr = base_ptr + offset
-      struct TACInstr* add_instr = tac_binary_of(binop_to_aluop(ADD_OP, dst_ptr->type), dst_ptr, base_result->val, tac_make_const((uint64_t)field_offset, tac_builtin_type(UINT_TYPE)));
-      tac_emit(&instrs, add_instr);
-
+      // <base_ptr>   (no instruction: the field offset is added to the
+      //               offset the base already carries)
       result->type = DEREFERENCED_POINTER;
-      result->val = dst_ptr;
+      result->val = base_result->val;
+      result->offset = base_result->offset + field_offset;
       return instrs;
     case SUB_OBJECT:
       // AST:
@@ -2883,8 +2906,8 @@ static struct TACInstrList lower_dot_expr_expr(struct Slice* func_name, struct E
       // TAC:
       // <base.field>
       result->type = SUB_OBJECT;
-      result->sub_object_base = base_result->sub_object_base;
-      result->sub_object_offset = base_result->sub_object_offset + field_offset;
+      result->base = base_result->base;
+      result->offset = base_result->offset + field_offset;
       return instrs;
     default:
       tac_error_at(expr->loc, "invalid base expression for dot operator");
@@ -2898,11 +2921,11 @@ static struct TACInstrList lower_arrow_expr_expr(struct Slice* func_name, struct
   // AST:
   // base_ptr->field
   // TAC:
-  // <base_ptr>
-  // Binary Add dst_ptr = base_ptr + offset
+  // <base_ptr>   (no instruction: the result is DEREFERENCED_POINTER at
+  //               base_ptr with the field offset, folded into the Load/Store)
   struct ArrowExpr* arrow_expr = &expr->expr.arrow_expr;
   struct Val* base_ptr_val = (struct Val*)arena_alloc(sizeof(struct Val));
-  struct TACInstrList base_ptr_instrs = expr_to_TAC_convert(func_name, arrow_expr->pointer_expr, base_ptr_val);
+  struct TACInstrList ptr_instrs = expr_to_TAC_convert(func_name, arrow_expr->pointer_expr, base_ptr_val);
   struct Type* base_type = arrow_expr->pointer_expr->value_type;
   if (base_type->type != POINTER_TYPE) {
     tac_error_at(expr->loc, "arrow operator requires pointer to struct/union");
@@ -2915,13 +2938,11 @@ static struct TACInstrList lower_arrow_expr_expr(struct Slice* func_name, struct
     return tac_instr_list(NULL);
   }
   size_t field_offset = field_entry->offset;
-  struct TACInstrList instrs = base_ptr_instrs;
-  struct Val* dst_ptr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
+  struct TACInstrList instrs = ptr_instrs;
 
-  struct TACInstr* add_instr = tac_binary_of(binop_to_aluop(ADD_OP, dst_ptr->type), dst_ptr, base_ptr_val, tac_make_const((uint64_t)field_offset, tac_builtin_type(UINT_TYPE)));
-  tac_emit(&instrs, add_instr);
   result->type = DEREFERENCED_POINTER;
-  result->val = dst_ptr;
+  result->val = base_ptr_val;
+  result->offset = field_offset;
   return instrs;
 }
 
@@ -2965,6 +2986,7 @@ struct TACInstrList expr_to_TAC(struct Slice* func_name, struct Expr* expr, stru
 
       result->type = DEREFERENCED_POINTER;
       result->val = ptr_val;
+      result->offset = 0;
       return instrs;
     }
     case SUBSCRIPT:

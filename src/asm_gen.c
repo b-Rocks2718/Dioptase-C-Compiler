@@ -317,27 +317,31 @@ static struct AsmInstr* asm_get_address(struct Operand* dst, struct Operand* src
 
 // Load through a pointer; is_volatile selects VolatileLoad so later passes
 // keep the access.
-static struct AsmInstr* asm_load(bool is_volatile, struct Operand* dst, struct Operand* ptr) {
+static struct AsmInstr* asm_load(bool is_volatile, struct Operand* dst, struct Operand* ptr, int offset) {
   struct AsmInstr* instr = new_asm_instr(is_volatile ? ASM_VOLATILE_LOAD : ASM_LOAD);
   if (is_volatile) {
     instr->instr.asm_volatile_load.dst = dst;
     instr->instr.asm_volatile_load.src = ptr;
+    instr->instr.asm_volatile_load.offset = offset;
   } else {
     instr->instr.asm_load.dst = dst;
     instr->instr.asm_load.src = ptr;
+    instr->instr.asm_load.offset = offset;
   }
   return instr;
 }
 
 // Store through a pointer; is_volatile selects VolatileStore.
-static struct AsmInstr* asm_store(bool is_volatile, struct Operand* ptr, struct Operand* src) {
+static struct AsmInstr* asm_store(bool is_volatile, struct Operand* ptr, struct Operand* src, int offset) {
   struct AsmInstr* instr = new_asm_instr(is_volatile ? ASM_VOLATILE_STORE : ASM_STORE);
   if (is_volatile) {
     instr->instr.asm_volatile_store.dst = ptr;
     instr->instr.asm_volatile_store.src = src;
+    instr->instr.asm_volatile_store.offset = offset;
   } else {
     instr->instr.asm_store.dst = ptr;
     instr->instr.asm_store.src = src;
+    instr->instr.asm_store.offset = offset;
   }
   return instr;
 }
@@ -1119,12 +1123,12 @@ static struct AsmInstr* copy_aggregate(struct Slice* func_name, struct Operand* 
 
 // Lower a struct/union Load or Store through a pointer: the pointer goes into
 // kScratchRegA and the bytes are copied relative to it.
-static struct AsmInstr* aggregate_through_pointer(struct Slice* func_name, struct Val* ptr,
+static struct AsmInstr* aggregate_through_pointer(struct Slice* func_name, struct Val* ptr, int offset,
                                                   struct Val* value, struct Type* type,
                                                   bool is_load) {
   struct AsmList out = { NULL, NULL };
   asm_emit(&out, asm_mov(reg_operand(kScratchRegA, &kWordType), tac_val_to_asm(ptr)));
-  struct Operand* mem = make_asm_mem(kScratchRegA, 0, type_to_asm_type(type));
+  struct Operand* mem = make_asm_mem(kScratchRegA, offset, type_to_asm_type(type));
   struct Operand* other = tac_val_to_asm(value);
   asm_emit(&out, is_load ? copy_aggregate(func_name, mem, other, type)
                          : copy_aggregate(func_name, other, mem, type));
@@ -1253,22 +1257,22 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
       struct TACLoad* load_instr = &tac_instr->instr.tac_load;
       struct Type* type = load_instr->dst->type;
       if (type->type == STRUCT_TYPE || type->type == UNION_TYPE) {
-        return aggregate_through_pointer(func_name, load_instr->src_ptr, load_instr->dst,
+        return aggregate_through_pointer(func_name, load_instr->src_ptr, load_instr->offset, load_instr->dst,
                                          type, true);
       }
       return asm_load(tac_instr->type == TACVOLATILE_LOAD, tac_val_to_asm(load_instr->dst),
-                      tac_val_to_asm(load_instr->src_ptr));
+                      tac_val_to_asm(load_instr->src_ptr), load_instr->offset);
     }
     case TACVOLATILE_STORE:
     case TACSTORE: {
       struct TACStore* store_instr = &tac_instr->instr.tac_store;
       struct Type* type = store_instr->src->type;
       if (type->type == STRUCT_TYPE || type->type == UNION_TYPE) {
-        return aggregate_through_pointer(func_name, store_instr->dst_ptr, store_instr->src,
+        return aggregate_through_pointer(func_name, store_instr->dst_ptr, store_instr->offset, store_instr->src,
                                          type, false);
       }
       return asm_store(tac_instr->type == TACVOLATILE_STORE, tac_val_to_asm(store_instr->dst_ptr),
-                       tac_val_to_asm(store_instr->src));
+                       tac_val_to_asm(store_instr->src), store_instr->offset);
     }
     case TACVOLATILE_COPY_TO_OFFSET:
     case TACCOPY_TO_OFFSET: {
