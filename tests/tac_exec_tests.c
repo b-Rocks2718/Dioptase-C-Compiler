@@ -81,8 +81,6 @@ static bool tac_exec_parse_optimization_options(int argc,
       options->tail_call_opt = true;
     } else if (strcmp(arg, "-inline") == 0) {
       options->inline_opt = true;
-    } else if (strcmp(arg, "-peephole") == 0) {
-      options->peephole_opt = true;
     } else if (strcmp(arg, "-reg-alloc") == 0) {
       options->reg_alloc = true;
     } else if (strcmp(arg, "-opt") == 0) {
@@ -92,7 +90,6 @@ static bool tac_exec_parse_optimization_options(int argc,
       options->dead_store_elim = true;
       options->tail_call_opt = true;
       options->inline_opt = true;
-      options->peephole_opt = true;
       options->reg_alloc = true;
     } else {
       fprintf(stderr, "TAC exec tests: unsupported optimization flag '%s'\n", arg);

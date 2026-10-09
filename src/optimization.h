@@ -19,7 +19,6 @@ struct OptimizationOptions {
   bool inline_opt;
 
   // low-level optimizations
-  bool peephole_opt;
   bool reg_alloc;
 };
 
