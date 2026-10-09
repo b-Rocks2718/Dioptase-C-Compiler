@@ -836,7 +836,10 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
       const struct Operand* load_dst = cur->type == ASM_VOLATILE_LOAD
           ? cur->instr.asm_volatile_load.dst
           : cur->instr.asm_load.dst;
-      emit_mem_base(e, load_op(e, load_dst->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegA, 0);
+      int offset = cur->type == ASM_VOLATILE_LOAD
+          ? cur->instr.asm_volatile_load.offset
+          : cur->instr.asm_load.offset;
+      emit_load_base(e, load_op(e, load_dst->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegA, offset, R0);
       return;
     }
     case ASM_STORE:
@@ -845,7 +848,10 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
       const struct Operand* store_src = cur->type == ASM_VOLATILE_STORE
           ? cur->instr.asm_volatile_store.src
           : cur->instr.asm_store.src;
-      emit_mem_base(e, store_op(e, store_src->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegB, 0);
+      int offset = cur->type == ASM_VOLATILE_STORE
+          ? cur->instr.asm_volatile_store.offset
+          : cur->instr.asm_store.offset;
+      emit_store_base(e, store_op(e, store_src->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegB, offset);
       return;
     }
     default:

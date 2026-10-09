@@ -505,7 +505,20 @@ static void tac_preallocate_copy_offsets(struct TacFrame* frame,
     if (tac_bindings_find(&interp->globals, name) != NULL) {
       continue;
     }
-    size_t slots = tac_slots_for_bytes(map.entries[i].bytes);
+    // Reserve the whole object, not just the bytes these offset copies touch:
+    // a later GetAddress reuses this binding, and pointer accesses through
+    // it may reach any element (e.g. `arr[0] = 0; f(arr);`).
+    size_t bytes = map.entries[i].bytes;
+    struct SymbolEntry* entry = global_symbol_table != NULL
+        ? symbol_table_get(global_symbol_table, name)
+        : NULL;
+    if (entry != NULL && entry->type != NULL) {
+      size_t object_bytes = get_type_size(entry->type);
+      if (object_bytes != (size_t)-1 && object_bytes > bytes) {
+        bytes = object_bytes;
+      }
+    }
+    size_t slots = tac_slots_for_bytes(bytes);
     (void)tac_bindings_get_or_add_range(&frame->locals, &interp->memory, name, slots);
   }
 
@@ -1216,7 +1229,8 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
       }
       case TACVOLATILE_LOAD:
       case TACLOAD: {
-        int addr = (int)tac_eval_val(interp, &frame, pc->instr.tac_load.src_ptr);
+        int addr = (int)tac_eval_val(interp, &frame, pc->instr.tac_load.src_ptr) +
+                   pc->instr.tac_load.offset;
         // An aggregate load passes the object's address; tac_assign_val copies it.
         uint64_t value = tac_is_aggregate_type(pc->instr.tac_load.dst->type)
             ? (uint64_t)addr
@@ -1226,7 +1240,8 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
       }
       case TACVOLATILE_STORE:
       case TACSTORE: {
-        int addr = (int)tac_eval_val(interp, &frame, pc->instr.tac_store.dst_ptr);
+        int addr = (int)tac_eval_val(interp, &frame, pc->instr.tac_store.dst_ptr) +
+                   pc->instr.tac_store.offset;
         const struct Val* src = pc->instr.tac_store.src;
         uint64_t value = tac_eval_val(interp, &frame, src);
         if (tac_is_aggregate_type(src->type)) {

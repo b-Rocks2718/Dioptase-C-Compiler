@@ -234,16 +234,20 @@ struct TACGetAddress {
   struct Val* src;
 };
 
-// Store destination value and source address for a load.
+// Load dst from the address src_ptr + offset, where offset is a constant byte
+// displacement (e.g. a member offset folded in by p->field or p[k]).
 struct TACLoad {
   struct Val* dst;
   struct Val* src_ptr;
+  int offset;
 };
 
-// Store destination address and source value for a store.
+// Store src to the address dst_ptr + offset, where offset is a constant byte
+// displacement as in TACLoad.
 struct TACStore {
   struct Val* dst_ptr;
   struct Val* src;
+  int offset;
 };
 
 // Describe an aggregate copy into a destination byte offset.
@@ -319,12 +323,14 @@ enum ExprResultType {
   SUB_OBJECT,
 };
 
-// Store lowered expression value and optional aggregate subobject metadata.
+// Describe where an expression's value lives. PLAIN_OPERAND: in val.
+// DEREFERENCED_POINTER: in memory at val (a pointer) + offset bytes.
+// SUB_OBJECT: at offset bytes into the named variable base.
 struct ExprResult {
   enum ExprResultType type;
-  struct Val* val;
-  struct Slice* sub_object_base; // for SUB_OBJECT
-  int sub_object_offset;          // for SUB_OBJECT
+  struct Val* val;    // for PLAIN_OPERAND and DEREFERENCED_POINTER
+  struct Slice* base; // for SUB_OBJECT
+  int offset;         // for SUB_OBJECT and DEREFERENCED_POINTER
 };
 
 // ----- Main TAC conversion functions -----
