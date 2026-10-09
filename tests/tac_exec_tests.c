@@ -42,8 +42,7 @@ static const size_t kTacExecTestListGrowthFactor = 2; // Doubling keeps append a
 static const char kTacExecTestSuffix[] = ".c";
 static const size_t kTacExecTestSuffixLen = sizeof(kTacExecTestSuffix) - 1;
 // Fixtures in tests/exec containing this text are skipped here but still run by
-// the emulator suites, e.g. ones that pass structs by value, which the TAC
-// interpreter does not support.
+// the emulator suites. Use it for behavior the TAC interpreter cannot model.
 static const char kTacExecSkipMarker[] = "tac-exec: skip";
 static const int kTacExecChildPassExitCode = 0;
 static const int kTacExecChildFailExitCode = 1;

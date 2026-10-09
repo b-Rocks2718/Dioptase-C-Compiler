@@ -2,6 +2,7 @@
 #include "const_eval.h"
 #include "analysis.h"
 #include "slice.h"
+#include "typechecking.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -13,6 +14,13 @@
 
 // Provide a small TAC interpreter for validating TAC lowering output.
 // Returns the integer result of main() or exits on interpreter errors.
+//
+// Memory is a sparse map from byte address to the scalar stored there, so an
+// aggregate occupies one cell per member start. A struct or union *value*
+// (a Copy source, call argument, return value, or Load result) is carried as
+// the address of a snapshot: a fresh range holding a copy of the object's
+// cells. Writing an aggregate value copies the snapshot's cells into the
+// destination, which gives C's by-value semantics.
 
 // Centralize interpreter allocation granularity and dynamic-array growth policy.
 static const int kTacInterpWordBytes = 4;
@@ -226,6 +234,49 @@ static uint64_t tac_memory_load(struct TacMemory* mem, int address) {
     tac_interp_error("load from uninitialized address %d", address);
   }
   return cell->value;
+}
+
+// One initialized cell captured by tac_memory_copy, relative to the source base.
+struct TacCellCopy {
+  int offset;
+  uint64_t value;
+};
+
+// Copy the cells of [src, src + size) onto [dst, dst + size). Source bytes
+// that were never written (padding, unset members) leave the matching
+// destination cells uninitialized, so a later read still reports the bug.
+// The source is captured before any write, so overlapping ranges are safe.
+static void tac_memory_copy(struct TacMemory* mem, int dst, int src, size_t size) {
+  struct TacCellCopy* captured = NULL;
+  size_t captured_count = 0;
+  for (size_t i = 0; i < mem->count; i++) {
+    const struct TacMemoryCell* cell = &mem->cells[i];
+    if (!cell->initialized || cell->address < src || (size_t)(cell->address - src) >= size) {
+      continue;
+    }
+    struct TacCellCopy* next =
+        (struct TacCellCopy*)realloc(captured, (captured_count + 1) * sizeof(*captured));
+    if (next == NULL) {
+      free(captured);
+      tac_interp_error("memory allocation failed while copying %zu bytes from %d to %d",
+                       size, src, dst);
+    }
+    captured = next;
+    captured[captured_count].offset = cell->address - src;
+    captured[captured_count].value = cell->value;
+    captured_count++;
+  }
+
+  for (size_t i = 0; i < mem->count; i++) {
+    struct TacMemoryCell* cell = &mem->cells[i];
+    if (cell->address >= dst && (size_t)(cell->address - dst) < size) {
+      cell->initialized = false;
+    }
+  }
+  for (size_t i = 0; i < captured_count; i++) {
+    tac_memory_store(mem, dst + captured[i].offset, captured[i].value);
+  }
+  free(captured);
 }
 
 // Initialize an empty variable-binding table.
@@ -697,6 +748,34 @@ static int tac_address_of(struct TacInterpreter* interp,
   return binding->address;
 }
 
+// Return true for struct and union types, whose TAC values are whole objects
+// carried as snapshot addresses (see the file comment).
+static bool tac_is_aggregate_type(const struct Type* type) {
+  return type != NULL && (type->type == STRUCT_TYPE || type->type == UNION_TYPE);
+}
+
+// Copy the aggregate at addr into fresh storage and return the new address,
+// so the value is unaffected by later writes to the original object.
+static uint64_t tac_snapshot_aggregate(struct TacInterpreter* interp, int addr,
+                                       const struct Type* type) {
+  size_t size = get_type_size((struct Type*)type);
+  int snapshot = tac_memory_alloc_range(&interp->memory, tac_slots_for_bytes(size));
+  tac_memory_copy(&interp->memory, snapshot, addr, size);
+  return (uint64_t)snapshot;
+}
+
+// Write the aggregate value `value` (a snapshot address) into the object at addr.
+static void tac_store_aggregate(struct TacInterpreter* interp, int addr,
+                                const struct Type* type, uint64_t value) {
+  tac_memory_copy(&interp->memory, addr, (int)value, get_type_size((struct Type*)type));
+}
+
+// Return the storage address of an aggregate variable, allocating it if needed.
+static int tac_aggregate_address(struct TacInterpreter* interp, struct TacFrame* frame,
+                                 struct Slice* name, const struct Type* type) {
+  return tac_address_of(interp, frame, name, tac_slots_for_type(type));
+}
+
 // Evaluate a TAC value to its integer representation.
 // Returns the integer representation of the value.
 // Variable values must be initialized before use.
@@ -714,6 +793,10 @@ static uint64_t tac_eval_val(struct TacInterpreter* interp,
         size_t slots = tac_slots_for_type(val->type);
         int addr = tac_address_of(interp, frame, val->val.var_name, slots);
         return (uint64_t)addr;
+      }
+      if (tac_is_aggregate_type(val->type)) {
+        int addr = tac_aggregate_address(interp, frame, val->val.var_name, val->type);
+        return tac_snapshot_aggregate(interp, addr, val->type);
       }
       return tac_read_var(interp, frame, val->val.var_name);
     default:
@@ -745,13 +828,19 @@ static uint64_t tac_normalize_scalar(uint64_t value, const struct Type* type) {
 }
 
 // Assign a TAC value to a destination variable.
-// dst must be a VARIABLE value.
+// dst must be a VARIABLE value. For an aggregate dst, value is the address of
+// the source object, whose cells are copied into dst's storage.
 static void tac_assign_val(struct TacInterpreter* interp,
                            struct TacFrame* frame,
                            const struct Val* dst,
                            uint64_t value) {
   if (dst == NULL || dst->val_type != VARIABLE) {
     tac_interp_error("assignment target is not a variable");
+  }
+  if (tac_is_aggregate_type(dst->type)) {
+    int addr = tac_aggregate_address(interp, frame, dst->val.var_name, dst->type);
+    tac_store_aggregate(interp, addr, dst->type, value);
+    return;
   }
   tac_write_var(interp, frame, dst->val.var_name,
                 tac_normalize_scalar(value, dst->type));
@@ -922,7 +1011,17 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
   tac_frame_init(&frame, interp, fn->body.head);
 
   for (size_t i = 0; i < num_args; i++) {
-    tac_write_var(interp, &frame, fn->params[i], args[i]);
+    // TACFunc records only parameter names; their types live in the global
+    // symbol table, which typechecking fills for every (uniquified) identifier.
+    struct SymbolEntry* param = global_symbol_table != NULL
+        ? symbol_table_get(global_symbol_table, fn->params[i])
+        : NULL;
+    if (param != NULL && tac_is_aggregate_type(param->type)) {
+      int addr = tac_aggregate_address(interp, &frame, fn->params[i], param->type);
+      tac_store_aggregate(interp, addr, param->type, args[i]);
+    } else {
+      tac_write_var(interp, &frame, fn->params[i], args[i]);
+    }
   }
 
   struct TACInstr* pc = fn->body.head;
@@ -1118,15 +1217,23 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
       case TACVOLATILE_LOAD:
       case TACLOAD: {
         int addr = (int)tac_eval_val(interp, &frame, pc->instr.tac_load.src_ptr);
-        uint64_t value = tac_memory_load(&interp->memory, addr);
+        // An aggregate load passes the object's address; tac_assign_val copies it.
+        uint64_t value = tac_is_aggregate_type(pc->instr.tac_load.dst->type)
+            ? (uint64_t)addr
+            : tac_memory_load(&interp->memory, addr);
         tac_assign_val(interp, &frame, pc->instr.tac_load.dst, value);
         break;
       }
       case TACVOLATILE_STORE:
       case TACSTORE: {
         int addr = (int)tac_eval_val(interp, &frame, pc->instr.tac_store.dst_ptr);
-        uint64_t value = tac_eval_val(interp, &frame, pc->instr.tac_store.src);
-        tac_memory_store(&interp->memory, addr, value);
+        const struct Val* src = pc->instr.tac_store.src;
+        uint64_t value = tac_eval_val(interp, &frame, src);
+        if (tac_is_aggregate_type(src->type)) {
+          tac_store_aggregate(interp, addr, src->type, value);
+        } else {
+          tac_memory_store(&interp->memory, addr, value);
+        }
         break;
       }
       case TACVOLATILE_COPY_TO_OFFSET:
@@ -1147,9 +1254,14 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
           tac_interp_error("copy-to-offset negative offset %d",
                            pc->instr.tac_copy_to_offset.offset);
         }
-        uint64_t value = tac_eval_val(interp, &frame, pc->instr.tac_copy_to_offset.src);
+        const struct Val* src = pc->instr.tac_copy_to_offset.src;
+        uint64_t value = tac_eval_val(interp, &frame, src);
         int addr = binding->address + pc->instr.tac_copy_to_offset.offset;
-        tac_memory_store(&interp->memory, addr, value);
+        if (tac_is_aggregate_type(src->type)) {
+          tac_store_aggregate(interp, addr, src->type, value);
+        } else {
+          tac_memory_store(&interp->memory, addr, value);
+        }
         break;
       }
       case TACVOLATILE_COPY_FROM_OFFSET:
@@ -1172,7 +1284,10 @@ static uint64_t tac_execute_function(struct TacInterpreter* interp,
                            pc->instr.tac_copy_from_offset.offset);
         }
         int addr = binding->address + pc->instr.tac_copy_from_offset.offset;
-        uint64_t value = tac_memory_load(&interp->memory, addr);
+        // An aggregate member passes its address; tac_assign_val copies it.
+        uint64_t value = tac_is_aggregate_type(dst->type)
+            ? (uint64_t)addr
+            : tac_memory_load(&interp->memory, addr);
         tac_assign_val(interp, &frame, dst, value);
         break;
       }
