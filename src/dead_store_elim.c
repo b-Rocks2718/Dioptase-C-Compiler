@@ -1,4 +1,5 @@
 #include "dead_store_elim.h"
+#include "bitset.h"
 #include "slice_index.h"
 #include "checked_alloc.h"
 #include "exit_codes.h"
@@ -8,27 +9,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
-
-// Initial capacity hint for the variable index, and the machine-independent
-// width of a liveness word.
-enum {
-  kInitialVariableCapacity = 128,
-  kLiveWordBits = 64,
-};
 
 // Map variable names to consecutive bit indices for one DSE invocation. The
 // Slice names remain arena-owned.
 struct VariableIndex {
   struct SliceIndex ids;
   size_t count; // number of indexed variables (bitset width)
-};
-
-// View a fixed-width bitset of live variables. Some views own separately
-// allocated words, while block views refer into the shared block-live array.
-struct LiveSet {
-  uint64_t* words;
-  size_t word_count;
 };
 
 // Hold a bounded FIFO of CFG-node indices. queued has one flag per CFG node so
@@ -44,7 +30,7 @@ struct BlockQueue {
 
 // Initialize an empty variable index.
 static void variable_index_init(struct VariableIndex* index) {
-  slice_index_init(&index->ids, kInitialVariableCapacity);
+  slice_index_init(&index->ids, 128);
   index->count = 0;
 }
 
@@ -137,65 +123,29 @@ static void collect_cfg_variables(struct VariableIndex* index,
   }
 }
 
-// Allocate an owning, zero-initialized liveness set of word_count words.
-static struct LiveSet live_set_allocate(size_t word_count, const char* purpose) {
-  struct LiveSet set;
-  set.word_count = word_count;
-  set.words = checked_calloc(word_count, sizeof(*set.words), "Dead-store elimination", purpose);
-  return set;
-}
-
-// Remove every variable from set without changing its storage.
-static void live_set_clear(struct LiveSet set) {
-  memset(set.words, 0, set.word_count * sizeof(*set.words));
-}
-
-// Replace dst with src. Both sets cover the same variable universe.
-static void live_set_copy(struct LiveSet dst, struct LiveSet src) {
-  memcpy(dst.words, src.words, dst.word_count * sizeof(*dst.words));
-}
-
-// Add every variable in src to dst using a word-wise union.
-static void live_set_union(struct LiveSet dst, struct LiveSet src) {
-  for (size_t i = 0; i < dst.word_count; ++i) {
-    dst.words[i] |= src.words[i];
-  }
-}
-
-// Return true when two sets contain exactly the same variables.
-static bool live_set_equal(struct LiveSet a, struct LiveSet b) {
-  return memcmp(a.words, b.words, a.word_count * sizeof(*a.words)) == 0;
-}
-
 // Return whether the variable identified by name is present in set.
-static bool live_set_contains(struct LiveSet set,
+static bool live_set_contains(struct Bitset set,
                               const struct VariableIndex* index,
                               const struct Slice* name) {
-  size_t variable = variable_index_get(index, name);
-  return (set.words[variable / kLiveWordBits] &
-          (UINT64_C(1) << (variable % kLiveWordBits))) != 0;
+  return bitset_test(set, variable_index_get(index, name));
 }
 
 // Mark the variable identified by name as live in set.
-static void live_set_add(struct LiveSet set,
+static void live_set_add(struct Bitset set,
                          const struct VariableIndex* index,
                          const struct Slice* name) {
-  size_t variable = variable_index_get(index, name);
-  set.words[variable / kLiveWordBits] |=
-      UINT64_C(1) << (variable % kLiveWordBits);
+  bitset_set(set, variable_index_get(index, name));
 }
 
 // Mark the variable identified by name as not live in set.
-static void live_set_remove(struct LiveSet set,
+static void live_set_remove(struct Bitset set,
                             const struct VariableIndex* index,
                             const struct Slice* name) {
-  size_t variable = variable_index_get(index, name);
-  set.words[variable / kLiveWordBits] &=
-      ~(UINT64_C(1) << (variable % kLiveWordBits));
+  bitset_reset(set, variable_index_get(index, name));
 }
 
 // Add val to set when it is a variable operand.
-static void live_set_add_val(struct LiveSet set,
+static void live_set_add_val(struct Bitset set,
                              const struct VariableIndex* index,
                              struct Val* val) {
   if (val != NULL && val->val_type == VARIABLE) {
@@ -204,7 +154,7 @@ static void live_set_add_val(struct LiveSet set,
 }
 
 // Remove val from set when it is a variable operand.
-static void live_set_remove_val(struct LiveSet set,
+static void live_set_remove_val(struct Bitset set,
                                 const struct VariableIndex* index,
                                 struct Val* val) {
   if (val != NULL && val->val_type == VARIABLE) {
@@ -213,7 +163,7 @@ static void live_set_remove_val(struct LiveSet set,
 }
 
 // Add every variable operand in an argument array to set.
-static void live_set_add_args(struct LiveSet set,
+static void live_set_add_args(struct Bitset set,
                               const struct VariableIndex* index,
                               struct Val* args,
                               size_t num_args) {
@@ -223,7 +173,7 @@ static void live_set_add_args(struct LiveSet set,
 }
 
 // Convert a SliceList into bits in an already allocated liveness set.
-static void live_set_add_slice_list(struct LiveSet set,
+static void live_set_add_slice_list(struct Bitset set,
                                     const struct VariableIndex* index,
                                     struct SliceList list) {
   for (struct SliceListNode* node = list.head; node != NULL; node = node->next) {
@@ -232,7 +182,7 @@ static void live_set_add_slice_list(struct LiveSet set,
 }
 
 // Return true when destination is a variable whose current value is not live.
-static bool destination_is_dead(struct LiveSet live,
+static bool destination_is_dead(struct Bitset live,
                                 const struct VariableIndex* index,
                                 struct Val* destination) {
   return destination != NULL && destination->val_type == VARIABLE &&
@@ -241,7 +191,7 @@ static bool destination_is_dead(struct LiveSet live,
 
 // Test an instruction against the variables live immediately after it.
 static bool instruction_is_dead(struct TACInstr* instr,
-                                struct LiveSet live,
+                                struct Bitset live,
                                 const struct VariableIndex* index) {
   switch (instr->type) {
     case TACUNARY:
@@ -312,8 +262,8 @@ static bool reads_aliased_memory(const struct TACInstr* instr) {
 // A partial write (CopyToOffset) kills nothing, and taking an address
 // (GetAddress) reads nothing; aliased variables are handled separately.
 static void transfer_instruction(struct TACInstr* instr,
-                                 struct LiveSet live,
-                                 struct LiveSet aliased,
+                                 struct Bitset live,
+                                 struct Bitset aliased,
                                  const struct VariableIndex* index) {
   struct TACOperands ops = tac_instr_operands(instr);
   for (size_t i = 0; i < ops.count; ++i) {
@@ -339,7 +289,7 @@ static void transfer_instruction(struct TACInstr* instr,
     }
   }
   if (reads_aliased_memory(instr)) {
-    live_set_union(live, aliased);
+    bitset_union(live, aliased);
   }
 }
 
@@ -377,24 +327,14 @@ static unsigned cfg_node_index(const struct CFG* cfg, const struct CFGNode* node
   exit(BCC_EXIT_INTERNAL);
 }
 
-// Return a non-owning LiveSet view for one block in the contiguous live array.
-static struct LiveSet block_live_set(uint64_t* block_live_words,
-                                     size_t word_count,
-                                     unsigned block_index) {
-  struct LiveSet set;
-  set.words = block_live_words + (size_t)block_index * word_count;
-  set.word_count = word_count;
-  return set;
-}
-
 // Compute the variables live immediately after node from successor live-in
 // sets. Reaching the synthetic exit keeps static variables observable.
 static void meet_successors(const struct CFG* cfg,
                             const struct CFGNode* node,
                             uint64_t* block_live_words,
-                            struct LiveSet static_vars,
-                            struct LiveSet result) {
-  live_set_clear(result);
+                            struct Bitset static_vars,
+                            struct Bitset result) {
+  bitset_clear(result);
   for (struct CFGNodeEntry* successor = node->successors.head;
        successor != NULL;
        successor = successor->next) {
@@ -405,13 +345,13 @@ static void meet_successors(const struct CFG* cfg,
                 "successor\n");
         exit(BCC_EXIT_INTERNAL);
       case CFG_EXIT:
-        live_set_union(result, static_vars);
+        bitset_union(result, static_vars);
         break;
       case CFG_BASIC_BLOCK: {
         unsigned successor_index = cfg_node_index(cfg, successor->node);
-        live_set_union(
+        bitset_union(
             result,
-            block_live_set(block_live_words, result.word_count, successor_index));
+            bitset_view(block_live_words, result.word_count, successor_index));
         break;
       }
     }
@@ -421,8 +361,8 @@ static void meet_successors(const struct CFG* cfg,
 // Apply every instruction's backward transfer function to live. The block is
 // restored to its original forward order before returning.
 static void transfer_block(struct CFGNode* node,
-                           struct LiveSet live,
-                           struct LiveSet aliased,
+                           struct Bitset live,
+                           struct Bitset aliased,
                            const struct VariableIndex* index) {
   reverse_block_body(&node->body);
   for (struct TACInstr* instr = node->body.head;
@@ -494,8 +434,8 @@ static unsigned block_queue_pop(struct BlockQueue* queue) {
 // predecessors.
 static void find_live_variables(struct CFG* cfg,
                                 uint64_t* block_live_words,
-                                struct LiveSet static_vars,
-                                struct LiveSet aliased_vars,
+                                struct Bitset static_vars,
+                                struct Bitset aliased_vars,
                                 const struct VariableIndex* index) {
   struct BlockQueue queue;
   block_queue_init(&queue, cfg->num_nodes);
@@ -503,22 +443,22 @@ static void find_live_variables(struct CFG* cfg,
     block_queue_push(&queue, i);
   }
 
-  struct LiveSet live_out =
-      live_set_allocate(static_vars.word_count, "computing block live-out sets");
-  struct LiveSet live_in =
-      live_set_allocate(static_vars.word_count, "computing block live-in sets");
+  struct Bitset live_out =
+      bitset_alloc(static_vars.word_count, "Dead-store elimination", "computing block live-out sets");
+  struct Bitset live_in =
+      bitset_alloc(static_vars.word_count, "Dead-store elimination", "computing block live-in sets");
 
   while (queue.count != 0) {
     unsigned block_index = block_queue_pop(&queue);
     struct CFGNode* block = cfg->nodes[block_index];
     meet_successors(cfg, block, block_live_words, static_vars, live_out);
-    live_set_copy(live_in, live_out);
+    bitset_copy(live_in, live_out);
     transfer_block(block, live_in, aliased_vars, index);
 
-    struct LiveSet old_live_in =
-        block_live_set(block_live_words, live_in.word_count, block_index);
-    if (!live_set_equal(old_live_in, live_in)) {
-      live_set_copy(old_live_in, live_in);
+    struct Bitset old_live_in =
+        bitset_view(block_live_words, live_in.word_count, block_index);
+    if (!bitset_equal(old_live_in, live_in)) {
+      bitset_copy(old_live_in, live_in);
       for (struct CFGNodeEntry* predecessor = block->predecessors.head;
            predecessor != NULL;
            predecessor = predecessor->next) {
@@ -536,8 +476,8 @@ static void find_live_variables(struct CFG* cfg,
     }
   }
 
-  free(live_out.words);
-  free(live_in.words);
+  bitset_free(&live_out);
+  bitset_free(&live_in);
   block_queue_destroy(&queue);
 }
 
@@ -547,11 +487,11 @@ static void find_live_variables(struct CFG* cfg,
 // the pass until the TAC body reaches a fixed point.
 static void eliminate_dead_instructions(struct CFG* cfg,
                                         uint64_t* block_live_words,
-                                        struct LiveSet static_vars,
-                                        struct LiveSet aliased_vars,
+                                        struct Bitset static_vars,
+                                        struct Bitset aliased_vars,
                                         const struct VariableIndex* index) {
-  struct LiveSet live =
-      live_set_allocate(static_vars.word_count, "eliminating dead instructions");
+  struct Bitset live =
+      bitset_alloc(static_vars.word_count, "Dead-store elimination", "eliminating dead instructions");
 
   for (unsigned block_index = 1;
        block_index + 1 < cfg->num_nodes;
@@ -602,7 +542,7 @@ static void eliminate_dead_instructions(struct CFG* cfg,
     free(dead);
   }
 
-  free(live.words);
+  bitset_free(&live);
 }
 
 // Perform backward live-variable analysis and remove assignments whose result
@@ -620,15 +560,12 @@ struct CFG* dead_store_elim(struct CFG* cfg,
   variable_index_init(&index);
   collect_cfg_variables(&index, cfg, static_vars, aliased_vars);
 
-  size_t word_count = (index.count + kLiveWordBits - 1) / kLiveWordBits;
-  if (word_count == 0) {
-    word_count = 1;
-  }
+  size_t word_count = bitset_word_count(index.count);
 
-  struct LiveSet static_set =
-      live_set_allocate(word_count, "creating the static-variable liveness set");
-  struct LiveSet aliased_set =
-      live_set_allocate(word_count, "creating the aliased-variable liveness set");
+  struct Bitset static_set =
+      bitset_alloc(word_count, "Dead-store elimination", "creating the static-variable liveness set");
+  struct Bitset aliased_set =
+      bitset_alloc(word_count, "Dead-store elimination", "creating the aliased-variable liveness set");
   live_set_add_slice_list(static_set, &index, static_vars);
   live_set_add_slice_list(aliased_set, &index, aliased_vars);
 
@@ -642,8 +579,8 @@ struct CFG* dead_store_elim(struct CFG* cfg,
                               &index);
 
   free(block_live_words);
-  free(static_set.words);
-  free(aliased_set.words);
+  bitset_free(&static_set);
+  bitset_free(&aliased_set);
   variable_index_destroy(&index);
   return cfg;
 }

@@ -1,4 +1,5 @@
 #include "copy_prop.h"
+#include "bitset.h"
 #include "slice_index.h"
 #include "checked_alloc.h"
 #include "exit_codes.h"
@@ -29,26 +30,30 @@
 // Substitution source
 // -------------------
 // Two copies in one class can carry different src Val pointers whose types
-// differ (for example constant 0 of int and long type). Rewriting substitutes:
+// differ: copy_is_type_safe accepts constant 0 of any type, and classes
+// compare constants by bits only. Rewriting substitutes:
 // - the src of the instruction that generated the class earlier in the same
-//   block, when the copy reached the use from inside the block; otherwise
+//   block, when the copy reached the use from inside the block, so the
+//   substituted operand has the type of the copy that actually reached; otherwise
 // - the src of the class's first occurrence.
 // When several classes with the same dst reach a use (only possible for sets
-// produced by the meet, never after a transfer kill/gen), the lowest-numbered
-// class wins. This is exactly the choice made by the previous ordered-list
-// implementation, so generated TAC is unchanged by the dense representation.
+// produced by the meet, never after a transfer kill/gen), every one of them
+// holds there, so any choice is correct; the lowest-numbered class is simply
+// what the bit scan finds first.
 //
 // Transfer-function note
 // ----------------------
 // "y = x" does not kill "x = y" when "x = y" already reaches (it is a no-op).
-// That rule makes the transfer function non-monotone, so the fixed point can
-// depend on visit order. The worklist therefore preserves the FIFO order of
-// the list-based implementation: every basic block in layout order first,
-// then successors in edge order when a block's out-set changes.
+// The rule is sound, since the instruction cannot change any value, so every
+// fixed point the solver reaches is correct. But it makes the transfer
+// function non-monotone, so the usual guarantee that a worklist converges in
+// any visit order does not apply. The worklist keeps the FIFO order the test
+// suite exercises: every basic block in layout order first, then successors
+// in edge order when a block's out-set changes. Changing the order needs a
+// termination argument, or dropping the rule to make the transfer monotone.
 
-// Named bit widths and sentinels used by the dense representation.
+// Hash table sizing used by the dense representation.
 enum {
-  kCopyPropWordBits = 64,
   kCopyPropMinHashSlots = 16,
   // Keep open-addressing tables at most half full: slots >= 2 * max entries.
   kCopyPropHashSlotsPerEntry = 2,
@@ -107,8 +112,9 @@ struct NameIndex {
   uint32_t null_id; // id of the NULL name, or kCopyPropNone until it is numbered
 };
 
-// Per-invocation analysis state. Every pointer member is owned and freed by
-// copy_prop_state_destroy.
+// Per-invocation analysis state. Everything except cfg (borrowed) is owned
+// and freed by copy_prop_state_destroy; the dst_mask/involve_mask entries are
+// views into mask_storage rather than separate allocations.
 struct CopyPropState {
   struct CFG* cfg;
   struct NameIndex names;
@@ -126,22 +132,22 @@ struct CopyPropState {
   uint32_t* involve_list;
 
   // Bitset forms of the lists above, only for variables whose list is longer
-  // than kMaskListRatio * words (NULL otherwise). A variable written or read
-  // by many copies (a loop counter, an accumulator) would otherwise make every
-  // kill or lookup walk hundreds of entries. The ratio bounds each mask's size
+  // than kMaskListRatio * words (views with words == NULL otherwise). A
+  // variable written or read by many copies (a loop counter, an accumulator)
+  // would otherwise make every kill or lookup walk hundreds of entries. The ratio bounds each mask's size
   // (words * 8 bytes) by its list's size (length * 4 bytes).
-  uint64_t** dst_mask;
-  uint64_t** involve_mask;
+  struct Bitset* dst_mask;     // views into mask_storage
+  struct Bitset* involve_mask; // views into mask_storage
   uint64_t* mask_storage;
 
-  size_t words;           // uint64_t words per class bitset
-  uint64_t* aliased_mask; // classes whose dst or src is an aliased variable
-  uint64_t* all_mask;     // every class
+  size_t words;               // words per class bitset
+  struct Bitset aliased_mask; // classes whose dst or src is an aliased variable
+  struct Bitset all_mask;     // every class
 
   struct CopyEffect* effects; // one per instruction in layout order
   size_t* node_first_effect;  // effects index of each CFG node's first instruction
 
-  uint64_t* node_out;     // num_nodes * words: copies reaching each block's end
+  uint64_t* node_out;     // num_nodes * words: copies reaching each block's end (see node_out())
   struct Val** rep_src;   // current substitution source per class
 };
 
@@ -271,20 +277,6 @@ static uint32_t class_find_vals(struct CopyPropState* s,
     return kCopyPropNone;
   }
   return class_lookup(s, dst_key, src_key, false, NULL, NULL);
-}
-
-// ----- Bitsets -----
-
-static bool bit_test(const uint64_t* set, uint32_t bit) {
-  return (set[bit / kCopyPropWordBits] >> (bit % kCopyPropWordBits)) & 1u;
-}
-
-static void bit_set(uint64_t* set, uint32_t bit) {
-  set[bit / kCopyPropWordBits] |= (uint64_t)1 << (bit % kCopyPropWordBits);
-}
-
-static void bit_clear(uint64_t* set, uint32_t bit) {
-  set[bit / kCopyPropWordBits] &= ~((uint64_t)1 << (bit % kCopyPropWordBits));
 }
 
 // ----- Helpers shared with the rest of the compiler -----
@@ -494,8 +486,8 @@ static bool wants_mask(const struct CopyPropState* s, uint32_t len) {
 // Build bitset masks for variables with long destination/operand lists.
 static void build_variable_masks(struct CopyPropState* s) {
   uint32_t vars = s->names.ids.count;
-  s->dst_mask = checked_calloc(vars, sizeof(uint64_t*), "Copy propagation", "indexing heavily copied variables");
-  s->involve_mask = checked_calloc(vars, sizeof(uint64_t*), "Copy propagation", "indexing heavily copied variables");
+  s->dst_mask = checked_calloc(vars, sizeof(struct Bitset), "Copy propagation", "indexing heavily copied variables");
+  s->involve_mask = checked_calloc(vars, sizeof(struct Bitset), "Copy propagation", "indexing heavily copied variables");
   size_t masks = 0;
   for (uint32_t v = 0; v < vars; ++v) {
     masks += wants_mask(s, s->dst_start[v + 1] - s->dst_start[v]);
@@ -528,20 +520,18 @@ static void build_variable_masks(struct CopyPropState* s) {
   if (s->mask_storage == NULL) {
     return;
   }
-  uint64_t* next = s->mask_storage;
+  size_t next = 0;
   for (uint32_t v = 0; v < vars; ++v) {
     if (wants_mask(s, s->dst_start[v + 1] - s->dst_start[v])) {
-      s->dst_mask[v] = next;
-      next += s->words;
+      s->dst_mask[v] = bitset_view(s->mask_storage, s->words, next++);
       for (uint32_t k = s->dst_start[v]; k < s->dst_start[v + 1]; ++k) {
-        bit_set(s->dst_mask[v], s->dst_list[k]);
+        bitset_set(s->dst_mask[v], s->dst_list[k]);
       }
     }
     if (wants_mask(s, s->involve_start[v + 1] - s->involve_start[v])) {
-      s->involve_mask[v] = next;
-      next += s->words;
+      s->involve_mask[v] = bitset_view(s->mask_storage, s->words, next++);
       for (uint32_t k = s->involve_start[v]; k < s->involve_start[v + 1]; ++k) {
-        bit_set(s->involve_mask[v], s->involve_list[k]);
+        bitset_set(s->involve_mask[v], s->involve_list[k]);
       }
     }
   }
@@ -561,7 +551,7 @@ static void build_aliased_mask(struct CopyPropState* s, struct SliceList aliased
       aliased[id] = true;
     }
   }
-  s->aliased_mask = checked_calloc(s->words, sizeof(uint64_t), "Copy propagation", "marking aliased copies");
+  s->aliased_mask = bitset_alloc(s->words, "Copy propagation", "marking aliased copies");
   for (uint32_t c = 0; c < s->num_classes; ++c) {
     const struct CopyClass* cls = &s->classes[c];
     uint32_t dst_var = (uint32_t)cls->dst_key.bits;
@@ -572,7 +562,7 @@ static void build_aliased_mask(struct CopyPropState* s, struct SliceList aliased
       mentions = true;
     }
     if (mentions) {
-      bit_set(s->aliased_mask, c);
+      bitset_set(s->aliased_mask, c);
     }
   }
   free(aliased);
@@ -637,10 +627,10 @@ static bool copy_prop_state_init(struct CopyPropState* s, struct CFG* cfg,
     return false;
   }
 
-  s->words = (s->num_classes + kCopyPropWordBits - 1) / kCopyPropWordBits;
-  s->all_mask = checked_calloc(s->words, sizeof(uint64_t), "Copy propagation", "building the copy universe");
+  s->words = bitset_word_count(s->num_classes);
+  s->all_mask = bitset_alloc(s->words, "Copy propagation", "building the copy universe");
   for (uint32_t c = 0; c < s->num_classes; ++c) {
-    bit_set(s->all_mask, c);
+    bitset_set(s->all_mask, c);
   }
   build_variable_lists(s);
   build_variable_masks(s);
@@ -681,8 +671,8 @@ static void copy_prop_state_destroy(struct CopyPropState* s) {
   free(s->dst_mask);
   free(s->involve_mask);
   free(s->mask_storage);
-  free(s->aliased_mask);
-  free(s->all_mask);
+  bitset_free(&s->aliased_mask);
+  bitset_free(&s->all_mask);
   free(s->effects);
   free(s->node_first_effect);
   free(s->node_out);
@@ -693,24 +683,21 @@ static void copy_prop_state_destroy(struct CopyPropState* s) {
 // ----- Dataflow -----
 
 // Return the reaching-copy set at the end of the node with index i.
-static uint64_t* node_out(struct CopyPropState* s, unsigned i) {
-  return s->node_out + (size_t)i * s->words;
+static struct Bitset node_out(struct CopyPropState* s, unsigned i) {
+  return bitset_view(s->node_out, s->words, i);
 }
 
 // Remove every class that mentions variable var (as dst or src).
-static void kill_var(struct CopyPropState* s, uint64_t* state, uint32_t var) {
+static void kill_var(struct CopyPropState* s, struct Bitset state, uint32_t var) {
   if (var == kCopyPropNone) {
     return;
   }
-  const uint64_t* mask = s->involve_mask[var];
-  if (mask != NULL) {
-    for (size_t w = 0; w < s->words; ++w) {
-      state[w] &= ~mask[w];
-    }
+  if (s->involve_mask[var].words != NULL) {
+    bitset_subtract(state, s->involve_mask[var]);
     return;
   }
   for (uint32_t k = s->involve_start[var]; k < s->involve_start[var + 1]; ++k) {
-    bit_clear(state, s->involve_list[k]);
+    bitset_reset(state, s->involve_list[k]);
   }
 }
 
@@ -733,18 +720,18 @@ struct RepUndo {
 // Apply one instruction's effect to state. When undo is non-NULL, a generated
 // class substitutes this instruction's own source until the block ends.
 static void apply_effect(struct CopyPropState* s, const struct CopyEffect* e,
-                         uint64_t* state, struct RepUndo* undo) {
+                         struct Bitset state, struct RepUndo* undo) {
   switch (e->kind) {
     case COPY_EFFECT_NONE:
       break;
     case COPY_EFFECT_COPY:
       // y = x is a no-op if x = y already reaches, so it must not kill x = y.
-      if (e->rev_class != kCopyPropNone && bit_test(state, e->rev_class)) {
+      if (e->rev_class != kCopyPropNone && bitset_test(state, e->rev_class)) {
         break;
       }
       kill_var(s, state, e->kill_var1);
       if (e->generates) {
-        bit_set(state, e->own_class);
+        bitset_set(state, e->own_class);
         if (undo != NULL && s->rep_src[e->own_class] != e->src) {
           s->rep_src[e->own_class] = e->src;
           undo->classes[undo->count++] = e->own_class;
@@ -756,9 +743,7 @@ static void apply_effect(struct CopyPropState* s, const struct CopyEffect* e,
       kill_var(s, state, e->kill_var2);
       break;
     case COPY_EFFECT_KILL_ALIASED:
-      for (size_t w = 0; w < s->words; ++w) {
-        state[w] &= ~s->aliased_mask[w];
-      }
+      bitset_subtract(state, s->aliased_mask);
       kill_var(s, state, e->kill_var1);
       break;
   }
@@ -767,11 +752,11 @@ static void apply_effect(struct CopyPropState* s, const struct CopyEffect* e,
 // Compute the copies reaching the start of node: the intersection of its
 // predecessors' out-sets. A block following ENTRY has no incoming copies; a
 // block with no predecessors (unreachable) receives every copy.
-static void meet(struct CopyPropState* s, const struct CFGNode* node, uint64_t* state) {
-  memcpy(state, s->all_mask, s->words * sizeof(uint64_t));
+static void meet(struct CopyPropState* s, const struct CFGNode* node, struct Bitset state) {
+  bitset_copy(state, s->all_mask);
   for (struct CFGNodeEntry* pred = node->predecessors.head; pred != NULL; pred = pred->next) {
     if (pred->node->type == CFG_ENTRY) {
-      memset(state, 0, s->words * sizeof(uint64_t));
+      bitset_clear(state);
       return;
     }
     if (pred->node->type == CFG_EXIT) {
@@ -781,15 +766,12 @@ static void meet(struct CopyPropState* s, const struct CFGNode* node, uint64_t* 
               node->index);
       exit(BCC_EXIT_INTERNAL);
     }
-    const uint64_t* pred_out = node_out(s, pred->node->index);
-    for (size_t w = 0; w < s->words; ++w) {
-      state[w] &= pred_out[w];
-    }
+    bitset_intersect(state, node_out(s, pred->node->index));
   }
 }
 
 // Apply every instruction's effect in node to state (in-set -> out-set).
-static void transfer_block(struct CopyPropState* s, unsigned node_index, uint64_t* state) {
+static void transfer_block(struct CopyPropState* s, unsigned node_index, struct Bitset state) {
   for (size_t k = s->node_first_effect[node_index]; k < s->node_first_effect[node_index + 1]; ++k) {
     apply_effect(s, &s->effects[k], state, NULL);
   }
@@ -797,7 +779,7 @@ static void transfer_block(struct CopyPropState* s, unsigned node_index, uint64_
 
 // Solve reaching copies to a fixed point. Every block starts with the full
 // universe (optimistic initialization), then a FIFO worklist propagates changes.
-static void find_reaching_copies(struct CopyPropState* s, uint64_t* state) {
+static void find_reaching_copies(struct CopyPropState* s, struct Bitset state) {
   struct CFG* cfg = s->cfg;
   unsigned n = cfg->num_nodes;
   unsigned* queue = checked_calloc(n, sizeof(unsigned), "Copy propagation", "allocating the copy worklist");
@@ -806,7 +788,7 @@ static void find_reaching_copies(struct CopyPropState* s, uint64_t* state) {
   size_t count = 0;
 
   for (unsigned i = 1; i + 1 < n; ++i) {
-    memcpy(node_out(s, i), s->all_mask, s->words * sizeof(uint64_t));
+    bitset_copy(node_out(s, i), s->all_mask);
     queue[(head + count++) % n] = i;
     queued[i] = true;
   }
@@ -821,11 +803,11 @@ static void find_reaching_copies(struct CopyPropState* s, uint64_t* state) {
     meet(s, block, state);
     transfer_block(s, b, state);
 
-    uint64_t* out = node_out(s, b);
-    if (memcmp(out, state, s->words * sizeof(uint64_t)) == 0) {
+    struct Bitset out = node_out(s, b);
+    if (bitset_equal(out, state)) {
       continue;
     }
-    memcpy(out, state, s->words * sizeof(uint64_t));
+    bitset_copy(out, state);
 
     // The out-set changed, so every successor must be revisited.
     for (struct CFGNodeEntry* succ = block->successors.head; succ != NULL; succ = succ->next) {
@@ -855,7 +837,7 @@ static void find_reaching_copies(struct CopyPropState* s, uint64_t* state) {
 
 // Replace operand with the source of a reaching copy whose dst is operand.
 static struct Val* replace_operand(struct CopyPropState* s, struct Val* operand,
-                                   const uint64_t* state) {
+                                   struct Bitset state) {
   if (operand == NULL || operand->val_type == CONSTANT) {
     return operand;
   }
@@ -863,20 +845,20 @@ static struct Val* replace_operand(struct CopyPropState* s, struct Val* operand,
   if (var == kCopyPropNone) {
     return operand;
   }
-  const uint64_t* mask = s->dst_mask[var];
-  if (mask != NULL) {
+  struct Bitset mask = s->dst_mask[var];
+  if (mask.words != NULL) {
     // Lowest-numbered reaching class with this dst, as in the list walk below.
     for (size_t w = 0; w < s->words; ++w) {
-      uint64_t hits = state[w] & mask[w];
+      uint64_t hits = state.words[w] & mask.words[w];
       if (hits != 0) {
-        return s->rep_src[w * kCopyPropWordBits + lowest_set_bit(hits)];
+        return s->rep_src[w * BITSET_WORD_BITS + lowest_set_bit(hits)];
       }
     }
     return operand;
   }
   for (uint32_t k = s->dst_start[var]; k < s->dst_start[var + 1]; ++k) {
     uint32_t c = s->dst_list[k];
-    if (bit_test(state, c)) {
+    if (bitset_test(state, c)) {
       return s->rep_src[c];
     }
   }
@@ -912,7 +894,7 @@ static bool same_operand_value(const struct Val* a, const struct Val* b) {
 // example, already rewritten by a previous iteration) does not count as a
 // change, so repeated iterations reach a fixed point.
 static struct Val* replace_args(struct CopyPropState* s, struct Val* args, size_t num_args,
-                                const uint64_t* state) {
+                                struct Bitset state) {
   struct Val* rewritten = args;
   for (size_t i = 0; i < num_args; i++) {
     const struct Val* replacement = replace_operand(s, &args[i], state);
@@ -939,11 +921,11 @@ static struct Val* replace_args(struct CopyPropState* s, struct Val* args, size_
 // if they exist. effect was computed from this instruction's original operands.
 // Returns true if the instruction can be deleted (is redundant), false otherwise.
 static bool rewrite_instr(struct CopyPropState* s, struct TACInstr* instr,
-                          const struct CopyEffect* effect, const uint64_t* state) {
+                          const struct CopyEffect* effect, struct Bitset state) {
   // A copy is redundant when x = y or y = x already reaches.
   if (instr->type == TACCOPY &&
-      ((effect->own_class != kCopyPropNone && bit_test(state, effect->own_class)) ||
-       (effect->rev_class != kCopyPropNone && bit_test(state, effect->rev_class)))) {
+      ((effect->own_class != kCopyPropNone && bitset_test(state, effect->own_class)) ||
+       (effect->rev_class != kCopyPropNone && bitset_test(state, effect->rev_class)))) {
     return true;
   }
 
@@ -976,7 +958,7 @@ static bool rewrite_instr(struct CopyPropState* s, struct TACInstr* instr,
 
 // Rewrite every block using the solved in-sets. Each instruction is rewritten
 // against the copies reaching it, then its precomputed effect advances the set.
-static void rewrite_blocks(struct CopyPropState* s, uint64_t* state) {
+static void rewrite_blocks(struct CopyPropState* s, struct Bitset state) {
   struct CFG* cfg = s->cfg;
   struct RepUndo undo;
   undo.classes = NULL;
@@ -1033,10 +1015,10 @@ struct CFG* copy_prop(struct CFG* cfg, struct SliceList aliased_vars) {
     return cfg;
   }
 
-  uint64_t* state = checked_calloc(s.words, sizeof(uint64_t), "Copy propagation", "allocating a reaching-copy set");
+  struct Bitset state = bitset_alloc(s.words, "Copy propagation", "allocating a reaching-copy set");
   find_reaching_copies(&s, state);
   rewrite_blocks(&s, state);
-  free(state);
+  bitset_free(&state);
   copy_prop_state_destroy(&s);
   return cfg;
 }

@@ -23,7 +23,6 @@ static struct Slice data_directive_slice = {"data", 4};
 // Use caller-saved registers that are not argument registers for scratch work.
 const enum Reg kScratchRegA = R9;
 const enum Reg kScratchRegB = R10;
-const enum Reg kScratchRegC = R11;
 
 static const size_t REG_ARG_LIMIT = 8;
 static const size_t kStackSlotBytes = 4;
@@ -405,11 +404,27 @@ static void operand_list_append(struct OperandList** head, struct OperandList** 
 static struct VarClassList* classify_struct(struct StructEntry* struct_entry);
 static struct AsmType* get_fourbyte_type(size_t offset, size_t struct_size);
 
+// Type of the widest move (word, then double, then byte) that fits in the
+// `remaining` bytes starting `offset` bytes into a copy, given both sides'
+// base alignments.
+static struct AsmType* copy_chunk_type(size_t offset, size_t remaining,
+                                       size_t src_alignment, size_t dst_alignment) {
+  const size_t kWordBytes = 4;
+  const size_t kDoubleBytes = 2;
+  if (remaining >= kWordBytes && offset % kWordBytes == 0 &&
+      src_alignment >= kWordBytes && dst_alignment >= kWordBytes) {
+    return &kWordType;
+  }
+  if (remaining >= kDoubleBytes && offset % kDoubleBytes == 0 &&
+      src_alignment >= kDoubleBytes && dst_alignment >= kDoubleBytes) {
+    return &kDoubleType;
+  }
+  return &kByteType;
+}
+
 // Copy `size` bytes from src to dst with the widest moves both sides' alignment
 // allows (word, then double, then byte).
 struct AsmInstr* copy_bytes(struct Slice* func_name, struct Operand* src, struct Operand* dst, size_t size){
-  const size_t kWordBytes = 4;
-  const size_t kDoubleBytes = 2;
   if (src == NULL || dst == NULL) {
     asm_gen_error("copy-bytes", func_name, "NULL operand for byte copy");
   }
@@ -418,21 +433,10 @@ struct AsmInstr* copy_bytes(struct Slice* func_name, struct Operand* src, struct
 
   struct AsmList out = { NULL, NULL };
   for (size_t offset = 0; offset < size; ){
-    size_t remaining = size - offset;
-    struct AsmType* chunk_type = &kByteType;
-    size_t chunk = 1;
-    if (remaining >= kWordBytes && offset % kWordBytes == 0 &&
-        src_alignment >= kWordBytes && dst_alignment >= kWordBytes) {
-      chunk_type = &kWordType;
-      chunk = kWordBytes;
-    } else if (remaining >= kDoubleBytes && offset % kDoubleBytes == 0 &&
-               src_alignment >= kDoubleBytes && dst_alignment >= kDoubleBytes) {
-      chunk_type = &kDoubleType;
-      chunk = kDoubleBytes;
-    }
+    struct AsmType* chunk_type = copy_chunk_type(offset, size - offset, src_alignment, dst_alignment);
     asm_emit(&out, asm_mov(add_offset_typed(dst, (int)offset, chunk_type),
                            add_offset_typed(src, (int)offset, chunk_type)));
-    offset += chunk;
+    offset += asm_type_size(chunk_type);
   }
   return out.head;
 }
@@ -1121,18 +1125,41 @@ static struct AsmInstr* copy_aggregate(struct Slice* func_name, struct Operand* 
   return copy_bytes(func_name, src, dst, asm_type_size(type_to_asm_type(type)));
 }
 
-// Lower a struct/union Load or Store through a pointer: the pointer goes into
-// kScratchRegA and the bytes are copied relative to it.
+// Copy an aggregate of `type` between `other` and the object at ptr + offset
+// (into other when is_load, out of it otherwise), one Load or Store per chunk.
+// The pointer stays an ordinary operand that each chunk re-reads, instead of
+// being pinned in a scratch register for the whole copy: with the pointer
+// pinned, a chunk whose other side sits at a far frame offset needs the
+// pointer, the value, and an address temporary live at once, more than
+// codegen's two scratch registers.
+static struct AsmInstr* copy_aggregate_through_pointer(struct Slice* func_name, struct Operand* ptr,
+                                                       int offset, struct Operand* other,
+                                                       struct Type* type, bool is_load) {
+  struct AsmType* asm_type = type_to_asm_type(type);
+  size_t size = asm_type_size(asm_type);
+  // The object at ptr + offset has this type, so it is aligned for it.
+  size_t ptr_alignment = asm_type_alignment(asm_type);
+  size_t other_alignment = operand_base_alignment(other);
+
+  struct AsmList out = { NULL, NULL };
+  for (size_t chunk_offset = 0; chunk_offset < size; ) {
+    struct AsmType* chunk_type =
+        copy_chunk_type(chunk_offset, size - chunk_offset, ptr_alignment, other_alignment);
+    struct Operand* other_chunk = add_offset_typed(other, (int)chunk_offset, chunk_type);
+    int ptr_offset = offset + (int)chunk_offset;
+    asm_emit(&out, is_load ? asm_load(false, other_chunk, ptr, ptr_offset)
+                           : asm_store(false, ptr, other_chunk, ptr_offset));
+    chunk_offset += asm_type_size(chunk_type);
+  }
+  return out.head;
+}
+
+// Lower a struct/union Load or Store through a pointer.
 static struct AsmInstr* aggregate_through_pointer(struct Slice* func_name, struct Val* ptr, int offset,
                                                   struct Val* value, struct Type* type,
                                                   bool is_load) {
-  struct AsmList out = { NULL, NULL };
-  asm_emit(&out, asm_mov(reg_operand(kScratchRegA, &kWordType), tac_val_to_asm(ptr)));
-  struct Operand* mem = make_asm_mem(kScratchRegA, offset, type_to_asm_type(type));
-  struct Operand* other = tac_val_to_asm(value);
-  asm_emit(&out, is_load ? copy_aggregate(func_name, mem, other, type)
-                         : copy_aggregate(func_name, other, mem, type));
-  return out.head;
+  return copy_aggregate_through_pointer(func_name, tac_val_to_asm(ptr), offset,
+                                        tac_val_to_asm(value), type, is_load);
 }
 
 // Lower one TAC instruction to an ASM instruction chain.
@@ -1153,12 +1180,9 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
 
         if (return_in_memory) {
           // The caller's buffer address was spilled to BP-4 by the prologue.
-          asm_emit(&out, asm_mov(reg_operand(kScratchRegA, &kWordType),
-                                 make_asm_mem(BP, -4, &kWordType)));
-          struct Operand* dst_mem =
-              make_asm_mem(kScratchRegA, 0, type_to_asm_type(ret_instr->src->type));
-          asm_emit(&out, copy_aggregate(func_name, tac_val_to_asm(ret_instr->src), dst_mem,
-                                        ret_instr->src->type));
+          asm_emit(&out, copy_aggregate_through_pointer(func_name, make_asm_mem(BP, -4, &kWordType), 0,
+                                                        tac_val_to_asm(ret_instr->src),
+                                                        ret_instr->src->type, false));
         } else {
           size_t reg_index = 0;
           for (struct OperandList* ret_iter = ret_vars; ret_iter != NULL; ret_iter = ret_iter->next) {

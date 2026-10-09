@@ -8,7 +8,7 @@ int next_collatz(int x) {
 }
 
 int main() {
-  int c0 = 37;
+  int c0 = 101;
   int c1 = next_collatz(c0);
   int c2 = next_collatz(c1);
   int c3 = next_collatz(c2);

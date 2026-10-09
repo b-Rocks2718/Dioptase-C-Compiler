@@ -16,7 +16,7 @@
 // sources are loaded into kScratchRegA/kScratchRegB, the operation computes
 // into kScratchRegA, and kScratchRegA is written back to the destination. Mov
 // and GetAddress have direct lowerings that skip the template where the operand
-// shapes allow it. The scratch registers r9-r11 are caller-saved and are not
+// shapes allow it. The scratch registers r9-r10 are caller-saved and are not
 // argument registers (docs/abi.md), so clobbering them never disturbs argument
 // setup for a pending call.
 
@@ -418,48 +418,51 @@ static enum MachineInstrType cond_branch_op(const struct Emitter* e, enum TACCon
 // Operand access
 // ---------------------------------------------------------------------------
 
-// Select a scratch register distinct from avoid_a and avoid_b (pass R0 for an
-// unused slot). With three scratch registers, one is always available.
-static enum Reg pick_scratch_reg(const struct Emitter* e, enum Reg avoid_a, enum Reg avoid_b) {
-  if (kScratchRegA != avoid_a && kScratchRegA != avoid_b) {
-    return kScratchRegA;
+// The scratch register other than keep_reg: scratch A unless keep_reg is A.
+// Pass R0 (or any non-scratch register) when no scratch value is live
+static enum Reg pick_scratch_reg(enum Reg keep_reg) {
+  return keep_reg == kScratchRegA ? kScratchRegB : kScratchRegA;
+}
+
+// Report a Memory operand whose base is a scratch register. Lowerings borrow
+// the scratch registers as address temporaries, so such an operand could be
+// overwritten before it is used; asm_gen must never produce one.
+static void check_memory_base(const struct Emitter* e, const struct Operand* opr) {
+  enum Reg base = opr->op.memory.base;
+  if (base == kScratchRegA || base == kScratchRegB) {
+    codegen_errorf(e, "Memory operand uses scratch register r%d as its base (offset %d); "
+                   "scratch registers are reserved for codegen temporaries",
+                   (int)base, opr->op.memory.offset);
   }
-  if (kScratchRegB != avoid_a && kScratchRegB != avoid_b) {
-    return kScratchRegB;
-  }
-  if (kScratchRegC != avoid_a && kScratchRegC != avoid_b) {
-    return kScratchRegC;
-  }
-  codegen_errorf(e, "no scratch register available (avoid=%d,%d)", (int)avoid_a, (int)avoid_b);
-  return kScratchRegA;
 }
 
 // Load [base, offset] into dst_reg. Frame and aggregate offsets can exceed the
 // scaled 12-bit absolute-addressing field; those first form base + offset in
-// a scratch register picked to avoid base and keep_reg (the only other live
-// value), which may be dst_reg itself.
+// the scratch register other than keep_reg, which may be dst_reg itself.
+// keep_reg is the scratch register holding a value that must survive, R0 if
+// none; when base is a scratch register, it must be keep_reg.
 static void emit_load_base(struct Emitter* e, enum MachineInstrType type, enum Reg dst_reg,
                            enum Reg base, int offset, enum Reg keep_reg) {
   if (is_encodable_imm(type, offset)) {
     emit_mem_base(e, type, dst_reg, base, offset);
     return;
   }
-  enum Reg addr_reg = pick_scratch_reg(e, base, keep_reg);
+  enum Reg addr_reg = pick_scratch_reg(keep_reg);
   emit_movi_imm(e, addr_reg, offset);
   emit_alu_rrr(e, MACHINE_ADD, addr_reg, base, addr_reg);
   emit_mem_base(e, type, dst_reg, addr_reg, 0);
 }
 
 // Store value_reg to [base, offset]. Offsets the absolute-addressing field
-// cannot hold go through a scratch address register that avoids value_reg and
-// base; callers must not have any other value live in scratch registers.
+// cannot hold go through the scratch register other than value_reg, so base
+// must not be a scratch register and no other scratch value may be live.
 static void emit_store_base(struct Emitter* e, enum MachineInstrType type, enum Reg value_reg,
                             enum Reg base, int offset) {
   if (is_encodable_imm(type, offset)) {
     emit_mem_base(e, type, value_reg, base, offset);
     return;
   }
-  enum Reg addr_reg = pick_scratch_reg(e, value_reg, base);
+  enum Reg addr_reg = pick_scratch_reg(value_reg);
   emit_movi_imm(e, addr_reg, offset);
   emit_alu_rrr(e, MACHINE_ADD, addr_reg, base, addr_reg);
   emit_mem_base(e, type, value_reg, addr_reg, 0);
@@ -479,6 +482,7 @@ static void load_operand(struct Emitter* e, const struct Operand* opr,
       emit_movi_imm(e, dst_reg, opr->op.lit.value);
       return;
     case OPERAND_MEMORY:
+      check_memory_base(e, opr);
       emit_load_base(e, load_op(e, opr->asm_type, MEM_BASE_OFFSET), dst_reg,
                      opr->op.memory.base, opr->op.memory.offset, keep_reg);
       return;
@@ -504,6 +508,7 @@ static void store_operand(struct Emitter* e, const struct Operand* dst, enum Reg
       emit_reg2(e, MACHINE_MOV, dst->op.reg.reg, value_reg);
       return;
     case OPERAND_MEMORY:
+      check_memory_base(e, dst);
       emit_store_base(e, store_op(e, dst->asm_type, MEM_BASE_OFFSET), value_reg,
                       dst->op.memory.base, dst->op.memory.offset);
       return;
@@ -610,17 +615,11 @@ static void lower_mov(struct Emitter* e, const struct AsmMov* mov) {
     return;
   }
 
-  // Neither side is a register: stage the value through a scratch register
-  // that cannot alias either side's address base.
-  enum Reg value_reg = kScratchRegA;
-  enum Reg keep_reg = R0;
-  if (dst->type == OPERAND_MEMORY) {
-    enum Reg src_base = src->type == OPERAND_MEMORY ? src->op.memory.base : R0;
-    value_reg = pick_scratch_reg(e, dst->op.memory.base, src_base);
-    keep_reg = dst->op.memory.base;
-  }
-  load_operand(e, src, value_reg, keep_reg);
-  store_operand(e, dst, value_reg);
+  // Neither side is a register: stage the value through scratch A. Address
+  // bases are never scratch registers, so loading the value cannot clobber
+  // the destination's base, and storing it borrows scratch B if needed.
+  load_operand(e, src, kScratchRegA, R0);
+  store_operand(e, dst, kScratchRegA);
 }
 
 // Compute the address of a Memory or Data operand into a register or a word slot.
@@ -635,6 +634,13 @@ static void lower_get_address(struct Emitter* e, const struct AsmGetAddress* ga)
                    dst == NULL ? -1 : (int)dst->type, src == NULL ? -1 : (int)src->type);
   }
 
+  if (src->type == OPERAND_MEMORY) {
+    check_memory_base(e, src);
+  }
+  if (dst->type == OPERAND_MEMORY) {
+    check_memory_base(e, dst);
+  }
+
   enum Reg addr_reg = dst->type == OPERAND_REG ? dst->op.reg.reg : kScratchRegB;
   if (src->type == OPERAND_MEMORY) {
     // Unlike loads and stores, `add` does not scale its immediate, so frame
@@ -644,7 +650,7 @@ static void lower_get_address(struct Emitter* e, const struct AsmGetAddress* ga)
     if (is_encodable_imm(MACHINE_ADD, offset)) {
       emit_alu_rri(e, MACHINE_ADD, addr_reg, base, offset);
     } else {
-      enum Reg offset_reg = pick_scratch_reg(e, addr_reg, base);
+      enum Reg offset_reg = pick_scratch_reg(addr_reg);
       emit_movi_imm(e, offset_reg, offset);
       emit_alu_rrr(e, MACHINE_ADD, addr_reg, base, offset_reg);
     }
@@ -839,7 +845,9 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
       int offset = cur->type == ASM_VOLATILE_LOAD
           ? cur->instr.asm_volatile_load.offset
           : cur->instr.asm_load.offset;
-      emit_load_base(e, load_op(e, load_dst->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegA, offset, R0);
+      // The pointer in scratch A is the base, so it is the value to keep.
+      emit_load_base(e, load_op(e, load_dst->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegA,
+                     offset, kScratchRegA);
       return;
     }
     case ASM_STORE:
@@ -851,7 +859,9 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
       int offset = cur->type == ASM_VOLATILE_STORE
           ? cur->instr.asm_volatile_store.offset
           : cur->instr.asm_store.offset;
-      emit_store_base(e, store_op(e, store_src->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegB, offset);
+      // lower_store sends only offsets the immediate field holds here, so
+      // the store never needs an address temporary.
+      emit_mem_base(e, store_op(e, store_src->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegB, offset);
       return;
     }
     default:
@@ -903,6 +913,28 @@ static void lower_via_scratch(struct Emitter* e, struct AsmInstr* cur) {
   }
 }
 
+// Lower a Store or VolatileStore. An offset the absolute-addressing field can
+// hold uses the scratch template. A far offset would leave the value, the
+// pointer, and the materialized offset live at once, so this path instead
+// folds the offset into the pointer before the value is loaded:
+//   A = ptr; B = offset; A = A + B; B = value; store B -> [A, 0]
+// which needs only the two scratch registers.
+static void lower_store(struct Emitter* e, struct AsmInstr* cur) {
+  const struct AsmStore* store = cur->type == ASM_VOLATILE_STORE
+      ? &cur->instr.asm_volatile_store
+      : &cur->instr.asm_store;
+  enum MachineInstrType type = store_op(e, store->src->asm_type, MEM_BASE_OFFSET);
+  if (is_encodable_imm(type, store->offset)) {
+    lower_via_scratch(e, cur);
+    return;
+  }
+  load_operand(e, store->dst, kScratchRegA, R0);
+  emit_movi_imm(e, kScratchRegB, store->offset);
+  emit_alu_rrr(e, MACHINE_ADD, kScratchRegA, kScratchRegA, kScratchRegB);
+  load_operand(e, store->src, kScratchRegB, kScratchRegA);
+  emit_mem_base(e, type, kScratchRegB, kScratchRegA, 0);
+}
+
 // Lower one ASM instruction to machine instructions.
 static void lower_instr(struct Emitter* e, struct AsmInstr* cur) {
   e->cur = cur;
@@ -939,10 +971,13 @@ static void lower_instr(struct Emitter* e, struct AsmInstr* cur) {
         emit_debug_loc(e, cur->instr.asm_boundary.loc);
       }
       break;
+    case ASM_STORE:
+    case ASM_VOLATILE_STORE:
+      lower_store(e, cur);
+      break;
     case ASM_VOLATILE_READ:
     case ASM_VOLATILE_WRITE:
     case ASM_VOLATILE_LOAD:
-    case ASM_VOLATILE_STORE:
     case ASM_UNARY:
     case ASM_BINARY:
     case ASM_CMP:
@@ -950,7 +985,6 @@ static void lower_instr(struct Emitter* e, struct AsmInstr* cur) {
     case ASM_INDIRECT_CALL:
     case ASM_TAIL_CALL_INDIRECT:
     case ASM_LOAD:
-    case ASM_STORE:
     case ASM_TRUNC:
     case ASM_EXTEND:
       lower_via_scratch(e, cur);
