@@ -48,11 +48,6 @@ static struct Slice kFunctionEpilogueLabel = {"Function Epilogue", 17};
 static struct Slice kFunctionPrologueLabel = {"Function Prologue", 17};
 static struct Slice kFunctionBodyLabel = {"Function Body", 13};
 
-// Byte offsets for the conditional-jump expansion in lower_cond_jump. Relative
-// branches add pc + 4 (docs/ISA.md). The skip over the long jump assumes
-// `movi rX, label` always expands to exactly two instructions (lui + addi).
-static const int kCondJumpBranchSkip = 4;
-static const int kCondJumpJmpSkip = 12;
 
 // Frame layout from the prologue: [bp] holds the caller's bp and [bp + 4] the
 // return address; together they occupy kEpilogueStackBytes above bp.
@@ -449,14 +444,54 @@ static void emit_label_address(struct Emitter* e,
   emit_movi_label(e, addr_reg, label);
   emit_reg2(e, MACHINE_BR, pc_reg, R0);
   emit_alu_rrr(e, MACHINE_ADD, addr_reg, addr_reg, pc_reg);
-  if (offset != 0) {
+  if (offset == 0) {
+    return;
+  }
+  if (is_encodable_imm(MACHINE_ADD, offset)) {
     emit_alu_rri(e, MACHINE_ADD, addr_reg, addr_reg, offset);
+  } else {
+    // Offsets into large aggregates can exceed the 12-bit add immediate.
+    // pc_reg is dead after the add above, so it holds the offset instead.
+    emit_movi_imm(e, pc_reg, offset);
+    emit_alu_rrr(e, MACHINE_ADD, addr_reg, addr_reg, pc_reg);
   }
 }
 
+// Load [base, offset] into dst_reg. Frame and aggregate offsets can exceed the
+// scaled 12-bit absolute-addressing field; those first form base + offset in
+// a scratch register picked to avoid base and keep_reg (the only other live
+// value), which may be dst_reg itself.
+static void emit_load_base(struct Emitter* e, enum MachineInstrType type, enum Reg dst_reg,
+                           enum Reg base, int offset, enum Reg keep_reg) {
+  if (is_encodable_imm(type, offset)) {
+    emit_mem_base(e, type, dst_reg, base, offset);
+    return;
+  }
+  enum Reg addr_reg = pick_scratch_reg(e, base, keep_reg);
+  emit_movi_imm(e, addr_reg, offset);
+  emit_alu_rrr(e, MACHINE_ADD, addr_reg, base, addr_reg);
+  emit_mem_base(e, type, dst_reg, addr_reg, 0);
+}
+
+// Store value_reg to [base, offset]. Offsets the absolute-addressing field
+// cannot hold go through a scratch address register that avoids value_reg and
+// base; callers must not have any other value live in scratch registers.
+static void emit_store_base(struct Emitter* e, enum MachineInstrType type, enum Reg value_reg,
+                            enum Reg base, int offset) {
+  if (is_encodable_imm(type, offset)) {
+    emit_mem_base(e, type, value_reg, base, offset);
+    return;
+  }
+  enum Reg addr_reg = pick_scratch_reg(e, value_reg, base);
+  emit_movi_imm(e, addr_reg, offset);
+  emit_alu_rrr(e, MACHINE_ADD, addr_reg, base, addr_reg);
+  emit_mem_base(e, type, value_reg, addr_reg, 0);
+}
+
 // Load opr's value into dst_reg. keep_reg names a register holding a live
-// value that must survive (R0 if none); a Data operand with a nonzero offset
-// needs a PC temporary, which is picked to avoid both dst_reg and keep_reg.
+// value that must survive (R0 if none). A Data operand with a nonzero offset
+// needs a PC temporary, and a Memory operand with a far offset needs an
+// address temporary; both are scratch registers that avoid keep_reg.
 static void load_operand(struct Emitter* e, const struct Operand* opr,
                          enum Reg dst_reg, enum Reg keep_reg) {
   switch (opr->type) {
@@ -467,8 +502,8 @@ static void load_operand(struct Emitter* e, const struct Operand* opr,
       emit_movi_imm(e, dst_reg, opr->op.lit.value);
       return;
     case OPERAND_MEMORY:
-      emit_mem_base(e, load_op(e, opr->asm_type, MEM_BASE_OFFSET), dst_reg,
-                    opr->op.memory.base, opr->op.memory.offset);
+      emit_load_base(e, load_op(e, opr->asm_type, MEM_BASE_OFFSET), dst_reg,
+                     opr->op.memory.base, opr->op.memory.offset, keep_reg);
       return;
     case OPERAND_DATA:
       if (opr->op.data.offset == 0) {
@@ -512,8 +547,8 @@ static void store_operand(struct Emitter* e, const struct Operand* dst, enum Reg
       emit_reg2(e, MACHINE_MOV, dst->op.reg.reg, value_reg);
       return;
     case OPERAND_MEMORY:
-      emit_mem_base(e, store_op(e, dst->asm_type, MEM_BASE_OFFSET), value_reg,
-                    dst->op.memory.base, dst->op.memory.offset);
+      emit_store_base(e, store_op(e, dst->asm_type, MEM_BASE_OFFSET), value_reg,
+                      dst->op.memory.base, dst->op.memory.offset);
       return;
     case OPERAND_DATA:
       store_to_data(e, dst, value_reg);
@@ -527,13 +562,6 @@ static void store_operand(struct Emitter* e, const struct Operand* dst, enum Reg
 // ---------------------------------------------------------------------------
 // Control-flow sequences
 // ---------------------------------------------------------------------------
-
-// Jump to label anywhere in the address space: movi yields label's
-// PC-relative offset, which `br r0, rX` adds to the PC. Clobbers kScratchRegB.
-static void emit_long_jump(struct Emitter* e, struct Slice* label) {
-  emit_movi_label(e, kScratchRegB, label);
-  emit_reg2(e, MACHINE_BR, R0, kScratchRegB);
-}
 
 // Call a two-argument builtin with the ABI argument registers: scratch A and B
 // go to r1/r2 and the result comes back in r1, then moves to scratch A.
@@ -668,20 +696,16 @@ static void lower_get_address(struct Emitter* e, const struct AsmGetAddress* ga)
                        src->op.data.label, src->op.data.offset);
   }
   if (dst->type == OPERAND_MEMORY) {
-    emit_mem_base(e, MACHINE_SWA, addr_reg, dst->op.memory.base, dst->op.memory.offset);
+    emit_store_base(e, MACHINE_SWA, addr_reg, dst->op.memory.base, dst->op.memory.offset);
   }
 }
 
-// Expand a conditional jump into a short branch over a long jump, since the
-// short branch range may not reach the label:
-//   b<cond> +4      ; taken -> the long jump
-//   jmp +12         ; not taken -> past the long jump
-//   movi rB, label
-//   br r0, rB
+// Lower a conditional jump to a single immediate branch. Jump targets are
+// labels in the same function, and the 22-bit instruction-count offset reaches
+// +-8 MiB (docs/ISA.md, "Immediate Branches"); a function too large for that
+// fails to assemble (see README, "Address reach limits").
 static void lower_cond_jump(struct Emitter* e, const struct AsmCondJump* jump) {
-  emit_target(e, cond_branch_op(e, jump->cond), NULL, kCondJumpBranchSkip);
-  emit_target(e, MACHINE_JMP, NULL, kCondJumpJmpSkip);
-  emit_long_jump(e, jump->label);
+  emit_target(e, cond_branch_op(e, jump->cond), jump->label, 0);
 }
 
 // Emit an ALU operation on scratch A and B with the result in scratch A.
@@ -933,7 +957,8 @@ static void lower_instr(struct Emitter* e, struct AsmInstr* cur) {
       emit_label(e, cur->instr.asm_label.label);
       break;
     case ASM_JUMP:
-      emit_long_jump(e, cur->instr.asm_jump.label);
+      // Same +-8 MiB reach as lower_cond_jump.
+      emit_target(e, MACHINE_JMP, cur->instr.asm_jump.label, 0);
       break;
     case ASM_COND_JUMP:
       lower_cond_jump(e, &cur->instr.asm_cond_jump);

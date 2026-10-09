@@ -5,8 +5,6 @@ callee (directly and through a function pointer). An 8-byte struct is
 returned in r1/r2 and must pass through unchanged. Also tail calls with a
 struct argument passed in registers.
 Returns the number of checks that produced the expected value.
-
-tac-exec: skip (the TAC interpreter cannot pass or return structs by value)
 */
 
 struct Big {

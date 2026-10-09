@@ -117,6 +117,34 @@ Limitations:
 - No variadic functions
 - No inline assembly
 
+### Address reach limits
+
+Two kinds of generated instruction have a limited reach. They work only
+when the final program layout keeps their targets close enough. Otherwise
+the assembler rejects the output with an out-of-range immediate error. The
+compiler cannot check this, because it does not know where the assembler
+will place each label.
+
+- **Global variables: within ±1 MiB of the code that uses them.** A scalar
+  global, or the first member of a global aggregate, is read and written with
+  a single PC-relative `lw`/`sw`/`ld`/`sd`/`lb`/`sb rA, [label]`. Its offset
+  is a 21-bit signed byte offset (docs/ISA.md, "PC-Relative Addressing
+  (immediate)"). Other global members are reached through a full 32-bit
+  `movi` address and have no limit. Large `.bss` arrays placed between the
+  code and a variable are the usual way to exceed this limit. In the kernel,
+  `.text` starts at `TEXT_LOAD_ADDR` (0x10000) and `.bss` at `BSS_LOAD_ADDR`
+  (0xE8000), so code near the start of `.text` can reach only about the first
+  160 KiB of `.bss`.
+- **Branches and direct tail calls: within ±8 MiB.** Control flow inside a
+  function (`if`, loops, `switch`, `goto`, `&&`/`||`) uses a single
+  `b<cond> label` or `jmp label`. A tail call to a named function is also
+  emitted as `jmp label`. These are immediate branches with a 22-bit
+  instruction-count offset (docs/ISA.md, "Immediate Branches"). A single
+  function larger than about 8 MiB of code therefore fails to assemble, as
+  does a tail call whose target is that far away. Ordinary calls (`call`,
+  which expands to `movu`/`movl`/`br`) use full 32-bit offsets and have no
+  limit.
+
 ## Tests
 
 Stage-specific tests live in these folders:
