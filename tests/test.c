@@ -9,6 +9,6 @@ int next_collatz(int x) {
 }*/
 
 int main() {
-  volatile int a0 = 2;
+  volatile int a0 = 0x8000000;
   return a0 + 1;
 }
