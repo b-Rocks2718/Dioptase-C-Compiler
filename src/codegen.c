@@ -48,13 +48,6 @@ static struct Slice kFunctionEpilogueLabel = {"Function Epilogue", 17};
 static struct Slice kFunctionPrologueLabel = {"Function Prologue", 17};
 static struct Slice kFunctionBodyLabel = {"Function Body", 13};
 
-
-// Frame layout from the prologue: [bp] holds the caller's bp and [bp + 4] the
-// return address; together they occupy kEpilogueStackBytes above bp.
-static const int kSavedBpOffset = 0;
-static const int kSavedRaOffset = 4;
-static const int kEpilogueStackBytes = 8;
-
 // Immediate field widths from docs/ISA.md. All are sign-extended except the
 // shift amount and the bitwise byte.
 static const unsigned kAluArithImmBits = 12;   // add/addc/sub/subb, "Arithmetic"
@@ -278,13 +271,16 @@ static void emit_mem_base(struct Emitter* e, enum MachineInstrType type,
   instr->instr.mem.imm = imm;
 }
 
-// Load or store addressing a data label directly (offset 0 only).
+// PC-relative load or store of label + imm, printed as `[label + imm]`. This
+// is the base-less form, whose 21-bit offset reaches +-1 MiB from the
+// instruction (docs/ISA.md, "PC-Relative Addressing (immediate)"); the
+// assembler resolves label + imm (README, "Address reach limits").
 static void emit_mem_label(struct Emitter* e, enum MachineInstrType type,
-                           enum Reg ra, struct Slice* label) {
+                           enum Reg ra, struct Slice* label, int imm) {
   struct MachineInstr* instr = emit(e, type);
   instr->instr.mem.ra = ra;
-  instr->instr.mem.rb = R0;
   instr->instr.mem.label = label;
+  instr->instr.mem.imm = imm;
 }
 
 // Load an immediate. Values that fit the 12-bit add immediate use a single
@@ -306,12 +302,17 @@ static void emit_movi_imm(struct Emitter* e, enum Reg ra, int imm) {
   instr->instr.movi.imm = imm;
 }
 
-// `movi ra, label` yields a PC-relative offset, not an absolute address
-// (docs/ISA.md); see emit_label_address for the absolute form.
-static void emit_movi_label(struct Emitter* e, enum Reg ra, struct Slice* label) {
-  struct MachineInstr* instr = emit(e, MACHINE_MOVI);
-  instr->instr.movi.ra = ra;
+// Materialize the absolute address label + offset into addr_reg with
+// `adpc rA, label + offset` (rA = pc + 4 + imm). The 22-bit signed immediate
+// reaches +-2 MiB from the instruction (docs/ISA.md, "adpc").
+static void emit_label_address(struct Emitter* e,
+                               enum Reg addr_reg,
+                               struct Slice* label,
+                               int offset) {
+  struct MachineInstr* instr = emit(e, MACHINE_ADPC);
+  instr->instr.movi.ra = addr_reg;
   instr->instr.movi.label = label;
+  instr->instr.movi.imm = offset;
 }
 
 // Label-or-immediate payload shared by calls, jumps, branches, and directives.
@@ -433,30 +434,6 @@ static enum Reg pick_scratch_reg(const struct Emitter* e, enum Reg avoid_a, enum
   return kScratchRegA;
 }
 
-// Materialize the absolute address label + offset into addr_reg. pc_reg is
-// clobbered: `br pc_reg, r0` captures pc + 4, which turns movi's PC-relative
-// label offset into an absolute address (docs/ISA.md).
-static void emit_label_address(struct Emitter* e,
-                               enum Reg addr_reg,
-                               enum Reg pc_reg,
-                               struct Slice* label,
-                               int offset) {
-  emit_movi_label(e, addr_reg, label);
-  emit_reg2(e, MACHINE_BR, pc_reg, R0);
-  emit_alu_rrr(e, MACHINE_ADD, addr_reg, addr_reg, pc_reg);
-  if (offset == 0) {
-    return;
-  }
-  if (is_encodable_imm(MACHINE_ADD, offset)) {
-    emit_alu_rri(e, MACHINE_ADD, addr_reg, addr_reg, offset);
-  } else {
-    // Offsets into large aggregates can exceed the 12-bit add immediate.
-    // pc_reg is dead after the add above, so it holds the offset instead.
-    emit_movi_imm(e, pc_reg, offset);
-    emit_alu_rrr(e, MACHINE_ADD, addr_reg, addr_reg, pc_reg);
-  }
-}
-
 // Load [base, offset] into dst_reg. Frame and aggregate offsets can exceed the
 // scaled 12-bit absolute-addressing field; those first form base + offset in
 // a scratch register picked to avoid base and keep_reg (the only other live
@@ -489,9 +466,9 @@ static void emit_store_base(struct Emitter* e, enum MachineInstrType type, enum 
 }
 
 // Load opr's value into dst_reg. keep_reg names a register holding a live
-// value that must survive (R0 if none). A Data operand with a nonzero offset
-// needs a PC temporary, and a Memory operand with a far offset needs an
-// address temporary; both are scratch registers that avoid keep_reg.
+// value that must survive (R0 if none). A Memory operand with a far offset
+// needs an address temporary, a scratch register that avoids keep_reg; Data
+// operands are a single PC-relative load and use no temporary.
 static void load_operand(struct Emitter* e, const struct Operand* opr,
                          enum Reg dst_reg, enum Reg keep_reg) {
   switch (opr->type) {
@@ -506,13 +483,7 @@ static void load_operand(struct Emitter* e, const struct Operand* opr,
                      opr->op.memory.base, opr->op.memory.offset, keep_reg);
       return;
     case OPERAND_DATA:
-      if (opr->op.data.offset == 0) {
-        emit_mem_label(e, load_op(e, opr->asm_type, MEM_LABEL), dst_reg, opr->op.data.label);
-      } else {
-        enum Reg pc_reg = pick_scratch_reg(e, dst_reg, keep_reg);
-        emit_label_address(e, dst_reg, pc_reg, opr->op.data.label, opr->op.data.offset);
-        emit_mem_base(e, load_op(e, opr->asm_type, MEM_BASE_OFFSET), dst_reg, dst_reg, 0);
-      }
+      emit_mem_label(e, load_op(e, opr->asm_type, MEM_LABEL), dst_reg, opr->op.data.label, opr->op.data.offset);
       return;
     default:
       codegen_errorf(e, "invalid source operand type %d; expected Reg, Lit, Memory, or Data",
@@ -520,24 +491,10 @@ static void load_operand(struct Emitter* e, const struct Operand* opr,
   }
 }
 
-// Store value_reg to a Data operand. A nonzero offset needs an absolute
-// address, which clobbers kScratchRegA as the PC temporary; when the value
-// itself lives in kScratchRegA it is saved on the stack around that sequence.
+// Store value_reg to a Data operand with a single PC-relative store; no
+// scratch register is clobbered.
 static void store_to_data(struct Emitter* e, const struct Operand* dst, enum Reg value_reg) {
-  if (dst->op.data.offset == 0) {
-    emit_mem_label(e, store_op(e, dst->asm_type, MEM_LABEL), value_reg, dst->op.data.label);
-    return;
-  }
-
-  enum Reg addr_reg = (value_reg == kScratchRegB) ? kScratchRegC : kScratchRegB;
-  if (value_reg == kScratchRegA) {
-    emit_reg1(e, MACHINE_PUSH, kScratchRegA);
-    emit_label_address(e, addr_reg, kScratchRegA, dst->op.data.label, dst->op.data.offset);
-    emit_reg1(e, MACHINE_POP, kScratchRegA);
-  } else {
-    emit_label_address(e, addr_reg, kScratchRegA, dst->op.data.label, dst->op.data.offset);
-  }
-  emit_mem_base(e, store_op(e, dst->asm_type, MEM_BASE_OFFSET), value_reg, addr_reg, 0);
+  emit_mem_label(e, store_op(e, dst->asm_type, MEM_LABEL), value_reg, dst->op.data.label, dst->op.data.offset);
 }
 
 // Write value_reg to a destination operand.
@@ -591,13 +548,13 @@ static void emit_function_epilogue(struct Emitter* e) {
 
   emit_comment(e, &kFunctionEpilogueLabel);
   emit_reg2(e, MACHINE_MOV, SP, BP);
-  emit_mem_base(e, MACHINE_LWA, RA, BP, kSavedRaOffset);
-  emit_mem_base(e, MACHINE_LWA, BP, BP, kSavedBpOffset);
-  emit_alu_rri(e, MACHINE_ADD, SP, SP, kEpilogueStackBytes);
+  emit_reg1(e, MACHINE_POP, BP);
+  emit_reg1(e, MACHINE_POP, RA);
 }
 
-// Build the frame described by kSaved*Offset: push ra, push bp, point bp at the
-// saved bp, then allocate func->frame_bytes of locals below bp.
+// Build the frame: push ra, push bp, point bp at the saved bp, then allocate
+// func->frame_bytes of locals below bp. So [bp] holds the caller's bp and
+// [bp + 4] the return address; emit_function_epilogue pops them in reverse.
 static void emit_function_prologue(struct Emitter* e) {
   if (!function_needs_prologue(e->func)) {
     return;
@@ -692,8 +649,7 @@ static void lower_get_address(struct Emitter* e, const struct AsmGetAddress* ga)
       emit_alu_rrr(e, MACHINE_ADD, addr_reg, base, offset_reg);
     }
   } else {
-    emit_label_address(e, addr_reg, pick_scratch_reg(e, addr_reg, R0),
-                       src->op.data.label, src->op.data.offset);
+    emit_label_address(e, addr_reg, src->op.data.label, src->op.data.offset);
   }
   if (dst->type == OPERAND_MEMORY) {
     emit_store_base(e, MACHINE_SWA, addr_reg, dst->op.memory.base, dst->op.memory.offset);
@@ -877,12 +833,10 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
       return;
     case ASM_LOAD:
     case ASM_VOLATILE_LOAD: {
-      // The pointer arrives in scratch A; move it to B so the loaded value can land in A.
       const struct Operand* load_dst = cur->type == ASM_VOLATILE_LOAD
           ? cur->instr.asm_volatile_load.dst
           : cur->instr.asm_load.dst;
-      emit_reg2(e, MACHINE_MOV, kScratchRegB, kScratchRegA);
-      emit_mem_base(e, load_op(e, load_dst->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegB, 0);
+      emit_mem_base(e, load_op(e, load_dst->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegA, 0);
       return;
     }
     case ASM_STORE:

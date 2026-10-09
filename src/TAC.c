@@ -6,6 +6,7 @@
 #include "label_resolution.h"
 #include "source_location.h"
 #include "unique_name.h"
+#include "math.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -2649,14 +2650,30 @@ static struct TACInstrList lower_addr_of_expr(struct Slice* func_name, struct Ex
 static struct TACInstrList lower_subscript_expr(struct Slice* func_name, struct Expr* expr,
                                                 struct ExprResult* result) {
   struct SubscriptExpr* sub_expr = &expr->expr.subscript_expr;
+
+
+  struct TACInstrList instrs = tac_instr_list(NULL);
+
+  // A literal index into a named object (`arr[3]`, where `arr` decays to
+  // &arr) is a fixed subobject of that variable, like a struct member. Lower
+  // it to SUB_OBJECT so reads and writes become CopyFrom/ToOffset with no
+  // pointer arithmetic. C literals are never negative, so the offset is too.
+  if (sub_expr->array->type == ADDR_OF &&
+      sub_expr->array->expr.addr_of_expr.expr->type == VAR &&
+      sub_expr->index->type == LIT) {
+    result->type = SUB_OBJECT;
+    result->sub_object_base = sub_expr->array->expr.addr_of_expr.expr->expr.var_expr.name;
+    result->sub_object_offset = sub_expr->index->expr.lit_expr.value.uint_val * get_type_size(expr->value_type);
+    return instrs;
+  }
+
+  
   struct Val* base_ptr_val = (struct Val*)arena_alloc(sizeof(struct Val));
   struct TACInstrList base_ptr_instrs = expr_to_TAC_convert(func_name, sub_expr->array, base_ptr_val);
+  concat_TAC_instrs(&instrs, base_ptr_instrs);
 
   struct Val* index_val = (struct Val*)arena_alloc(sizeof(struct Val));
   struct TACInstrList index_instrs = expr_to_TAC_convert(func_name, sub_expr->index, index_val);
-
-  struct TACInstrList instrs = tac_instr_list(NULL);
-  concat_TAC_instrs(&instrs, base_ptr_instrs);
   concat_TAC_instrs(&instrs, index_instrs);
 
   // AST:
@@ -2664,14 +2681,21 @@ static struct TACInstrList lower_subscript_expr(struct Slice* func_name, struct 
   // TAC:
   // <base_ptr>
   // <index>
-  // Binary Mul offset = index * sizeof(T)
+  // Binary Mul offset = index * sizeof(T)   (Binary Shl by log2 when sizeof(T)
+  //                                          is a power of two)
   // Binary Add addr = base_ptr + offset
   struct Type* ref_type = expr->value_type;
   size_t scale = get_type_size(ref_type);
   struct Val* offset = make_temp(func_name, index_val->type);
 
-  struct TACInstr* mul_instr = tac_binary_of(binop_to_aluop(MUL_OP, index_val->type), offset, index_val, tac_make_const((uint64_t)scale, index_val->type));
-  tac_emit(&instrs, mul_instr);
+  if (is_power_of_two(scale)) {
+    unsigned log_scale = log2_size(scale);
+    struct TACInstr* shl_instr = tac_binary_of(binop_to_aluop(BIT_SHL, index_val->type), offset, index_val, tac_make_const((uint64_t)log_scale, index_val->type));
+    tac_emit(&instrs, shl_instr);
+  } else {
+    struct TACInstr* mul_instr = tac_binary_of(binop_to_aluop(MUL_OP, index_val->type), offset, index_val, tac_make_const((uint64_t)scale, index_val->type));
+    tac_emit(&instrs, mul_instr);
+  }
 
   struct Val* addr = make_temp(func_name, tac_builtin_type(UINT_TYPE));
   struct TACInstr* add_instr = tac_binary_of(binop_to_aluop(ADD_OP, addr->type), addr, base_ptr_val, offset);

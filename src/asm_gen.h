@@ -240,16 +240,21 @@ struct AsmGetAddress {
   struct Operand* src;
 };
 
-// Store destination value and source address for a load.
+// Load from src (a pointer) plus offset into dst. offset is reserved for
+// folding constant pointer offsets: asm_gen currently always leaves it 0 and
+// codegen does not read it.
 struct AsmLoad {
   struct Operand* dst;
   struct Operand* src;
+  int offset;
 };
 
-// Store destination address and source value for a store.
+// Store src to dst (a pointer) plus offset. offset is reserved like
+// AsmLoad.offset: always 0 today and not read by codegen.
 struct AsmStore {
   struct Operand* dst;
   struct Operand* src;
+  int offset;
 };
 
 // Store the source location associated with a debug boundary.

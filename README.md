@@ -119,22 +119,30 @@ Limitations:
 
 ### Address reach limits
 
-Two kinds of generated instruction have a limited reach. They work only
-when the final program layout keeps their targets close enough. Otherwise
-the assembler rejects the output with an out-of-range immediate error. The
-compiler cannot check this, because it does not know where the assembler
-will place each label.
+Generated code reaches globals, functions, and branch targets with
+PC-relative immediates, so each kind of reference works only when the final
+layout keeps its target close enough. Otherwise the assembler rejects the
+output with an out-of-range immediate error. The compiler cannot check this,
+because it does not know where the assembler will place each label. Distances
+are measured from the referencing instruction. Offsets into a global are
+written as `label + imm` or `label - imm`, and the assembler resolves them.
 
-- **Global variables: within ±1 MiB of the code that uses them.** A scalar
-  global, or the first member of a global aggregate, is read and written with
-  a single PC-relative `lw`/`sw`/`ld`/`sd`/`lb`/`sb rA, [label]`. Its offset
-  is a 21-bit signed byte offset (docs/ISA.md, "PC-Relative Addressing
-  (immediate)"). Other global members are reached through a full 32-bit
-  `movi` address and have no limit. Large `.bss` arrays placed between the
-  code and a variable are the usual way to exceed this limit. In the kernel,
-  `.text` starts at `TEXT_LOAD_ADDR` (0x10000) and `.bss` at `BSS_LOAD_ADDR`
-  (0xE8000), so code near the start of `.text` can reach only about the first
-  160 KiB of `.bss`.
+- **Reading or writing a global: within ±1 MiB.** Every access to a global
+  scalar, or to a member or constant-index element of a global aggregate, is
+  one PC-relative `lw`/`sw`/`ld`/`sd`/`lb`/`sb rA, [label + imm]`. The
+  21-bit signed byte offset covers the member offset too (docs/ISA.md,
+  "PC-Relative Addressing (immediate)"). So the bound applies to the accessed
+  byte, not just the start of the variable. Large `.bss` arrays placed
+  between the code and a variable are the usual way to exceed it.
+- **Taking a global's address: within ±2 MiB.** `&global`, `&global.member`,
+  array decay of a global array, and any access that goes through a computed
+  pointer start from `adpc rA, label + imm`, whose 22-bit signed byte offset
+  gives the larger reach (docs/ISA.md, "adpc").
+- **Kernel margin:** `.text` starts at `TEXT_LOAD_ADDR` (0x10000), `.data` at
+  `DATA_LOAD_ADDR` (0xB0000), `.rodata` at `RODATA_LOAD_ADDR` (0xE0000), and
+  `.bss` at `BSS_LOAD_ADDR` (0xE8000). Code near the start of `.text` can
+  therefore access only about the first 160 KiB of `.bss` (up to 0x110000),
+  though it can take addresses up to about 0x210000.
 - **Branches and direct tail calls: within ±8 MiB.** Control flow inside a
   function (`if`, loops, `switch`, `goto`, `&&`/`||`) uses a single
   `b<cond> label` or `jmp label`. A tail call to a named function is also

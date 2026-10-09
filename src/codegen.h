@@ -83,6 +83,7 @@ enum MachineInstrType {
   MACHINE_TNCD,
   MACHINE_SXTB,
   MACHINE_SXTD,
+  MACHINE_ADPC,
   MACHINE_SYS,
 
   // macros
@@ -151,7 +152,7 @@ struct MachineMem {
   int imm;
 };
 
-// Register/immediate or register/label move (movi, lui).
+// Register/immediate or register/label move (movi, lui, adpc).
 struct MachineMovi {
   enum Reg ra;
   struct Slice* label;
