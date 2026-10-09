@@ -33,7 +33,6 @@ COMPILER_ONLY_FLAGS = {
     "-dead-store",
     "-inline",
     "-opt",
-    "-peephole",
     "-reg-alloc",
     "-tail-call",
 }

@@ -292,7 +292,6 @@ static const struct {
   {"-dead-store", offsetof(struct OptimizationOptions, dead_store_elim)},
   {"-tail-call", offsetof(struct OptimizationOptions, tail_call_opt)},
   {"-inline", offsetof(struct OptimizationOptions, inline_opt)},
-  {"-peephole", offsetof(struct OptimizationOptions, peephole_opt)},
   {"-reg-alloc", offsetof(struct OptimizationOptions, reg_alloc)},
 };
 

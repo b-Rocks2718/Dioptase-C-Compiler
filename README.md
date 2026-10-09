@@ -60,10 +60,9 @@ Optimizations are disabled by default. The following passes are currently implem
 -inline               function inlining
 ```
 
-The following optimization flags are also supported, but the optimization is not yet implemented:
+The following optimization flag is also accepted, but the optimization is not yet implemented:
 
 ```text
--peephole             low-level peephole optimization
 -reg-alloc            register allocation
 ```
 
