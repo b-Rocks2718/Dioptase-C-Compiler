@@ -3,14 +3,20 @@
 #include "codegen.h"
 #include "interference_graph.h"
 
+#include <stdlib.h>
+
 // Creates a new register map for the given interference graph
 struct RegisterMap* build_register_map(struct InterferenceGraph* ig) {
+  puts("todo: reg map\n");
+  exit(1);
   return NULL; // placeholder implementation
 }
 
 // Assigns physical registers to the given assembly instructions based on the register map.
 void assign_registers(struct AsmInstr* instrs, struct RegisterMap* reg_map) {
   // placeholder implementation
+  puts("todo: assign regs\n");
+  exit(1);
 }
 
 // Allocates registers for the body of a function based on the interference graph.
@@ -20,6 +26,7 @@ void alloc_body_registers(struct AsmInstr* instrs) {
   color_graph(ig);
   struct RegisterMap* reg_map = build_register_map(ig);
   assign_registers(instrs, reg_map);
+  destroy_interference_graph(ig);
 }
 
 // No allocation yet: leaving every pseudo in place makes assign_stack_slots

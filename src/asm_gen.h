@@ -240,17 +240,15 @@ struct AsmGetAddress {
   struct Operand* src;
 };
 
-// Load from src (a pointer) plus offset into dst. offset is reserved for
-// folding constant pointer offsets: asm_gen currently always leaves it 0 and
-// codegen does not read it.
+// Load from src (a pointer) plus a constant byte offset into dst. Aggregate
+// copies through a pointer emit one Load per chunk with that chunk's offset.
 struct AsmLoad {
   struct Operand* dst;
   struct Operand* src;
   int offset;
 };
 
-// Store src to dst (a pointer) plus offset. offset is reserved like
-// AsmLoad.offset: always 0 today and not read by codegen.
+// Store src to dst (a pointer) plus a constant byte offset, as for AsmLoad.
 struct AsmStore {
   struct Operand* dst;
   struct Operand* src;
@@ -447,7 +445,6 @@ struct OperandList {
 // Use caller-saved registers that are not argument registers for codegen scratch work.
 extern const enum Reg kScratchRegA;
 extern const enum Reg kScratchRegB;
-extern const enum Reg kScratchRegC;
 
 // Lower TAC into ASM, optionally emitting section directives.
 // Returns the ASM program or exits on internal error.
