@@ -10,6 +10,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 extern struct AsmSymbolTable* asm_symbol_table;
 
@@ -89,6 +90,11 @@ struct AsmFunc {
   // Every Ret returns the value in R1..R(num_return_regs): 0 for void and
   // memory-returned results, else 1 or 2 (docs/abi.md).
   size_t num_return_regs;
+  // Callee-saved registers (r20-r27, docs/abi.md) that register allocation
+  // gave to pseudos, as a mask with bit r set for register r; Dioptase's 32
+  // registers fit one 32-bit mask. The prologue must save each one, and every
+  // epilogue (including a tail call's) restore it. Set by build_register_map.
+  uint32_t callee_saved_regs;
   // True if any final operand is addressed relative to BP (stack slots,
   // address-taken locals, incoming stack args, the return-buffer pointer).
   // Set by assign_stack_slots once pseudos are replaced.

@@ -418,6 +418,13 @@ static enum MachineInstrType cond_branch_op(const struct Emitter* e, enum TACCon
 // Operand access
 // ---------------------------------------------------------------------------
 
+// Per docs/abi.md, r20-r27 are the callee-saved general registers. r28-r31
+// (TLS base, return address, base pointer, stack pointer) have dedicated roles
+// handled by the prologue/epilogue and are never allocated, so they report false.
+bool is_callee_saved(enum Reg reg) {
+  return reg >= R20 && reg <= R27;
+}
+
 // The scratch register other than keep_reg: scratch A unless keep_reg is A.
 // Pass R0 (or any non-scratch register) when no scratch value is live
 static enum Reg pick_scratch_reg(enum Reg keep_reg) {
