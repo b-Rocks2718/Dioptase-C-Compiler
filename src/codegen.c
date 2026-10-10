@@ -542,15 +542,39 @@ static void emit_builtin_call(struct Emitter* e, struct Slice* label) {
 }
 
 // A leaf function that never touches bp can skip the frame entirely: ra is
-// never overwritten and nothing is addressed relative to bp.
+// never overwritten and nothing is addressed relative to bp. Saving
+// callee-saved registers needs the frame (their slots are bp-relative).
 static bool function_needs_prologue(const struct AsmFunc* func) {
-  return func->makes_calls || func->uses_bp;
+  return func->makes_calls || func->uses_bp || func->callee_saved_regs != 0;
+}
+
+// Store (MACHINE_SWA) or load (MACHINE_LWA) every register in
+// func->callee_saved_regs at its frame slot, the k-th register in ascending
+// order at bp - (callee_save_base + 4 * (k + 1)) (see AsmFunc). The offsets are
+// a few dozen bytes, always within the immediate field, so no scratch register
+// is used; the indirect tail-call epilogue relies on that, because its target
+// is still in scratch A.
+static void emit_callee_saves(struct Emitter* e, enum MachineInstrType type) {
+  size_t k = 0;
+  for (unsigned r = 0; r < NUM_REGS; r++) {
+    if (((e->func->callee_saved_regs >> r) & 1u) == 0) {
+      continue;
+    }
+    k++;
+    size_t offset = e->func->callee_save_base + CALLEE_SAVE_SLOT_BYTES * k;
+    if (offset > INT_MAX || !is_encodable_imm(type, -(int)offset)) {
+      codegen_errorf(e, "callee-save slot for r%u at bp-%zu is outside the immediate field",
+                     r, offset);
+    }
+    emit_mem_base(e, type, (enum Reg)r, BP, -(int)offset);
+  }
 }
 
 // Tear down the current frame, leaving the machine as it was just before the
-// caller's `call`: sp points at our incoming stack args, bp is the caller's bp,
-// and ra holds the caller's return address. Only sp, bp, and ra are written, so
-// argument/return registers (r1-r8) survive. The caller of this helper emits
+// caller's `call`: callee-saved registers hold the caller's values again, sp
+// points at our incoming stack args, bp is the caller's bp, and ra holds the
+// caller's return address. Only those registers are written, so
+// argument/return registers (r1-r8) and the scratch registers survive. The caller of this helper emits
 // the final control transfer (ret, or a jump for a tail call). Emits nothing
 // for a frameless function, which is already in that state.
 static void emit_function_epilogue(struct Emitter* e) {
@@ -559,14 +583,16 @@ static void emit_function_epilogue(struct Emitter* e) {
   }
 
   emit_comment(e, &kFunctionEpilogueLabel);
+  emit_callee_saves(e, MACHINE_LWA);
   emit_reg2(e, MACHINE_MOV, SP, BP);
   emit_reg1(e, MACHINE_POP, BP);
   emit_reg1(e, MACHINE_POP, RA);
 }
 
-// Build the frame: push ra, push bp, point bp at the saved bp, then allocate
-// func->frame_bytes of locals below bp. So [bp] holds the caller's bp and
-// [bp + 4] the return address; emit_function_epilogue pops them in reverse.
+// Build the frame: push ra, push bp, point bp at the saved bp, allocate
+// func->frame_bytes below bp, then save the callee-saved registers register
+// allocation used into their reserved slots. So [bp] holds the caller's bp and
+// [bp + 4] the return address; emit_function_epilogue undoes this in reverse.
 static void emit_function_prologue(struct Emitter* e) {
   if (!function_needs_prologue(e->func)) {
     return;
@@ -587,6 +613,7 @@ static void emit_function_prologue(struct Emitter* e) {
       emit_alu_rrr(e, MACHINE_SUB, SP, SP, kScratchRegB);
     }
   }
+  emit_callee_saves(e, MACHINE_SWA);
 
   // Stack layout comments for user-visible locals (present only with debug info).
   for (struct DebugLocal* local = e->func->locals; local != NULL; local = local->next) {
