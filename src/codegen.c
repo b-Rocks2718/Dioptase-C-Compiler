@@ -475,30 +475,34 @@ static void emit_store_base(struct Emitter* e, enum MachineInstrType type, enum 
   emit_mem_base(e, type, value_reg, addr_reg, 0);
 }
 
-// Load opr's value into dst_reg. keep_reg names a register holding a live
-// value that must survive (R0 if none). A Memory operand with a far offset
-// needs an address temporary, a scratch register that avoids keep_reg; Data
-// operands are a single PC-relative load and use no temporary.
-static void load_operand(struct Emitter* e, const struct Operand* opr,
-                         enum Reg dst_reg, enum Reg keep_reg) {
+// Make opr's value available in a register and return that register. A Reg
+// operand already is one: its own register is returned and nothing is
+// emitted, so callers that need the value in dst_reg specifically must move
+// it themselves. Every other operand is loaded into dst_reg. keep_reg names a
+// scratch register holding a live value that must survive (R0 if none); a
+// Memory operand with a far offset needs an address temporary, the scratch
+// register other than keep_reg. Data operands are a single PC-relative load
+// and use no temporary.
+static enum Reg load_operand(struct Emitter* e, const struct Operand* opr,
+                             enum Reg dst_reg, enum Reg keep_reg) {
   switch (opr->type) {
     case OPERAND_REG:
-      emit_reg2(e, MACHINE_MOV, dst_reg, opr->op.reg.reg);
-      return;
+      return opr->op.reg.reg;
     case OPERAND_LIT:
       emit_movi_imm(e, dst_reg, opr->op.lit.value);
-      return;
+      return dst_reg;
     case OPERAND_MEMORY:
       check_memory_base(e, opr);
       emit_load_base(e, load_op(e, opr->asm_type, MEM_BASE_OFFSET), dst_reg,
                      opr->op.memory.base, opr->op.memory.offset, keep_reg);
-      return;
+      return dst_reg;
     case OPERAND_DATA:
       emit_mem_label(e, load_op(e, opr->asm_type, MEM_LABEL), dst_reg, opr->op.data.label, opr->op.data.offset);
-      return;
+      return dst_reg;
     default:
       codegen_errorf(e, "invalid source operand type %d; expected Reg, Lit, Memory, or Data",
                      (int)opr->type);
+      return R0;
   }
 }
 
@@ -508,11 +512,14 @@ static void store_to_data(struct Emitter* e, const struct Operand* dst, enum Reg
   emit_mem_label(e, store_op(e, dst->asm_type, MEM_LABEL), value_reg, dst->op.data.label, dst->op.data.offset);
 }
 
-// Write value_reg to a destination operand.
+// Write value_reg to a destination operand. A Reg destination that already
+// is value_reg (the result was computed in place) needs no instruction.
 static void store_operand(struct Emitter* e, const struct Operand* dst, enum Reg value_reg) {
   switch (dst->type) {
     case OPERAND_REG:
-      emit_reg2(e, MACHINE_MOV, dst->op.reg.reg, value_reg);
+      if (dst->op.reg.reg != value_reg) {
+        emit_reg2(e, MACHINE_MOV, dst->op.reg.reg, value_reg);
+      }
       return;
     case OPERAND_MEMORY:
       check_memory_base(e, dst);
@@ -532,13 +539,35 @@ static void store_operand(struct Emitter* e, const struct Operand* dst, enum Reg
 // Control-flow sequences
 // ---------------------------------------------------------------------------
 
-// Call a two-argument builtin with the ABI argument registers: scratch A and B
-// go to r1/r2 and the result comes back in r1, then moves to scratch A.
-static void emit_builtin_call(struct Emitter* e, struct Slice* label) {
-  emit_reg2(e, MACHINE_MOV, R1, kScratchRegA);
-  emit_reg2(e, MACHINE_MOV, R2, kScratchRegB);
+// Call a two-argument builtin: move src_a to r1 and src_b to r2, call, and
+// copy the result from r1 to dst_reg. The two moves form a parallel copy, so
+// they are ordered to never overwrite a source before it is read: if src_b
+// is in r1, r2 is written first, and if the sources sit in each other's
+// argument register they are swapped through scratch A, which cannot hold
+// either (both are r1/r2). The helpers modify only r1-r8 (docs/abi.md).
+static void emit_builtin_call(struct Emitter* e, struct Slice* label, enum Reg dst_reg,
+                              enum Reg src_a, enum Reg src_b) {
+  if (src_a == R2 && src_b == R1) {
+    emit_reg2(e, MACHINE_MOV, kScratchRegA, R1);
+    emit_reg2(e, MACHINE_MOV, R1, R2);
+    emit_reg2(e, MACHINE_MOV, R2, kScratchRegA);
+  } else if (src_b == R1) {
+    emit_reg2(e, MACHINE_MOV, R2, src_b);
+    if (src_a != R1) {
+      emit_reg2(e, MACHINE_MOV, R1, src_a);
+    }
+  } else {
+    if (src_a != R1) {
+      emit_reg2(e, MACHINE_MOV, R1, src_a);
+    }
+    if (src_b != R2) {
+      emit_reg2(e, MACHINE_MOV, R2, src_b);
+    }
+  }
   emit_target(e, MACHINE_CALL, label, 0);
-  emit_reg2(e, MACHINE_MOV, kScratchRegA, R1);
+  if (dst_reg != R1) {
+    emit_reg2(e, MACHINE_MOV, dst_reg, R1);
+  }
 }
 
 // A leaf function that never touches bp can skip the frame entirely: ra is
@@ -641,7 +670,7 @@ static void lower_mov(struct Emitter* e, const struct AsmMov* mov) {
   }
 
   if (dst->type == OPERAND_REG) {
-    load_operand(e, src, dst->op.reg.reg, R0);
+    store_operand(e, dst, load_operand(e, src, dst->op.reg.reg, R0));
     return;
   }
   if (src->type == OPERAND_REG) {
@@ -704,45 +733,46 @@ static void lower_cond_jump(struct Emitter* e, const struct AsmCondJump* jump) {
   emit_target(e, cond_branch_op(e, jump->cond), jump->label, 0);
 }
 
-// Emit an ALU operation on scratch A and B with the result in scratch A.
-// Operations with no single machine instruction call a builtin helper, which
-// clobbers all caller-saved registers. The set of builtin ops must match
-// alu_op_needs_builtin_call in asm_gen.c, which leaf detection relies on.
-static void emit_binary_reg_op(struct Emitter* e, enum ALUOp op) {
+// Emit an ALU operation on src_reg_a and src_reg_b with the result in dst_reg.
+// dst_reg may equal either source. Operations with no single machine
+// instruction call a builtin helper, which may modify r1-r8 (docs/abi.md).
+// The set of builtin ops must match alu_op_needs_builtin_call in asm_gen.c,
+// which leaf detection and liveness rely on.
+static void emit_binary_reg_op(struct Emitter* e, enum ALUOp op, enum Reg dst_reg, enum Reg src_reg_a, enum Reg src_reg_b) {
   switch (op) {
     case ALU_ADD:
-      emit_alu_rrr(e, MACHINE_ADD, kScratchRegA, kScratchRegA, kScratchRegB);
+      emit_alu_rrr(e, MACHINE_ADD, dst_reg, src_reg_a, src_reg_b);
       return;
     case ALU_SUB:
-      emit_alu_rrr(e, MACHINE_SUB, kScratchRegA, kScratchRegA, kScratchRegB);
+      emit_alu_rrr(e, MACHINE_SUB, dst_reg, src_reg_a, src_reg_b);
       return;
     case ALU_AND:
-      emit_alu_rrr(e, MACHINE_AND, kScratchRegA, kScratchRegA, kScratchRegB);
+      emit_alu_rrr(e, MACHINE_AND, dst_reg, src_reg_a, src_reg_b);
       return;
     case ALU_OR:
-      emit_alu_rrr(e, MACHINE_OR, kScratchRegA, kScratchRegA, kScratchRegB);
+      emit_alu_rrr(e, MACHINE_OR, dst_reg, src_reg_a, src_reg_b);
       return;
     case ALU_XOR:
-      emit_alu_rrr(e, MACHINE_XOR, kScratchRegA, kScratchRegA, kScratchRegB);
+      emit_alu_rrr(e, MACHINE_XOR, dst_reg, src_reg_a, src_reg_b);
       return;
     case ALU_MOV:
-      emit_reg2(e, MACHINE_MOV, kScratchRegA, kScratchRegB);
+      emit_reg2(e, MACHINE_MOV, dst_reg, src_reg_b);
       return;
-    case ALU_SMUL: emit_builtin_call(e, &kBuiltinSmul); return;
-    case ALU_SDIV: emit_builtin_call(e, &kBuiltinSdiv); return;
-    case ALU_SMOD: emit_builtin_call(e, &kBuiltinSmod); return;
-    case ALU_UMUL: emit_builtin_call(e, &kBuiltinUmul); return;
-    case ALU_UDIV: emit_builtin_call(e, &kBuiltinUdiv); return;
-    case ALU_UMOD: emit_builtin_call(e, &kBuiltinUmod); return;
+    case ALU_SMUL: emit_builtin_call(e, &kBuiltinSmul, dst_reg, src_reg_a, src_reg_b); return;
+    case ALU_SDIV: emit_builtin_call(e, &kBuiltinSdiv, dst_reg, src_reg_a, src_reg_b); return;
+    case ALU_SMOD: emit_builtin_call(e, &kBuiltinSmod, dst_reg, src_reg_a, src_reg_b); return;
+    case ALU_UMUL: emit_builtin_call(e, &kBuiltinUmul, dst_reg, src_reg_a, src_reg_b); return;
+    case ALU_UDIV: emit_builtin_call(e, &kBuiltinUdiv, dst_reg, src_reg_a, src_reg_b); return;
+    case ALU_UMOD: emit_builtin_call(e, &kBuiltinUmod, dst_reg, src_reg_a, src_reg_b); return;
     case ALU_LSL:
     case ALU_ASL:
-      emit_alu_rrr(e, MACHINE_LSL, kScratchRegA, kScratchRegA, kScratchRegB);
+      emit_alu_rrr(e, MACHINE_LSL, dst_reg, src_reg_a, src_reg_b);
       return;
     case ALU_LSR:
-      emit_alu_rrr(e, MACHINE_LSR, kScratchRegA, kScratchRegA, kScratchRegB);
+      emit_alu_rrr(e, MACHINE_LSR, dst_reg, src_reg_a, src_reg_b);
       return;
     case ALU_ASR:
-      emit_alu_rrr(e, MACHINE_ASR, kScratchRegA, kScratchRegA, kScratchRegB);
+      emit_alu_rrr(e, MACHINE_ASR, dst_reg, src_reg_a, src_reg_b);
       return;
     default:
       codegen_errorf(e, "unknown ALU op %d; expected a defined ALU_* variant", (int)op);
@@ -794,11 +824,11 @@ static bool binary_op_takes_imm(enum ALUOp op, int imm) {
   return op == ALU_MOV || binary_imm_form(op, imm, &type, &encoded_imm);
 }
 
-// Emit an ALU operation on scratch A and imm with the result in scratch A.
+// Emit an ALU operation on src_reg_a and imm with the result in dst_reg.
 // The caller must have checked binary_op_takes_imm.
-static void emit_binary_imm_op(struct Emitter* e, enum ALUOp op, int imm) {
+static void emit_binary_imm_op(struct Emitter* e, enum ALUOp op, enum Reg dst_reg, enum Reg src_reg_a, int imm) {
   if (op == ALU_MOV) {
-    emit_movi_imm(e, kScratchRegA, imm);
+    emit_movi_imm(e, dst_reg, imm);
     return;
   }
   enum MachineInstrType type;
@@ -807,29 +837,38 @@ static void emit_binary_imm_op(struct Emitter* e, enum ALUOp op, int imm) {
     codegen_errorf(e, "ALU op %d has no immediate form that encodes %d; "
                    "expected the operand to be loaded into a register", (int)op, imm);
   }
-  emit_alu_rri(e, type, kScratchRegA, kScratchRegA, encoded_imm);
+  emit_alu_rri(e, type, dst_reg, src_reg_a, encoded_imm);
 }
 
-// Emit the operation step of the scratch template: sources are already in
-// scratch A (and B), and the result must be left in scratch A.
-static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
+// Emit the operation step of the scratch template: the sources are in
+// src_reg_a (and src_reg_b), which are their own registers or scratch A/B, and
+// the result must be left in dst_reg, which is the destination's register or
+// scratch A. dst_reg may equal a source register.
+static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur,
+    enum Reg dst_reg, enum Reg src_reg_a, enum Reg src_reg_b) {
   switch (cur->type) {
     case ASM_VOLATILE_READ:
     case ASM_VOLATILE_WRITE:
       // A plain copy; the opcode stays distinct only so earlier passes keep the access.
+      if (dst_reg != src_reg_a) {
+        emit_reg2(e, MACHINE_MOV, dst_reg, src_reg_a);
+      }
       return;
     case ASM_CMP:
-      emit_reg2(e, MACHINE_CMP, kScratchRegA, kScratchRegB);
+      emit_reg2(e, MACHINE_CMP, src_reg_a, src_reg_b);
       return;
     case ASM_UNARY:
       switch (cur->instr.asm_unary.op) {
         case COMPLEMENT:
-          emit_reg2(e, MACHINE_NOT, kScratchRegA, kScratchRegA);
+          emit_reg2(e, MACHINE_NOT, dst_reg, src_reg_a);
           return;
         case NEGATE:
-          emit_alu_rrr(e, MACHINE_SUB, kScratchRegA, R0, kScratchRegA);
+          emit_alu_rrr(e, MACHINE_SUB, dst_reg, R0, src_reg_a);
           return;
         case UNARY_PLUS:
+          if (dst_reg != src_reg_a) {
+            emit_reg2(e, MACHINE_MOV, dst_reg, src_reg_a);
+          }
           return;
         default:
           codegen_errorf(e, "unsupported unary op %d; expected COMPLEMENT, NEGATE, or UNARY_PLUS",
@@ -837,25 +876,30 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
       }
       return;
     case ASM_BINARY:
-      emit_binary_reg_op(e, cur->instr.asm_binary.alu_op);
+      emit_binary_reg_op(e, cur->instr.asm_binary.alu_op, dst_reg, src_reg_a, src_reg_b);
       return;
     case ASM_PUSH:
-      emit_reg1(e, push_op(e, cur->instr.asm_push.src->asm_type), kScratchRegA);
+      emit_reg1(e, push_op(e, cur->instr.asm_push.src->asm_type), src_reg_a);
       return;
     case ASM_INDIRECT_CALL:
-      emit_reg2(e, MACHINE_BRA, RA, kScratchRegA);
+      emit_reg2(e, MACHINE_BRA, RA, src_reg_a);
       return;
     case ASM_TAIL_CALL_INDIRECT:
-      // The target was read into scratch A before the frame is torn down,
-      // because the source operand may be BP-relative.
+      // The target must sit in scratch A while the frame is torn down: a
+      // BP-relative source was already loaded there, and a target allocated
+      // to a callee-saved register would be overwritten when the epilogue
+      // restores the caller's value. The epilogue leaves scratch A alone.
+      if (src_reg_a != kScratchRegA) {
+        emit_reg2(e, MACHINE_MOV, kScratchRegA, src_reg_a);
+      }
       emit_function_epilogue(e);
       emit_reg2(e, MACHINE_BRA, R0, kScratchRegA);
       return;
     case ASM_TRUNC:
       if (cur->instr.asm_trunc.size == 1) {
-        emit_reg2(e, MACHINE_TNCB, kScratchRegA, kScratchRegA);
+        emit_reg2(e, MACHINE_TNCB, dst_reg, src_reg_a);
       } else if (cur->instr.asm_trunc.size == 2) {
-        emit_reg2(e, MACHINE_TNCD, kScratchRegA, kScratchRegA);
+        emit_reg2(e, MACHINE_TNCD, dst_reg, src_reg_a);
       } else {
         codegen_errorf(e, "unsupported truncation size %d; expected 1 or 2",
                        (int)cur->instr.asm_trunc.size);
@@ -863,9 +907,9 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
       return;
     case ASM_EXTEND:
       if (cur->instr.asm_extend.size == 1) {
-        emit_reg2(e, MACHINE_SXTB, kScratchRegA, kScratchRegA);
+        emit_reg2(e, MACHINE_SXTB, dst_reg, src_reg_a);
       } else if (cur->instr.asm_extend.size == 2) {
-        emit_reg2(e, MACHINE_SXTD, kScratchRegA, kScratchRegA);
+        emit_reg2(e, MACHINE_SXTD, dst_reg, src_reg_a);
       } else {
         codegen_errorf(e, "unsupported extend size %d; expected 1 or 2",
                        (int)cur->instr.asm_extend.size);
@@ -879,14 +923,16 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
       int offset = cur->type == ASM_VOLATILE_LOAD
           ? cur->instr.asm_volatile_load.offset
           : cur->instr.asm_load.offset;
-      // The pointer in scratch A is the base, so it is the value to keep.
-      emit_load_base(e, load_op(e, load_dst->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegA,
-                     offset, kScratchRegA);
+      // Load through the pointer in src_reg_a into dst_reg. The pointer must
+      // survive until the address is formed, so it is the register to keep
+      // (when it is an allocated register, keeping it is a no-op).
+      emit_load_base(e, load_op(e, load_dst->asm_type, MEM_BASE_OFFSET), dst_reg, src_reg_a,
+                     offset, src_reg_a);
       return;
     }
     case ASM_STORE:
     case ASM_VOLATILE_STORE: {
-      // The slot order puts the value first (scratch A) and the address second (scratch B).
+      // The slot order puts the value first (src_reg_a) and the pointer second (src_reg_b).
       const struct Operand* store_src = cur->type == ASM_VOLATILE_STORE
           ? cur->instr.asm_volatile_store.src
           : cur->instr.asm_store.src;
@@ -895,7 +941,7 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
           : cur->instr.asm_store.offset;
       // lower_store sends only offsets the immediate field holds here, so
       // the store never needs an address temporary.
-      emit_mem_base(e, store_op(e, store_src->asm_type, MEM_BASE_OFFSET), kScratchRegA, kScratchRegB, offset);
+      emit_mem_base(e, store_op(e, store_src->asm_type, MEM_BASE_OFFSET), src_reg_a, src_reg_b, offset);
       return;
     }
     default:
@@ -903,9 +949,10 @@ static void emit_scratch_op(struct Emitter* e, const struct AsmInstr* cur) {
   }
 }
 
-// Lower an instruction through the fixed scratch template: load the operands
-// it reads into scratch A (and B), emit the operation, then write scratch A to
-// the operand it writes.
+// Lower an instruction through the scratch template: put each operand it reads
+// in a register (a Reg operand is used where it is; others are loaded into
+// scratch A, then B), compute into the destination's register when it is one
+// (else scratch A), then write that register to the destination if needed.
 static void lower_via_scratch(struct Emitter* e, struct AsmInstr* cur) {
   struct OperandSlots slots = asm_operand_slots(cur);
   struct Operand* dst = NULL;
@@ -914,10 +961,17 @@ static void lower_via_scratch(struct Emitter* e, struct AsmInstr* cur) {
   bool use_imm = false;
   int imm = 0;
 
+  enum Reg dst_reg = kScratchRegA;
+  enum Reg src_reg_a = kScratchRegA;
+  enum Reg src_reg_b = kScratchRegB;
+
   for (size_t i = 0; i < slots.count; i++) {
     struct Operand* opr = *slots.slot[i].field;
     if (slots.slot[i].role == OPERAND_DEF) {
       dst = opr;
+      if (opr->type == OPERAND_REG) {
+        dst_reg = opr->op.reg.reg;
+      }
     } else if (
       i == 2 && 
       slots.slot[i].role == OPERAND_USE &&
@@ -928,22 +982,22 @@ static void lower_via_scratch(struct Emitter* e, struct AsmInstr* cur) {
       use_imm = true;
       imm = opr->op.lit.value;
     } else if (loaded == 0) {
-      load_operand(e, opr, kScratchRegA, R0);
+      src_reg_a = load_operand(e, opr, kScratchRegA, R0);
       loaded++;
     } else {
-      load_operand(e, opr, kScratchRegB, kScratchRegA);
+      src_reg_b = load_operand(e, opr, kScratchRegB, src_reg_a);
       loaded++;
     }
   }
 
   if (use_imm) {
-    emit_binary_imm_op(e, cur->instr.asm_binary.alu_op, imm);
+    emit_binary_imm_op(e, cur->instr.asm_binary.alu_op, dst_reg, src_reg_a, imm);
   } else {
-    emit_scratch_op(e, cur);
+    emit_scratch_op(e, cur, dst_reg, src_reg_a, src_reg_b);
   }
 
   if (dst != NULL) {
-    store_operand(e, dst, kScratchRegA);
+    store_operand(e, dst, dst_reg);
   }
 }
 
@@ -951,8 +1005,9 @@ static void lower_via_scratch(struct Emitter* e, struct AsmInstr* cur) {
 // hold uses the scratch template. A far offset would leave the value, the
 // pointer, and the materialized offset live at once, so this path instead
 // folds the offset into the pointer before the value is loaded:
-//   A = ptr; B = offset; A = A + B; B = value; store B -> [A, 0]
-// which needs only the two scratch registers.
+//   A = ptr + offset (via B); B = value; store B -> [A, 0]
+// which needs only the two scratch registers. A pointer or value already in a
+// register is read where it is instead of being copied into A or B.
 static void lower_store(struct Emitter* e, struct AsmInstr* cur) {
   const struct AsmStore* store = cur->type == ASM_VOLATILE_STORE
       ? &cur->instr.asm_volatile_store
@@ -962,11 +1017,13 @@ static void lower_store(struct Emitter* e, struct AsmInstr* cur) {
     lower_via_scratch(e, cur);
     return;
   }
-  load_operand(e, store->dst, kScratchRegA, R0);
+  // The address is formed in scratch A rather than in the pointer's own
+  // register, which may be an allocated register that stays live.
+  enum Reg ptr_reg = load_operand(e, store->dst, kScratchRegA, R0);
   emit_movi_imm(e, kScratchRegB, store->offset);
-  emit_alu_rrr(e, MACHINE_ADD, kScratchRegA, kScratchRegA, kScratchRegB);
-  load_operand(e, store->src, kScratchRegB, kScratchRegA);
-  emit_mem_base(e, type, kScratchRegB, kScratchRegA, 0);
+  emit_alu_rrr(e, MACHINE_ADD, kScratchRegA, ptr_reg, kScratchRegB);
+  enum Reg value_reg = load_operand(e, store->src, kScratchRegB, kScratchRegA);
+  emit_mem_base(e, type, value_reg, kScratchRegA, 0);
 }
 
 // Lower one ASM instruction to machine instructions.
