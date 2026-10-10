@@ -42,8 +42,7 @@ static const size_t kTacExecTestListGrowthFactor = 2; // Doubling keeps append a
 static const char kTacExecTestSuffix[] = ".c";
 static const size_t kTacExecTestSuffixLen = sizeof(kTacExecTestSuffix) - 1;
 // Fixtures in tests/exec containing this text are skipped here but still run by
-// the emulator suites, e.g. ones that pass structs by value, which the TAC
-// interpreter does not support.
+// the emulator suites. Use it for behavior the TAC interpreter cannot model.
 static const char kTacExecSkipMarker[] = "tac-exec: skip";
 static const int kTacExecChildPassExitCode = 0;
 static const int kTacExecChildFailExitCode = 1;
@@ -82,8 +81,6 @@ static bool tac_exec_parse_optimization_options(int argc,
       options->tail_call_opt = true;
     } else if (strcmp(arg, "-inline") == 0) {
       options->inline_opt = true;
-    } else if (strcmp(arg, "-peephole") == 0) {
-      options->peephole_opt = true;
     } else if (strcmp(arg, "-reg-alloc") == 0) {
       options->reg_alloc = true;
     } else if (strcmp(arg, "-opt") == 0) {
@@ -93,7 +90,6 @@ static bool tac_exec_parse_optimization_options(int argc,
       options->dead_store_elim = true;
       options->tail_call_opt = true;
       options->inline_opt = true;
-      options->peephole_opt = true;
       options->reg_alloc = true;
     } else {
       fprintf(stderr, "TAC exec tests: unsupported optimization flag '%s'\n", arg);

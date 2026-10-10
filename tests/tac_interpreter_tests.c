@@ -1,7 +1,7 @@
 #include "TAC.h"
 #include "arena.h"
 #include "call_graph.h"
-#include "cfg.h"
+#include "tac_cfg.h"
 #include "optimization.h"
 #include "slice.h"
 #include "constant_fold.h"

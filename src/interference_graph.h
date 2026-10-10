@@ -1,0 +1,105 @@
+#ifndef INTERFERENCE_GRAPH_H
+#define INTERFERENCE_GRAPH_H
+
+#include "asm_gen.h"
+#include "asm_cfg.h"
+#include "bitset.h"
+#include "slice_index.h"
+
+#include <stdbool.h>
+#include <stddef.h>
+
+// Types of interference nodes: physical register or pseudo-register.
+enum InterferenceNodeType {
+  INTERFERENCE_REG,
+  INTERFERENCE_PSEUDO
+};
+
+// Represents the identifier of an interference node, 
+// which can be either a physical register or a pseudo-register.
+union InterferenceNodeIdVariant {
+  enum Reg reg;
+  struct Slice* pseudo;
+};
+
+// Represents a node in the interference graph,
+// corresponding to a register or pseudo-register.
+struct InterferenceNode {
+  enum InterferenceNodeType node_type;
+  union InterferenceNodeIdVariant id;
+  // Row of InterferenceGraph.adjacency: bit j is set iff this node
+  // interferes with nodes[j]. Empty (words == NULL) until
+  // build_interference_graph allocates the matrix.
+  struct Bitset neighbors;
+  // Number of bits set in neighbors until coloring starts. color_graph then
+  // uses it as the degree in the graph that remains: pruning a node
+  // decrements its neighbors' counts and nothing restores them, so after
+  // color_graph it no longer matches neighbors.
+  unsigned num_neighbors;
+  // Pseudos: how many operand slots name the pseudo, i.e. the loads and
+  // stores spilling it would add. Registers are never spilled; theirs is 0.
+  int spill_cost;
+  int color;
+  bool pruned;
+};
+
+// Number of registers the allocator may assign: R1-R8 and R11-R27. R0 is
+// hardwired to zero, R9-R10 are codegen's scratch registers, R28 is reserved
+// as the future TLS base, and R29-R31 are RA, BP and SP (docs/abi.md).
+#define NUM_ALLOCATABLE_REGS 25
+
+// Represents the interference graph used for register allocation.
+//
+// Every node has a dense id: its index in nodes. Ids
+// 0..NUM_ALLOCATABLE_REGS-1 are the allocatable registers in register order;
+// pseudos follow in first-occurrence order, so pseudo k (its pseudo_ids id)
+// is node NUM_ALLOCATABLE_REGS + k. Edges are a num_nodes x num_nodes bit
+// matrix, one Bitset row per node.
+//
+// All storage is heap-backed; release it with destroy_interference_graph.
+// Pointers into nodes are invalidated while pseudos are being added (the
+// array grows) and stay valid once build_interference_graph returns.
+struct InterferenceGraph {
+  struct InterferenceNode* nodes;
+  size_t num_nodes;
+  size_t nodes_capacity;
+  // Register-allocatable pseudos. Pseudos that must stay in memory (see
+  // add_pseudos) are absent.
+  struct SliceIndex pseudo_ids;
+  uint64_t* adjacency; // num_nodes rows of neighbors.word_count words
+};
+
+// Build func's interference graph: a node per allocatable register and per
+// register-candidate pseudo, with an edge wherever two of them are live at
+// once (from a backward liveness analysis over func's ASM CFG, including the
+// registers calls, builtins, and returns implicitly read and clobber).
+struct InterferenceGraph* build_interference_graph(struct AsmFunc* func);
+
+// Release the graph's storage, including ig itself.
+void destroy_interference_graph(struct InterferenceGraph* ig);
+
+// Node for an allocatable register, or NULL for a register the allocator
+// never assigns.
+struct InterferenceNode* interference_graph_reg_node(struct InterferenceGraph* ig, enum Reg reg);
+
+// Node for the pseudo named name, or NULL if that pseudo is not a candidate
+// for a register (it stays in memory and gets a stack slot or data label).
+struct InterferenceNode* interference_graph_pseudo_node(struct InterferenceGraph* ig,
+                                                        const struct Slice* name);
+
+// Remove every edge of node a, leaving it isolated. The node keeps its id and
+// storage so that other nodes' ids stay valid.
+void interference_graph_remove_node(struct InterferenceGraph* ig, size_t a);
+                                                        
+// Record that nodes a and b interfere. Self-edges and repeated edges are
+// ignored; num_neighbors counts each distinct neighbor once.
+void interference_graph_add_edge(struct InterferenceGraph* ig, size_t a, size_t b);
+
+// Record that nodes a and b no longer interfere. Self-edges and absent edges are
+// ignored; num_neighbors counts each distinct neighbor once.
+void interference_graph_remove_edge(struct InterferenceGraph* ig, size_t a, size_t b);
+
+// Colors the interference graph, assigning registers to pseudos where possible.
+void color_graph(struct InterferenceGraph* ig);
+
+#endif // INTERFERENCE_GRAPH_H

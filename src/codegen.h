@@ -83,6 +83,7 @@ enum MachineInstrType {
   MACHINE_TNCD,
   MACHINE_SXTB,
   MACHINE_SXTD,
+  MACHINE_ADPC,
   MACHINE_SYS,
 
   // macros
@@ -151,7 +152,7 @@ struct MachineMem {
   int imm;
 };
 
-// Register/immediate or register/label move (movi, lui).
+// Register/immediate or register/label move (movi, lui, adpc).
 struct MachineMovi {
   enum Reg ra;
   struct Slice* label;
@@ -211,5 +212,8 @@ struct MachineInstr {
 // asm_symbol_table for static object layout. Exits with a diagnostic on
 // malformed input; never returns NULL.
 struct MachineProg* prog_to_machine(struct AsmProg* asm_prog);
+
+// Return true if the given register is callee-saved according to the calling convention.
+bool is_callee_saved(enum Reg reg);
 
 #endif // CODEGEN_H

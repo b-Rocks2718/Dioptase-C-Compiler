@@ -232,7 +232,7 @@ static void print_asm_alu_op(enum ALUOp op) {
 }
 
 // Print a single ASM instruction at a given indentation level.
-static void print_asm_instr(const struct AsmInstr* instr, unsigned tabs) {
+void print_asm_instr(const struct AsmInstr* instr, unsigned tabs) {
   if (instr == NULL) {
     return;
   }
@@ -441,6 +441,12 @@ static void print_asm_top_level(const struct AsmTopLevel* top, unsigned tabs) {
         printf("<null>");
       }
       printf(top->top.asm_func.global ? " global\n" : " local\n");
+
+      print_tabs(tabs + 1);
+      printf("Makes Calls: %s\n", top->top.asm_func.makes_calls ? "true" : "false");
+
+      print_tabs(tabs + 1);
+      printf("Frame Bytes: %zu\n", top->top.asm_func.frame_bytes);
 
       print_tabs(tabs + 1);
       printf("Body:\n");

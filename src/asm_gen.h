@@ -10,6 +10,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 extern struct AsmSymbolTable* asm_symbol_table;
 
@@ -80,8 +81,30 @@ struct AsmFunc {
   struct DebugLocal* locals;
   size_t num_locals;
   // Frame bytes below BP reserved before any pseudo gets a slot: 4 when the
-  // function returns through a caller buffer whose pointer is kept at BP-4.
+  // function returns through a caller buffer whose pointer is kept at BP-4,
+  // plus a 4-byte slot per callee-saved register register allocation uses.
   size_t reserved_stack_bytes;
+  // Total bytes below BP (stack slots plus reserved_stack_bytes). Set by
+  // assign_stack_slots; codegen allocates them in the prologue.
+  size_t frame_bytes;
+  bool makes_calls;
+  // Every Ret returns the value in R1..R(num_return_regs): 0 for void and
+  // memory-returned results, else 1 or 2 (docs/abi.md).
+  size_t num_return_regs;
+  // Callee-saved registers (r20-r27, docs/abi.md) that register allocation
+  // gave to pseudos, as a mask with bit r set for register r; Dioptase's 32
+  // registers fit one 32-bit mask. The prologue must save each one, and every
+  // epilogue (including a tail call's) restore it. Set by build_register_map.
+  uint32_t callee_saved_regs;
+  // The saved registers occupy 4-byte slots in ascending register order: the
+  // k-th one (k = 0, 1, ...) is saved at BP - (callee_save_base + 4 * (k + 1)).
+  // Set by register allocation, which reserves the slots in
+  // reserved_stack_bytes so no pseudo is placed over them.
+  size_t callee_save_base;
+  // True if any final operand is addressed relative to BP (stack slots,
+  // address-taken locals, incoming stack args, the return-buffer pointer).
+  // Set by assign_stack_slots once pseudos are replaced.
+  bool uses_bp;
 };
 
 // Store a file-scope static variable and its initializer.
@@ -188,26 +211,35 @@ struct AsmPush {
   struct Operand* src;
 };
 
+// Every call form records num_reg_args: the call reads R1..R(num_reg_args),
+// which hold its register arguments (and, first, a return-buffer pointer when
+// the callee returns in memory). Register allocation uses it to know which
+// argument registers are live at the call.
+
 // Direct tail call: tear down the current frame, then jump to label with the
 // caller's return address still in place. Arguments are already in R1..R8.
 struct AsmTailCall {
   struct Slice* label;
+  size_t num_reg_args;
 };
 
 // Indirect tail call through src. src may be a BP-relative operand, so it must
 // be read before the current frame is torn down.
 struct AsmTailCallIndirect {
   struct Operand* src;
+  size_t num_reg_args;
 };
 
 // Store a direct call target label.
 struct AsmCall {
   struct Slice* label;
+  size_t num_reg_args;
 };
 
 // Store an indirect call target operand.
 struct AsmIndirectCall {
   struct Operand* src;
+  size_t num_reg_args;
 };
 
 // Store an unconditional jump target label.
@@ -232,16 +264,19 @@ struct AsmGetAddress {
   struct Operand* src;
 };
 
-// Store destination value and source address for a load.
+// Load from src (a pointer) plus a constant byte offset into dst. Aggregate
+// copies through a pointer emit one Load per chunk with that chunk's offset.
 struct AsmLoad {
   struct Operand* dst;
   struct Operand* src;
+  int offset;
 };
 
-// Store destination address and source value for a store.
+// Store src to dst (a pointer) plus a constant byte offset, as for AsmLoad.
 struct AsmStore {
   struct Operand* dst;
   struct Operand* src;
+  int offset;
 };
 
 // Store the source location associated with a debug boundary.
@@ -344,6 +379,12 @@ enum Reg {
   R31
 };
 
+// Registers r0-r31 (docs/ISA.md); a uint32_t mask holds any set of them.
+#define NUM_REGS 32
+
+// A callee-saved register is saved in one full 32-bit word of the frame.
+#define CALLEE_SAVE_SLOT_BYTES 4
+
 static const enum Reg BP = R30; // base pointer register
 static const enum Reg SP = R31; // stack pointer register
 static const enum Reg RA = R29; // return address register
@@ -434,7 +475,6 @@ struct OperandList {
 // Use caller-saved registers that are not argument registers for codegen scratch work.
 extern const enum Reg kScratchRegA;
 extern const enum Reg kScratchRegB;
-extern const enum Reg kScratchRegC;
 
 // Lower TAC into ASM, optionally emitting section directives.
 // Returns the ASM program or exits on internal error.
@@ -518,6 +558,15 @@ void destroy_pseudo_map(struct PseudoMap* hmap);
 // Print a debugging representation of an ASM program.
 // prog is the ASM program to print (may be NULL).
 void print_asm_prog(const struct AsmProg* prog);
+
+// Return true if codegen lowers op to a call to a runtime builtin (smul, sdiv,
+// umod, ...) because Dioptase has no single instruction for it. Such a Binary
+// clobbers r1-r8, the helpers' narrower contract ("Arithmetic Helper
+// Routines", docs/abi.md).
+bool alu_op_needs_builtin_call(enum ALUOp op);
+
+// Print a single ASM instruction, indented by tabs levels.
+void print_asm_instr(const struct AsmInstr* instr, unsigned tabs);
 
 void print_asm_symbols(const struct AsmSymbolTable* sym_table);
 

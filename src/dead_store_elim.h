@@ -1,6 +1,6 @@
 #ifndef DEAD_STORE_ELIM_H
 #define DEAD_STORE_ELIM_H
-#include "cfg.h"
+#include "tac_cfg.h"
 #include "slice.h"
 
 // Perform dead-store elimination on cfg. Liveness uses pass-local indexed

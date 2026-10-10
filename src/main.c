@@ -17,7 +17,7 @@
 #include "label_resolution.h"
 #include "typechecking.h"
 #include "TAC.h"
-#include "cfg.h"
+#include "tac_cfg.h"
 #include "call_graph.h"
 #include "optimization.h"
 #include "asm_gen.h"
@@ -292,7 +292,6 @@ static const struct {
   {"-dead-store", offsetof(struct OptimizationOptions, dead_store_elim)},
   {"-tail-call", offsetof(struct OptimizationOptions, tail_call_opt)},
   {"-inline", offsetof(struct OptimizationOptions, inline_opt)},
-  {"-peephole", offsetof(struct OptimizationOptions, peephole_opt)},
   {"-reg-alloc", offsetof(struct OptimizationOptions, reg_alloc)},
 };
 
@@ -651,7 +650,9 @@ int main(int argc, const char *const *const argv) {
     }
     // Instruction selection leaves pseudos; the allocator assigns some to
     // registers and assign_stack_slots places the rest in the frame.
-    allocate_registers(asm_prog);
+    if (cl.optimization.reg_alloc) {
+      allocate_registers(asm_prog);
+    }
     assign_stack_slots(asm_prog);
     if (show[DIAG_ASM]) {
       print_asm_symbol_table(asm_symbol_table);

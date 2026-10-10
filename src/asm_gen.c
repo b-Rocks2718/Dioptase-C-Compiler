@@ -3,6 +3,7 @@
 #include "arena.h"
 #include "typechecking.h"
 #include "unique_name.h"
+#include "math.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,7 +24,6 @@ static struct Slice data_directive_slice = {"data", 4};
 // Use caller-saved registers that are not argument registers for scratch work.
 const enum Reg kScratchRegA = R9;
 const enum Reg kScratchRegB = R10;
-const enum Reg kScratchRegC = R11;
 
 static const size_t REG_ARG_LIMIT = 8;
 static const size_t kStackSlotBytes = 4;
@@ -308,6 +308,82 @@ static struct AsmInstr* asm_adjust_sp(enum ALUOp op, int bytes) {
                     lit_operand(bytes, &kWordType));
 }
 
+// Number of bits in a Dioptase register; shift amounts and sign-bit
+// extraction in the signed divide/modulo sequences are relative to it.
+#define REG_BITS 32
+
+// Lower `dst = src1 <op> src2` to shifts and masks when op is a multiply,
+// divide, or modulo and the (right) operand is a positive power-of-two
+// literal. Returns NULL if the pattern does not apply, in which case the
+// caller emits a plain ASM_BINARY (which codegen turns into a builtin call).
+// Doing this here, before liveness and register allocation, keeps these
+// operations from being treated as calls that clobber r1-r8 and make the
+// function non-leaf. See alu_op_needs_builtin_call.
+//
+// Signed divide and modulo must truncate toward zero like C, so a bare `asr`
+// or `and` (which round toward negative infinity) is wrong for negative
+// dividends. They add a bias of 2^k - 1 to negative dividends first:
+//   bias = (x >> 31 arithmetic) >>> (32 - k)   // 2^k - 1 if x < 0 else 0
+//   x / 2^k = (x + bias) >> k (arithmetic)
+//   x % 2^k = ((x + bias) & (2^k - 1)) - bias
+static struct AsmInstr* strength_reduce_binary(struct Slice* func_name, enum ALUOp op,
+                                               struct Operand* dst, struct Operand* src1,
+                                               struct Operand* src2) {
+  bool commutes = op == ALU_SMUL || op == ALU_UMUL;
+  if (commutes && src1->type == OPERAND_LIT && src2->type != OPERAND_LIT) {
+    struct Operand* swap = src1;
+    src1 = src2;
+    src2 = swap;
+  }
+  if (src2->type != OPERAND_LIT || src1->type == OPERAND_LIT) {
+    return NULL;
+  }
+  int imm = src2->op.lit.value;
+  if (imm <= 0 || !is_power_of_two((size_t)imm)) {
+    return NULL;
+  }
+  int k = (int)log2_size((size_t)imm);
+  int mask = imm - 1;
+  struct AsmList out = { NULL, NULL };
+
+  switch (op) {
+    case ALU_SMUL:
+    case ALU_UMUL:
+      asm_emit(&out, asm_binary(ALU_LSL, dst, src1, lit_operand(k, &kWordType)));
+      return out.head;
+    case ALU_UDIV:
+      asm_emit(&out, asm_binary(ALU_LSR, dst, src1, lit_operand(k, &kWordType)));
+      return out.head;
+    case ALU_UMOD:
+      asm_emit(&out, asm_binary(ALU_AND, dst, src1, lit_operand(mask, &kWordType)));
+      return out.head;
+    case ALU_SDIV:
+    case ALU_SMOD: {
+      bool is_mod = op == ALU_SMOD;
+      if (k == 0) {
+        // x / 1 == x and x % 1 == 0.
+        asm_emit(&out, asm_mov(dst, is_mod ? lit_operand(0, &kWordType) : src1));
+        return out.head;
+      }
+      // dst may alias src1, so build the bias in a temp and only write dst last.
+      struct Operand* bias = make_asm_temp(func_name, &kWordType);
+      asm_emit(&out, asm_binary(ALU_ASR, bias, src1, lit_operand(REG_BITS - 1, &kWordType)));
+      asm_emit(&out, asm_binary(ALU_LSR, bias, bias, lit_operand(REG_BITS - k, &kWordType)));
+      struct Operand* sum = make_asm_temp(func_name, &kWordType);
+      asm_emit(&out, asm_binary(ALU_ADD, sum, src1, bias));
+      if (!is_mod) {
+        asm_emit(&out, asm_binary(ALU_ASR, dst, sum, lit_operand(k, &kWordType)));
+      } else {
+        asm_emit(&out, asm_binary(ALU_AND, sum, sum, lit_operand(mask, &kWordType)));
+        asm_emit(&out, asm_binary(ALU_SUB, dst, sum, bias));
+      }
+      return out.head;
+    }
+    default:
+      return NULL;
+  }
+}
+
 static struct AsmInstr* asm_get_address(struct Operand* dst, struct Operand* src) {
   struct AsmInstr* instr = new_asm_instr(ASM_GET_ADDRESS);
   instr->instr.asm_get_address.dst = dst;
@@ -317,27 +393,31 @@ static struct AsmInstr* asm_get_address(struct Operand* dst, struct Operand* src
 
 // Load through a pointer; is_volatile selects VolatileLoad so later passes
 // keep the access.
-static struct AsmInstr* asm_load(bool is_volatile, struct Operand* dst, struct Operand* ptr) {
+static struct AsmInstr* asm_load(bool is_volatile, struct Operand* dst, struct Operand* ptr, int offset) {
   struct AsmInstr* instr = new_asm_instr(is_volatile ? ASM_VOLATILE_LOAD : ASM_LOAD);
   if (is_volatile) {
     instr->instr.asm_volatile_load.dst = dst;
     instr->instr.asm_volatile_load.src = ptr;
+    instr->instr.asm_volatile_load.offset = offset;
   } else {
     instr->instr.asm_load.dst = dst;
     instr->instr.asm_load.src = ptr;
+    instr->instr.asm_load.offset = offset;
   }
   return instr;
 }
 
 // Store through a pointer; is_volatile selects VolatileStore.
-static struct AsmInstr* asm_store(bool is_volatile, struct Operand* ptr, struct Operand* src) {
+static struct AsmInstr* asm_store(bool is_volatile, struct Operand* ptr, struct Operand* src, int offset) {
   struct AsmInstr* instr = new_asm_instr(is_volatile ? ASM_VOLATILE_STORE : ASM_STORE);
   if (is_volatile) {
     instr->instr.asm_volatile_store.dst = ptr;
     instr->instr.asm_volatile_store.src = src;
+    instr->instr.asm_volatile_store.offset = offset;
   } else {
     instr->instr.asm_store.dst = ptr;
     instr->instr.asm_store.src = src;
+    instr->instr.asm_store.offset = offset;
   }
   return instr;
 }
@@ -362,22 +442,28 @@ static struct AsmInstr* asm_label_instr(struct Slice* label) {
   return instr;
 }
 
-// Direct (label) or indirect (operand) call, optionally as a tail call.
-static struct AsmInstr* asm_call(struct Slice* label, struct Operand* target, bool is_tail) {
+// Direct (label) or indirect (operand) call, optionally as a tail call, that
+// reads its arguments from R1..R(num_reg_args).
+static struct AsmInstr* asm_call(struct Slice* label, struct Operand* target, bool is_tail,
+                                 size_t num_reg_args) {
   struct AsmInstr* instr;
   if (label != NULL) {
     instr = new_asm_instr(is_tail ? ASM_TAIL_CALL : ASM_CALL);
     if (is_tail) {
       instr->instr.asm_tail_call.label = label;
+      instr->instr.asm_tail_call.num_reg_args = num_reg_args;
     } else {
       instr->instr.asm_call.label = label;
+      instr->instr.asm_call.num_reg_args = num_reg_args;
     }
   } else {
     instr = new_asm_instr(is_tail ? ASM_TAIL_CALL_INDIRECT : ASM_INDIRECT_CALL);
     if (is_tail) {
       instr->instr.asm_tail_call_indirect.src = target;
+      instr->instr.asm_tail_call_indirect.num_reg_args = num_reg_args;
     } else {
       instr->instr.asm_indirect_call.src = target;
+      instr->instr.asm_indirect_call.num_reg_args = num_reg_args;
     }
   }
   return instr;
@@ -397,32 +483,31 @@ static void operand_list_append(struct OperandList** head, struct OperandList** 
   *tail = entry;
 }
 
-// Check whether a symbol name refers to a static or constant storage symbol.
-// Returns true if the symbol is static/const or a function.
-static bool is_static_symbol_name(struct Slice* name) {
-  if (name == NULL || global_symbol_table == NULL) {
-    return false;
-  }
-  struct SymbolEntry* entry = symbol_table_get(global_symbol_table, name);
-  if (entry == NULL || entry->attrs == NULL) {
-    return false;
-  }
-  if (entry->type != NULL && entry->type->type == FUN_TYPE) {
-    return true;
-  }
-  return entry->attrs->attr_type == STATIC_ATTR ||
-         entry->attrs->attr_type == CONST_ATTR;
-}
-
 // Forward declaration for aggregate classification helpers.
 static struct VarClassList* classify_struct(struct StructEntry* struct_entry);
 static struct AsmType* get_fourbyte_type(size_t offset, size_t struct_size);
 
+// Type of the widest move (word, then double, then byte) that fits in the
+// `remaining` bytes starting `offset` bytes into a copy, given both sides'
+// base alignments.
+static struct AsmType* copy_chunk_type(size_t offset, size_t remaining,
+                                       size_t src_alignment, size_t dst_alignment) {
+  const size_t kWordBytes = 4;
+  const size_t kDoubleBytes = 2;
+  if (remaining >= kWordBytes && offset % kWordBytes == 0 &&
+      src_alignment >= kWordBytes && dst_alignment >= kWordBytes) {
+    return &kWordType;
+  }
+  if (remaining >= kDoubleBytes && offset % kDoubleBytes == 0 &&
+      src_alignment >= kDoubleBytes && dst_alignment >= kDoubleBytes) {
+    return &kDoubleType;
+  }
+  return &kByteType;
+}
+
 // Copy `size` bytes from src to dst with the widest moves both sides' alignment
 // allows (word, then double, then byte).
 struct AsmInstr* copy_bytes(struct Slice* func_name, struct Operand* src, struct Operand* dst, size_t size){
-  const size_t kWordBytes = 4;
-  const size_t kDoubleBytes = 2;
   if (src == NULL || dst == NULL) {
     asm_gen_error("copy-bytes", func_name, "NULL operand for byte copy");
   }
@@ -431,21 +516,10 @@ struct AsmInstr* copy_bytes(struct Slice* func_name, struct Operand* src, struct
 
   struct AsmList out = { NULL, NULL };
   for (size_t offset = 0; offset < size; ){
-    size_t remaining = size - offset;
-    struct AsmType* chunk_type = &kByteType;
-    size_t chunk = 1;
-    if (remaining >= kWordBytes && offset % kWordBytes == 0 &&
-        src_alignment >= kWordBytes && dst_alignment >= kWordBytes) {
-      chunk_type = &kWordType;
-      chunk = kWordBytes;
-    } else if (remaining >= kDoubleBytes && offset % kDoubleBytes == 0 &&
-               src_alignment >= kDoubleBytes && dst_alignment >= kDoubleBytes) {
-      chunk_type = &kDoubleType;
-      chunk = kDoubleBytes;
-    }
+    struct AsmType* chunk_type = copy_chunk_type(offset, size - offset, src_alignment, dst_alignment);
     asm_emit(&out, asm_mov(add_offset_typed(dst, (int)offset, chunk_type),
                            add_offset_typed(src, (int)offset, chunk_type)));
-    offset += chunk;
+    offset += asm_type_size(chunk_type);
   }
   return out.head;
 }
@@ -824,24 +898,90 @@ struct AsmProg* prog_to_asm(struct TACProg* tac_prog, bool emit_sections) {
 
 // Report whether func_name returns its value through a caller-provided buffer
 // whose address arrives in R1 and is spilled to BP-4 by the prologue.
-static bool func_returns_in_memory(struct Slice* func_name) {
+// Classify func_name's return convention: whether the result goes through a
+// caller buffer, and otherwise how many registers (R1, R2) carry it. A void
+// function returns in zero registers.
+static void classify_func_return(struct Slice* func_name, bool* return_in_memory,
+                                 size_t* num_return_regs) {
   struct SymbolEntry* sym_entry = symbol_table_get(global_symbol_table, func_name);
   if (sym_entry == NULL || sym_entry->type == NULL || sym_entry->type->type != FUN_TYPE) {
     asm_gen_error("top-level", func_name,
                   "missing function type information for %.*s",
                   (int)func_name->len, func_name->start);
   }
-  bool return_in_memory = false;
+  *return_in_memory = false;
+  *num_return_regs = 0;
   struct Type* ret_type = sym_entry->type->type_data.fun_type.return_type;
   if (ret_type != NULL && ret_type->type != VOID_TYPE) {
     struct Val ret_val;
     ret_val.val_type = VARIABLE;
     ret_val.val.var_name = func_name;
     ret_val.type = ret_type;
-    struct OperandList* ignored = NULL;
-    classify_return_val(&ret_val, &ignored, &return_in_memory);
+    struct OperandList* ret_regs = NULL;
+    classify_return_val(&ret_val, &ret_regs, return_in_memory);
+    if (!*return_in_memory) {
+      *num_return_regs = operand_list_length(ret_regs);
+    }
   }
+}
+
+// Return true if func_name returns its result through a caller buffer.
+static bool func_returns_in_memory(struct Slice* func_name) {
+  bool return_in_memory = false;
+  size_t num_return_regs = 0;
+  classify_func_return(func_name, &return_in_memory, &num_return_regs);
   return return_in_memory;
+}
+
+// Return true if codegen lowers op to a call to a runtime builtin (smul, sdiv,
+// umod, ...) because Dioptase has no single instruction for it. Must
+// agree with emit_binary_op in codegen.c.
+bool alu_op_needs_builtin_call(enum ALUOp op) {
+  switch (op) {
+    case ALU_SMUL:
+    case ALU_SDIV:
+    case ALU_SMOD:
+    case ALU_UMUL:
+    case ALU_UDIV:
+    case ALU_UMOD:
+      return true;
+    case ALU_ADD:
+    case ALU_SUB:
+    case ALU_AND:
+    case ALU_OR:
+    case ALU_XOR:
+    case ALU_MOV:
+    case ALU_LSL:
+    case ALU_LSR:
+    case ALU_ASL:
+    case ALU_ASR:
+      return false;
+  }
+  // Unknown ops are reported by codegen; assume a call so callers stay conservative.
+  return true;
+}
+
+// Return true if the asm body contains any instruction that codegen lowers to a
+// `call`: explicit calls, tail calls (which may be demoted to calls), and ALU
+// ops implemented by builtins (multiply, divide, modulo).
+static bool asm_body_makes_calls(const struct AsmInstr* body) {
+  for (const struct AsmInstr* instr = body; instr != NULL; instr = instr->next) {
+    switch (instr->type) {
+      case ASM_CALL:
+      case ASM_INDIRECT_CALL:
+      case ASM_TAIL_CALL:
+      case ASM_TAIL_CALL_INDIRECT:
+        return true;
+      case ASM_BINARY:
+        if (alu_op_needs_builtin_call(instr->instr.asm_binary.alu_op)) {
+          return true;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return false;
 }
 
 // Return true if body takes the address of any frame-allocated variable
@@ -974,11 +1114,11 @@ static struct AsmInstr* call_to_asm(struct Slice* func_name,
   struct Operand* target = callee_ptr != NULL ? tac_val_to_asm(callee_ptr) : NULL;
   if (emit_tail_call) {
     // Codegen tears down this frame and jumps; nothing follows in this function.
-    asm_emit(&out, asm_call(callee_label, target, true));
+    asm_emit(&out, asm_call(callee_label, target, true, reg_index));
     return out.head;
   }
 
-  asm_emit(&out, asm_call(callee_label, target, false));
+  asm_emit(&out, asm_call(callee_label, target, false, reg_index));
   if (stack_bytes > 0) {
     asm_emit(&out, asm_adjust_sp(ALU_ADD, (int)stack_bytes));
   }
@@ -1025,13 +1165,20 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
     asm_top->top.asm_func.locals = NULL;
     asm_top->top.asm_func.num_locals = 0;
     asm_top->top.asm_func.reserved_stack_bytes = 0;
+    asm_top->top.asm_func.frame_bytes = 0;
+    asm_top->top.asm_func.uses_bp = false;
+    asm_top->top.asm_func.callee_saved_regs = 0;
+    asm_top->top.asm_func.callee_save_base = 0;
 
     struct AsmSymbolEntry* func_entry = asm_symbol_table_get(asm_symbol_table, func->name);
     if (func_entry == NULL) {
       asm_gen_error("top-level", func->name,
                     "function symbol not found in ASM symbol table");
     }
-    bool return_in_memory = func_returns_in_memory(func->name);
+    bool return_in_memory = false;
+    size_t num_return_regs = 0;
+    classify_func_return(func->name, &return_in_memory, &num_return_regs);
+    asm_top->top.asm_func.num_return_regs = num_return_regs;
 
     struct AsmList body = { NULL, NULL };
     // Empty when there are no params and no return buffer to spill.
@@ -1045,6 +1192,7 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
     // Pseudos stay in the body; assign_stack_slots places them after
     // register allocation. The return-buffer pointer occupies BP-4.
     asm_top->top.asm_func.body = body.head;
+    asm_top->top.asm_func.makes_calls = asm_body_makes_calls(body.head);
     asm_top->top.asm_func.reserved_stack_bytes = return_in_memory ? kStackSlotBytes : 0;
     return asm_top;
   } else if (tac_top->type == STATIC_VAR) {
@@ -1074,41 +1222,47 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
   }
 }
 
-// Address of a member at a nonzero offset inside a static object, computed
-// into a fresh word temp as GetAddress base + offset. Used by CopyToOffset and
-// CopyFromOffset, which then access the member through a Store or Load.
-static struct Operand* emit_static_member_address(struct AsmList* out, struct Slice* func_name,
-                                                  struct Slice* base_name, int offset) {
-  struct AsmSymbolEntry* base_entry = asm_symbol_table_get(asm_symbol_table, base_name);
-  if (base_entry == NULL || base_entry->type == NULL) {
-    asm_gen_error("instruction", func_name, "missing asm type for static base %.*s",
-                  (int)base_name->len, base_name->start);
-  }
-  struct Operand* addr = make_asm_temp(func_name, &kWordType);
-  struct Operand* base = make_pseudo_mem(base_name, base_entry->type, 0);
-  asm_emit(out, asm_get_address(addr, base));
-  asm_emit(out, asm_binary(ALU_ADD, addr, addr, lit_operand(offset, &kWordType)));
-  return addr;
-}
-
 // Byte-wise copy of an aggregate between two operands of the given C type.
 static struct AsmInstr* copy_aggregate(struct Slice* func_name, struct Operand* src,
                                        struct Operand* dst, struct Type* type) {
   return copy_bytes(func_name, src, dst, asm_type_size(type_to_asm_type(type)));
 }
 
-// Lower a struct/union Load or Store through a pointer: the pointer goes into
-// kScratchRegA and the bytes are copied relative to it.
-static struct AsmInstr* aggregate_through_pointer(struct Slice* func_name, struct Val* ptr,
+// Copy an aggregate of `type` between `other` and the object at ptr + offset
+// (into other when is_load, out of it otherwise), one Load or Store per chunk.
+// The pointer stays an ordinary operand that each chunk re-reads, instead of
+// being pinned in a scratch register for the whole copy: with the pointer
+// pinned, a chunk whose other side sits at a far frame offset needs the
+// pointer, the value, and an address temporary live at once, more than
+// codegen's two scratch registers.
+static struct AsmInstr* copy_aggregate_through_pointer(struct Slice* func_name, struct Operand* ptr,
+                                                       int offset, struct Operand* other,
+                                                       struct Type* type, bool is_load) {
+  struct AsmType* asm_type = type_to_asm_type(type);
+  size_t size = asm_type_size(asm_type);
+  // The object at ptr + offset has this type, so it is aligned for it.
+  size_t ptr_alignment = asm_type_alignment(asm_type);
+  size_t other_alignment = operand_base_alignment(other);
+
+  struct AsmList out = { NULL, NULL };
+  for (size_t chunk_offset = 0; chunk_offset < size; ) {
+    struct AsmType* chunk_type =
+        copy_chunk_type(chunk_offset, size - chunk_offset, ptr_alignment, other_alignment);
+    struct Operand* other_chunk = add_offset_typed(other, (int)chunk_offset, chunk_type);
+    int ptr_offset = offset + (int)chunk_offset;
+    asm_emit(&out, is_load ? asm_load(false, other_chunk, ptr, ptr_offset)
+                           : asm_store(false, ptr, other_chunk, ptr_offset));
+    chunk_offset += asm_type_size(chunk_type);
+  }
+  return out.head;
+}
+
+// Lower a struct/union Load or Store through a pointer.
+static struct AsmInstr* aggregate_through_pointer(struct Slice* func_name, struct Val* ptr, int offset,
                                                   struct Val* value, struct Type* type,
                                                   bool is_load) {
-  struct AsmList out = { NULL, NULL };
-  asm_emit(&out, asm_mov(reg_operand(kScratchRegA, &kWordType), tac_val_to_asm(ptr)));
-  struct Operand* mem = make_asm_mem(kScratchRegA, 0, type_to_asm_type(type));
-  struct Operand* other = tac_val_to_asm(value);
-  asm_emit(&out, is_load ? copy_aggregate(func_name, mem, other, type)
-                         : copy_aggregate(func_name, other, mem, type));
-  return out.head;
+  return copy_aggregate_through_pointer(func_name, tac_val_to_asm(ptr), offset,
+                                        tac_val_to_asm(value), type, is_load);
 }
 
 // Lower one TAC instruction to an ASM instruction chain.
@@ -1129,12 +1283,9 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
 
         if (return_in_memory) {
           // The caller's buffer address was spilled to BP-4 by the prologue.
-          asm_emit(&out, asm_mov(reg_operand(kScratchRegA, &kWordType),
-                                 make_asm_mem(BP, -4, &kWordType)));
-          struct Operand* dst_mem =
-              make_asm_mem(kScratchRegA, 0, type_to_asm_type(ret_instr->src->type));
-          asm_emit(&out, copy_aggregate(func_name, tac_val_to_asm(ret_instr->src), dst_mem,
-                                        ret_instr->src->type));
+          asm_emit(&out, copy_aggregate_through_pointer(func_name, make_asm_mem(BP, -4, &kWordType), 0,
+                                                        tac_val_to_asm(ret_instr->src),
+                                                        ret_instr->src->type, false));
         } else {
           size_t reg_index = 0;
           for (struct OperandList* ret_iter = ret_vars; ret_iter != NULL; ret_iter = ret_iter->next) {
@@ -1184,6 +1335,12 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
     }
     case TACBINARY: {
       struct TACBinary* binary_instr = &tac_instr->instr.tac_binary;
+      struct AsmInstr* reduced = strength_reduce_binary(
+          func_name, binary_instr->alu_op, tac_val_to_asm(binary_instr->dst),
+          tac_val_to_asm(binary_instr->src1), tac_val_to_asm(binary_instr->src2));
+      if (reduced != NULL) {
+        return reduced;
+      }
       return asm_binary(binary_instr->alu_op, tac_val_to_asm(binary_instr->dst),
                         tac_val_to_asm(binary_instr->src1), tac_val_to_asm(binary_instr->src2));
     }
@@ -1233,22 +1390,22 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
       struct TACLoad* load_instr = &tac_instr->instr.tac_load;
       struct Type* type = load_instr->dst->type;
       if (type->type == STRUCT_TYPE || type->type == UNION_TYPE) {
-        return aggregate_through_pointer(func_name, load_instr->src_ptr, load_instr->dst,
+        return aggregate_through_pointer(func_name, load_instr->src_ptr, load_instr->offset, load_instr->dst,
                                          type, true);
       }
       return asm_load(tac_instr->type == TACVOLATILE_LOAD, tac_val_to_asm(load_instr->dst),
-                      tac_val_to_asm(load_instr->src_ptr));
+                      tac_val_to_asm(load_instr->src_ptr), load_instr->offset);
     }
     case TACVOLATILE_STORE:
     case TACSTORE: {
       struct TACStore* store_instr = &tac_instr->instr.tac_store;
       struct Type* type = store_instr->src->type;
       if (type->type == STRUCT_TYPE || type->type == UNION_TYPE) {
-        return aggregate_through_pointer(func_name, store_instr->dst_ptr, store_instr->src,
+        return aggregate_through_pointer(func_name, store_instr->dst_ptr, store_instr->offset, store_instr->src,
                                          type, false);
       }
       return asm_store(tac_instr->type == TACVOLATILE_STORE, tac_val_to_asm(store_instr->dst_ptr),
-                       tac_val_to_asm(store_instr->src));
+                       tac_val_to_asm(store_instr->src), store_instr->offset);
     }
     case TACVOLATILE_COPY_TO_OFFSET:
     case TACCOPY_TO_OFFSET: {
@@ -1263,12 +1420,6 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
       if (store_type->type == STRUCT_TYPE || store_type->type == UNION_TYPE) {
         return copy_aggregate(func_name, tac_val_to_asm(copy->src),
                               make_pseudo_mem(copy->dst, member_type, copy->offset), store_type);
-      }
-      if (copy->offset != 0 && is_static_symbol_name(copy->dst)) {
-        struct AsmList out = { NULL, NULL };
-        struct Operand* addr = emit_static_member_address(&out, func_name, copy->dst, copy->offset);
-        asm_emit(&out, asm_store(is_volatile, addr, tac_val_to_asm(copy->src)));
-        return out.head;
       }
       struct Operand* dst = make_pseudo_mem(copy->dst, member_type, copy->offset);
       struct Operand* src = tac_val_to_asm(copy->src);
@@ -1287,12 +1438,6 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
       if (load_type->type == STRUCT_TYPE || load_type->type == UNION_TYPE) {
         return copy_aggregate(func_name, make_pseudo_mem(copy->src, member_type, copy->offset),
                               tac_val_to_asm(copy->dst), load_type);
-      }
-      if (copy->offset != 0 && is_static_symbol_name(copy->src)) {
-        struct AsmList out = { NULL, NULL };
-        struct Operand* addr = emit_static_member_address(&out, func_name, copy->src, copy->offset);
-        asm_emit(&out, asm_load(is_volatile, tac_val_to_asm(copy->dst), addr));
-        return out.head;
       }
       struct Operand* dst = tac_val_to_asm(copy->dst);
       dst->asm_type = member_type;
@@ -1325,10 +1470,25 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
   }
 }
 
+// Return true if any operand in body is a BP-relative memory operand. Must run
+// after replace_pseudo so stack slots appear as Mem(BP, offset).
+static bool body_uses_bp(struct AsmInstr* body) {
+  for (struct AsmInstr* instr = body; instr != NULL; instr = instr->next) {
+    struct OperandSlots slots = asm_operand_slots(instr);
+    for (size_t i = 0; i < slots.count; i++) {
+      const struct Operand* opr = *slots.slot[i].field;
+      if (opr != NULL && opr->type == OPERAND_MEMORY && opr->op.memory.base == BP) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Give every pseudo left in each function a home, then finish the frame:
 // static symbols become Data operands and everything else gets a BP-relative
 // stack slot (create_maps), debug locals are recorded when the body has line
-// markers, `Sub SP, SP, <frame bytes>` is prepended, and pseudos are replaced
+// markers, the frame size is recorded for codegen's prologue, and pseudos are replaced
 // in place. Runs after register allocation, so only unallocated pseudos take
 // stack space.
 void assign_stack_slots(struct AsmProg* prog) {
@@ -1341,12 +1501,9 @@ void assign_stack_slots(struct AsmProg* prog) {
     if (asm_has_debug_markers(func->body)) {
       func->locals = collect_debug_locals(pseudo_map, &func->num_locals);
     }
-    if (stack_size > 0) {
-      struct AsmInstr* alloc_instr = asm_adjust_sp(ALU_SUB, (int)stack_size);
-      alloc_instr->next = func->body;
-      func->body = alloc_instr;
-    }
+    func->frame_bytes = stack_size;
     replace_pseudo(func->body);
+    func->uses_bp = stack_size > 0 || body_uses_bp(func->body);
 
     // Pseudo maps are per-function.
     destroy_pseudo_map(pseudo_map);

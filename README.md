@@ -57,17 +57,16 @@ Optimizations are disabled by default. The following passes are currently implem
 -copy-prop            copy propagation
 -dead-store           dead-store elimination
 -tail-call            tail-call optimization
+-inline               function inlining
 ```
 
-`-opt` enables every optimization switch. At present, its effective optimizations are the five passes above; it also enables the reserved switches below so that newly implemented passes will automatically become part of `-opt`.
-
-These optimization switches are accepted by the compiler, but their passes are not implemented yet and they currently have no effect:
+The following optimization flag is also accepted, but the optimization is not yet implemented:
 
 ```text
--inline               function inlining
--peephole             low-level peephole optimization
 -reg-alloc            register allocation
 ```
+
+`-opt` enables every optimization
 
 Optimization flags may be combined. For example, `bcc -constant-fold -dead-code input.c` runs both of those passes. The `make release` target only optimizes the `bcc` executable itself; it does not enable optimization of compiled C programs.
 
@@ -117,6 +116,42 @@ Limitations:
 - No variadic functions
 - No inline assembly
 
+### Address reach limits
+
+Generated code reaches globals, functions, and branch targets with
+PC-relative immediates, so each kind of reference works only when the final
+layout keeps its target close enough. Otherwise the assembler rejects the
+output with an out-of-range immediate error. The compiler cannot check this,
+because it does not know where the assembler will place each label. Distances
+are measured from the referencing instruction. Offsets into a global are
+written as `label + imm` or `label - imm`, and the assembler resolves them.
+
+- **Reading or writing a global: within ±1 MiB.** Every access to a global
+  scalar, or to a member or constant-index element of a global aggregate, is
+  one PC-relative `lw`/`sw`/`ld`/`sd`/`lb`/`sb rA, [label + imm]`. The
+  21-bit signed byte offset covers the member offset too (docs/ISA.md,
+  "PC-Relative Addressing (immediate)"). So the bound applies to the accessed
+  byte, not just the start of the variable. Large `.bss` arrays placed
+  between the code and a variable are the usual way to exceed it.
+- **Taking a global's address: within ±2 MiB.** `&global`, `&global.member`,
+  array decay of a global array, and any access that goes through a computed
+  pointer start from `adpc rA, label + imm`, whose 22-bit signed byte offset
+  gives the larger reach (docs/ISA.md, "adpc").
+- **Kernel margin:** `.text` starts at `TEXT_LOAD_ADDR` (0x10000), `.data` at
+  `DATA_LOAD_ADDR` (0xB0000), `.rodata` at `RODATA_LOAD_ADDR` (0xE0000), and
+  `.bss` at `BSS_LOAD_ADDR` (0xE8000). Code near the start of `.text` can
+  therefore access only about the first 160 KiB of `.bss` (up to 0x110000),
+  though it can take addresses up to about 0x210000.
+- **Branches and direct tail calls: within ±8 MiB.** Control flow inside a
+  function (`if`, loops, `switch`, `goto`, `&&`/`||`) uses a single
+  `b<cond> label` or `jmp label`. A tail call to a named function is also
+  emitted as `jmp label`. These are immediate branches with a 22-bit
+  instruction-count offset (docs/ISA.md, "Immediate Branches"). A single
+  function larger than about 8 MiB of code therefore fails to assemble, as
+  does a tail call whose target is that far away. Ordinary calls (`call`,
+  which expands to `movu`/`movl`/`br`) use full 32-bit offsets and have no
+  limit.
+
 ## Tests
 
 Stage-specific tests live in these folders:
@@ -142,26 +177,8 @@ make test-release
 
 `make test` and `make test-release` also build and run the TAC interpreter, TAC execution, emulator execution, and full emulator execution tests from `tests/tac_interpreter_tests.c`, `tests/tac_exec_tests.c`, `tests/emu_exec_tests.c`, and `tests/emu_exec_full_tests.c` All three execution suites run every `.c` file in `tests/exec/`, compile it with the host C compiler as ground truth, and compare `main`'s return value. Each execution suite runs once without optimizations and once with `OPT_TEST_FLAGS`, which defaults to `-opt` near the top of the Makefile. A fixture containing the text `tac-exec: skip` (conventionally in its header comment, with the reason) is skipped by the TAC execution suite but still runs in both emulator suites; use this for programs the TAC interpreter cannot run, such as ones that pass structs by value.
 
-I also use [test cases from Writing a C Compiler](https://github.com/nlsandler/writing-a-c-compiler-tests#) via the wrapper in `tests/wacc_tac_compiler.py`. Run them with:
-
-```sh
-make test-wacc
-make test-wacc-opt
-make test-wacc-ch19-opt
-make test-wacc-release
-make test-wacc-release-opt
-make test-wacc-ch19-release-opt
-make test-wacc-kernel
-make test-wacc-kernel-opt
-make test-wacc-kernel-release
-make test-wacc-kernel-release-opt
-make test-tac-wacc
-make test-tac-wacc-opt
-make test-tac-wacc-release
-make test-tac-wacc-release-opt
-```
-
-`test-wacc*` runs the WACC tests via the emulator + assembler pipeline (simple emulator), `test-wacc-kernel*` runs them via the full emulator using kernel-mode assembly plus `tests/kernel/init.s` and `tests/kernel/arithmetic.s`, and `test-tac-wacc*` uses the TAC interpreter wrapper. Targets ending in `-opt` are separate slower runs that also pass `OPT_TEST_FLAGS` to the compiler. For example, `make test-wacc-opt OPT_TEST_FLAGS=-constant-fold` isolates constant folding in WACC tests, while `make test OPT_TEST_FLAGS=-constant-fold` does the same for the normal execution suites. The existing WACC targets continue to test without compiler optimizations. `test-wacc-opt` and `test-wacc-release-opt` also run chapter 19 programs through the emulator with `OPT_TEST_FLAGS`; the chapter 19 runs are available alone as `test-wacc-ch19-opt` and `test-wacc-ch19-release-opt`. Chapter 19 uses a runtime adapter because the upstream optimization checks inspect x86 assembly. It checks expected return values for supported cases. The emulator harness cannot capture program stdout, so upstream cases with expected stdout are skipped by that runner; fork variants in `tests/writing-a-c-compiler-tests/tests/chapter_18/valid/dioptase/` and `chapter_19/dioptase/` capture and check their exact output in memory. The NaN case that uses an unsupported floating-point literal is listed and skipped explicitly by the chapter 19 adapter. See `docs/wacc-exclusions.md` for the exclusion audit and adapted cases. The WACC runner defaults can be overridden with `WACC_CORE_CHAPTER`, `WACC_EXTRA_CHAPTERS`, `WACC_EXTRA_CREDIT`, `WACC_SKIP_TYPES`, and `WACC_ARGS`. Kernel runs can also override `DIOPTASE_EMULATOR_FULL`, `DIOPTASE_WACC_KERNEL_INIT`, and `DIOPTASE_WACC_KERNEL_ARITH`.
+I also use [test cases from Writing a C Compiler](https://github.com/nlsandler/writing-a-c-compiler-tests#) via the wrapper in `tests/wacc_tac_compiler.py`. They 
+can be run with the makefile targets mentioning `wacc`.
 
 ## Makefile Targets
 
@@ -174,6 +191,12 @@ Build and clean:
 - `make purge`
 
 Test suites:
+
+`release` => test the release build of the compiler instead of debug build  
+`wacc` => run more extensive tests from the WACC repo instead of the tests in this repo  
+`tac` => run tests by lowering to TAC and interpreting that, instead of lowering to machine code and running the emulator  
+`opt` => compile tests programs with optimizations  
+`ch19` => run tests from WACC ch19 (tests specifically to ensure optimizations do not break correctness)  
 
 - `make test`
 - `make test-release`
