@@ -31,7 +31,11 @@ struct InterferenceNode {
   // interferes with nodes[j]. Empty (words == NULL) until
   // build_interference_graph allocates the matrix.
   struct Bitset neighbors;
-  unsigned num_neighbors; // number of bits set in neighbors
+  // Number of bits set in neighbors until coloring starts. color_graph then
+  // uses it as the degree in the graph that remains: pruning a node
+  // decrements its neighbors' counts and nothing restores them, so after
+  // color_graph it no longer matches neighbors.
+  unsigned num_neighbors;
   // Pseudos: how many operand slots name the pseudo, i.e. the loads and
   // stores spilling it would add. Registers are never spilled; theirs is 0.
   int spill_cost;

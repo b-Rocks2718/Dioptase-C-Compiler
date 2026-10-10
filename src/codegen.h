@@ -213,4 +213,7 @@ struct MachineInstr {
 // malformed input; never returns NULL.
 struct MachineProg* prog_to_machine(struct AsmProg* asm_prog);
 
+// Return true if the given register is callee-saved according to the calling convention.
+bool is_callee_saved(enum Reg reg);
+
 #endif // CODEGEN_H

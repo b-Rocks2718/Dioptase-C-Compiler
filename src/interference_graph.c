@@ -4,12 +4,14 @@
 #include "checked_alloc.h"
 #include "exit_codes.h"
 #include "slice_index.h"
+#include "codegen.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 // Dioptase general-purpose registers are 32 bits wide (docs/ISA.md), so only
 // pseudos of at most this many bytes can live in one.
@@ -567,9 +569,125 @@ struct InterferenceGraph* build_interference_graph(struct AsmFunc* func) {
   return ig;
 }
 
+// Marks a node as pruned and updates the neighbor counts of its adjacent nodes.
+static void prune_node(struct InterferenceGraph* ig, size_t i) {
+  ig->nodes[i].pruned = true;
+
+  // decrement the neighbor count for all neighbors of this node
+  for (size_t j = 0; j < ig->num_nodes; j++) {
+    if (i == j) continue;
+    if (bitset_test(ig->nodes[i].neighbors, j)) {
+      ig->nodes[j].num_neighbors--;
+    }
+  }
+}
+
 // Colors the interference graph, assigning registers to pseudos where possible.
 void color_graph(struct InterferenceGraph* ig){
-  // TODO: implement graph coloring algorithm for register allocation
-  puts("todo: color graph\n");
-  exit(1);
+  // find the next node to prune
+
+  size_t chosen_node = -1;
+  size_t remaining_nodes = 0;
+
+  for (size_t i = 0; i < ig->num_nodes; i++) {
+    struct InterferenceNode node = ig->nodes[i];
+    if (node.pruned) continue; // skip already pruned nodes
+    remaining_nodes++;
+
+    // check if the node can be pruned based on its degree
+    if (node.num_neighbors < NUM_ALLOCATABLE_REGS) {
+      prune_node(ig, i);
+      chosen_node = i;
+      break;
+    }
+  }
+
+  if (remaining_nodes == 0) {
+    // all nodes have been pruned, nothing left to color
+    return;
+  }
+
+  if (chosen_node == -1) {
+    // No node could be pruned, pick a node with the lowest metric to spill
+    unsigned best_metric = UINT_MAX;
+
+    for (size_t i = 0; i < ig->num_nodes; i++) {
+      struct InterferenceNode node = ig->nodes[i];
+      if (node.pruned) continue;
+      if (node.node_type == INTERFERENCE_REG) continue; // skip hard registers
+      // avoid division by zero by adding 1 to the denominator
+      // avoid loss of precision by multiplying the numerator by 1000
+      unsigned metric = (1000 * node.spill_cost) / (1 + node.num_neighbors);
+      if (metric < best_metric) {
+        best_metric = metric;
+        chosen_node = i;
+      }
+    }
+    if (chosen_node != -1) {
+      prune_node(ig, chosen_node);
+    }
+  }
+
+  if (chosen_node == -1) {
+    // Unreachable while the graph is consistent: if every remaining node has
+    // degree >= NUM_ALLOCATABLE_REGS, at least one of them is a pseudo (the
+    // registers alone have degree NUM_ALLOCATABLE_REGS - 1), and pseudos are
+    // always spill candidates.
+    fprintf(stderr,
+            "Register allocation error: no node can be pruned or spilled while coloring an "
+            "interference graph of %zu nodes (%zu not yet pruned); every remaining node is a "
+            "register with degree >= %d\n",
+            ig->num_nodes, remaining_nodes, NUM_ALLOCATABLE_REGS);
+    exit(BCC_EXIT_INTERNAL);
+  }
+
+  // we now have definitely pruned a node
+  // recursively color the remaining graph
+  color_graph(ig);
+
+  // attempt to color the chosen node
+  
+  // start with all colors available
+  unsigned available_colors_bitmask = (1 << NUM_ALLOCATABLE_REGS) - 1;
+
+  for (size_t j = 0; j < ig->num_nodes; j++) {
+    if (bitset_test(ig->nodes[chosen_node].neighbors, j)) {
+      // if chosen node actually has this neighbor, check its color
+      struct InterferenceNode neighbor = ig->nodes[j];
+      if (neighbor.color != -1) {
+        // remove colors used by this node's neighbors
+        available_colors_bitmask &= ~(1 << neighbor.color);
+      }
+    }
+  }
+  if (available_colors_bitmask) {
+    // if the the chosen node is a callee saved hard register,
+    // assign it the maximum available color
+    // else assign chosen node the lowest available color
+
+    if (ig->nodes[chosen_node].node_type == INTERFERENCE_REG &&
+        is_callee_saved(ig->nodes[chosen_node].id.reg)) {
+      // assign the maximum available color
+      for (int c = NUM_ALLOCATABLE_REGS - 1; c >= 0; c--) {
+        if (available_colors_bitmask & (1 << c)) {
+          ig->nodes[chosen_node].color = c;
+          break;
+        }
+      }
+    } else {
+      // assign the lowest available color
+      for (size_t c = 0; c < NUM_ALLOCATABLE_REGS; c++) {
+        if (available_colors_bitmask & (1 << c)) {
+          ig->nodes[chosen_node].color = c;
+          break;
+        }
+      }
+    }
+
+    // mark the node as successfully colored
+    ig->nodes[chosen_node].pruned = false;
+  } else {
+    // no available color, mark for spilling
+    ig->nodes[chosen_node].color = -1;
+  }
 }
