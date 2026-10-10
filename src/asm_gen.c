@@ -1091,6 +1091,7 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
     asm_top->top.asm_func.frame_bytes = 0;
     asm_top->top.asm_func.uses_bp = false;
     asm_top->top.asm_func.callee_saved_regs = 0;
+    asm_top->top.asm_func.callee_save_base = 0;
 
     struct AsmSymbolEntry* func_entry = asm_symbol_table_get(asm_symbol_table, func->name);
     if (func_entry == NULL) {

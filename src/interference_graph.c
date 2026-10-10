@@ -248,8 +248,9 @@ void destroy_interference_graph(struct InterferenceGraph* ig) {
 // ABI_ARG_REGS argument registers.
 #define MAX_INSTR_USES (2 * ASM_MAX_OPERAND_SLOTS + ABI_ARG_REGS)
 
-// Bound on the nodes one instruction writes: a call or builtin clobbers every
-// caller-saved allocatable register, and also writes its own destination.
+// Bound on the nodes one instruction writes: a call clobbers every
+// caller-saved allocatable register (a builtin fewer), and an instruction
+// also writes its own destination.
 #define MAX_INSTR_DEFS (NUM_ALLOCATABLE_REGS + 1)
 
 // The interference nodes one instruction reads (uses) and writes (defs),
@@ -319,11 +320,18 @@ static void add_arg_reg_uses(struct InterferenceGraph* ig, struct InstrEffect* e
   }
 }
 
-// Write every caller-saved allocatable register (r1-r19, docs/abi.md): a callee
+// Last register an ordinary callee may overwrite: r1-r19 are caller-saved.
+static const enum Reg kLastCallerSavedReg = R19;
+
+// Last register an arithmetic helper (smul, sdiv, ...) may overwrite: the
+// helpers may modify only r1-r8 ("Arithmetic Helper Routines", docs/abi.md).
+static const enum Reg kLastHelperClobberedReg = R8;
+
+// Write every allocatable register from r1 through last_clobbered: the callee
 // may overwrite them, so nothing live across the call can occupy one.
-static void add_caller_saved_defs(struct InterferenceGraph* ig, struct InstrEffect* eff) {
+static void add_clobber_defs(struct InstrEffect* eff, enum Reg last_clobbered) {
   for (size_t i = 0; i < NUM_ALLOCATABLE_REGS; i++) {
-    if (kAllocatableRegs[i] <= R19) {
+    if (kAllocatableRegs[i] <= last_clobbered) {
       effect_add(eff->defs, &eff->num_defs, MAX_INSTR_DEFS, i);
     }
   }
@@ -335,9 +343,9 @@ static void add_caller_saved_defs(struct InterferenceGraph* ig, struct InstrEffe
 // - Call/IndirectCall: read the argument registers, clobber caller-saved ones.
 // - TailCall/TailCallIndirect: read the argument registers; nothing in this
 //   function runs afterwards, so their clobbers do not matter.
-// - Binary ops lowered to builtins (multiply, divide, modulo): clobber
-//   caller-saved registers like any call; codegen passes the operands in
-//   r1/r2 itself, after reading them.
+// - Binary ops lowered to builtins (multiply, divide, modulo): clobber only
+//   r1-r8, the helpers' narrower contract (docs/abi.md); codegen passes the
+//   operands in r1/r2 itself, after reading them.
 // - Ret: read the registers holding the function's return value.
 static void compute_instr_effect(struct InterferenceGraph* ig, const struct AsmFunc* func,
                                  struct AsmInstr* instr, struct InstrEffect* eff) {
@@ -375,11 +383,11 @@ static void compute_instr_effect(struct InterferenceGraph* ig, const struct AsmF
       break;
     case ASM_CALL:
       add_arg_reg_uses(ig, eff, instr->instr.asm_call.num_reg_args, "Call");
-      add_caller_saved_defs(ig, eff);
+      add_clobber_defs(eff, kLastCallerSavedReg);
       break;
     case ASM_INDIRECT_CALL:
       add_arg_reg_uses(ig, eff, instr->instr.asm_indirect_call.num_reg_args, "IndirectCall");
-      add_caller_saved_defs(ig, eff);
+      add_clobber_defs(eff, kLastCallerSavedReg);
       break;
     case ASM_TAIL_CALL:
       add_arg_reg_uses(ig, eff, instr->instr.asm_tail_call.num_reg_args, "TailCall");
@@ -391,7 +399,7 @@ static void compute_instr_effect(struct InterferenceGraph* ig, const struct AsmF
     case ASM_BINARY:
       if (alu_op_needs_builtin_call(instr->instr.asm_binary.alu_op)) {
         eff->builtin_dst = operand_node_id(ig, instr->instr.asm_binary.dst);
-        add_caller_saved_defs(ig, eff);
+        add_clobber_defs(eff, kLastHelperClobberedReg);
       }
       break;
     case ASM_RET:

@@ -81,7 +81,8 @@ struct AsmFunc {
   struct DebugLocal* locals;
   size_t num_locals;
   // Frame bytes below BP reserved before any pseudo gets a slot: 4 when the
-  // function returns through a caller buffer whose pointer is kept at BP-4.
+  // function returns through a caller buffer whose pointer is kept at BP-4,
+  // plus a 4-byte slot per callee-saved register register allocation uses.
   size_t reserved_stack_bytes;
   // Total bytes below BP (stack slots plus reserved_stack_bytes). Set by
   // assign_stack_slots; codegen allocates them in the prologue.
@@ -95,6 +96,11 @@ struct AsmFunc {
   // registers fit one 32-bit mask. The prologue must save each one, and every
   // epilogue (including a tail call's) restore it. Set by build_register_map.
   uint32_t callee_saved_regs;
+  // The saved registers occupy 4-byte slots in ascending register order: the
+  // k-th one (k = 0, 1, ...) is saved at BP - (callee_save_base + 4 * (k + 1)).
+  // Set by register allocation, which reserves the slots in
+  // reserved_stack_bytes so no pseudo is placed over them.
+  size_t callee_save_base;
   // True if any final operand is addressed relative to BP (stack slots,
   // address-taken locals, incoming stack args, the return-buffer pointer).
   // Set by assign_stack_slots once pseudos are replaced.
@@ -373,6 +379,12 @@ enum Reg {
   R31
 };
 
+// Registers r0-r31 (docs/ISA.md); a uint32_t mask holds any set of them.
+#define NUM_REGS 32
+
+// A callee-saved register is saved in one full 32-bit word of the frame.
+#define CALLEE_SAVE_SLOT_BYTES 4
+
 static const enum Reg BP = R30; // base pointer register
 static const enum Reg SP = R31; // stack pointer register
 static const enum Reg RA = R29; // return address register
@@ -549,7 +561,8 @@ void print_asm_prog(const struct AsmProg* prog);
 
 // Return true if codegen lowers op to a call to a runtime builtin (smul, sdiv,
 // umod, ...) because Dioptase has no single instruction for it. Such a Binary
-// clobbers caller-saved registers like any call.
+// clobbers r1-r8, the helpers' narrower contract ("Arithmetic Helper
+// Routines", docs/abi.md).
 bool alu_op_needs_builtin_call(enum ALUOp op);
 
 // Print a single ASM instruction, indented by tabs levels.

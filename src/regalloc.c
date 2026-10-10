@@ -144,11 +144,25 @@ void assign_registers(struct AsmFunc* func, struct RegisterMap* reg_map) {
   }
 }
 
+// Reserve a frame slot for each register in func->callee_saved_regs, just
+// below the bytes already reserved (the return-buffer pointer, if any). Must
+// run before assign_stack_slots, which places pseudos below
+// reserved_stack_bytes.
+static void reserve_callee_save_slots(struct AsmFunc* func) {
+  func->callee_save_base = func->reserved_stack_bytes;
+  for (unsigned r = 0; r < NUM_REGS; r++) {
+    if ((func->callee_saved_regs >> r) & 1u) {
+      func->reserved_stack_bytes += CALLEE_SAVE_SLOT_BYTES;
+    }
+  }
+}
+
 // Allocates registers for the body of a function based on the interference graph.
 void alloc_body_registers(struct AsmFunc* func) {
   struct InterferenceGraph* ig = build_interference_graph(func);
   color_graph(ig);
   struct RegisterMap* reg_map = build_register_map(ig, func);
+  reserve_callee_save_slots(func);
   assign_registers(func, reg_map);
   destroy_register_map(reg_map);
   destroy_interference_graph(ig);
