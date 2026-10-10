@@ -32,6 +32,8 @@ struct InterferenceNode {
   // build_interference_graph allocates the matrix.
   struct Bitset neighbors;
   unsigned num_neighbors; // number of bits set in neighbors
+  // Pseudos: how many operand slots name the pseudo, i.e. the loads and
+  // stores spilling it would add. Registers are never spilled; theirs is 0.
   int spill_cost;
   int color;
   bool pruned;
@@ -63,8 +65,11 @@ struct InterferenceGraph {
   uint64_t* adjacency; // num_nodes rows of neighbors.word_count words
 };
 
-// Builds the interference graph for the given assembly instructions.
-struct InterferenceGraph* build_interference_graph(struct AsmInstr* instrs);
+// Build func's interference graph: a node per allocatable register and per
+// register-candidate pseudo, with an edge wherever two of them are live at
+// once (from a backward liveness analysis over func's ASM CFG, including the
+// registers calls, builtins, and returns implicitly read and clobber).
+struct InterferenceGraph* build_interference_graph(struct AsmFunc* func);
 
 // Release the graph's storage, including ig itself.
 void destroy_interference_graph(struct InterferenceGraph* ig);
@@ -82,8 +87,6 @@ struct InterferenceNode* interference_graph_pseudo_node(struct InterferenceGraph
 // ignored; num_neighbors counts each distinct neighbor once.
 void interference_graph_add_edge(struct InterferenceGraph* ig, size_t a, size_t b);
 
-// Adds spill costs to the interference graph based on the given assembly instructions.
-void add_spill_costs(struct InterferenceGraph* ig, struct AsmInstr* instrs);
 
 // Colors the interference graph, assigning registers to pseudos where possible.
 void color_graph(struct InterferenceGraph* ig);

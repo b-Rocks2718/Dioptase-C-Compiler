@@ -86,6 +86,9 @@ struct AsmFunc {
   // assign_stack_slots; codegen allocates them in the prologue.
   size_t frame_bytes;
   bool makes_calls;
+  // Every Ret returns the value in R1..R(num_return_regs): 0 for void and
+  // memory-returned results, else 1 or 2 (docs/abi.md).
+  size_t num_return_regs;
   // True if any final operand is addressed relative to BP (stack slots,
   // address-taken locals, incoming stack args, the return-buffer pointer).
   // Set by assign_stack_slots once pseudos are replaced.
@@ -196,26 +199,35 @@ struct AsmPush {
   struct Operand* src;
 };
 
+// Every call form records num_reg_args: the call reads R1..R(num_reg_args),
+// which hold its register arguments (and, first, a return-buffer pointer when
+// the callee returns in memory). Register allocation uses it to know which
+// argument registers are live at the call.
+
 // Direct tail call: tear down the current frame, then jump to label with the
 // caller's return address still in place. Arguments are already in R1..R8.
 struct AsmTailCall {
   struct Slice* label;
+  size_t num_reg_args;
 };
 
 // Indirect tail call through src. src may be a BP-relative operand, so it must
 // be read before the current frame is torn down.
 struct AsmTailCallIndirect {
   struct Operand* src;
+  size_t num_reg_args;
 };
 
 // Store a direct call target label.
 struct AsmCall {
   struct Slice* label;
+  size_t num_reg_args;
 };
 
 // Store an indirect call target operand.
 struct AsmIndirectCall {
   struct Operand* src;
+  size_t num_reg_args;
 };
 
 // Store an unconditional jump target label.
@@ -528,6 +540,14 @@ void destroy_pseudo_map(struct PseudoMap* hmap);
 // Print a debugging representation of an ASM program.
 // prog is the ASM program to print (may be NULL).
 void print_asm_prog(const struct AsmProg* prog);
+
+// Return true if codegen lowers op to a call to a runtime builtin (smul, sdiv,
+// umod, ...) because Dioptase has no single instruction for it. Such a Binary
+// clobbers caller-saved registers like any call.
+bool alu_op_needs_builtin_call(enum ALUOp op);
+
+// Print a single ASM instruction, indented by tabs levels.
+void print_asm_instr(const struct AsmInstr* instr, unsigned tabs);
 
 void print_asm_symbols(const struct AsmSymbolTable* sym_table);
 

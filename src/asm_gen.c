@@ -365,22 +365,28 @@ static struct AsmInstr* asm_label_instr(struct Slice* label) {
   return instr;
 }
 
-// Direct (label) or indirect (operand) call, optionally as a tail call.
-static struct AsmInstr* asm_call(struct Slice* label, struct Operand* target, bool is_tail) {
+// Direct (label) or indirect (operand) call, optionally as a tail call, that
+// reads its arguments from R1..R(num_reg_args).
+static struct AsmInstr* asm_call(struct Slice* label, struct Operand* target, bool is_tail,
+                                 size_t num_reg_args) {
   struct AsmInstr* instr;
   if (label != NULL) {
     instr = new_asm_instr(is_tail ? ASM_TAIL_CALL : ASM_CALL);
     if (is_tail) {
       instr->instr.asm_tail_call.label = label;
+      instr->instr.asm_tail_call.num_reg_args = num_reg_args;
     } else {
       instr->instr.asm_call.label = label;
+      instr->instr.asm_call.num_reg_args = num_reg_args;
     }
   } else {
     instr = new_asm_instr(is_tail ? ASM_TAIL_CALL_INDIRECT : ASM_INDIRECT_CALL);
     if (is_tail) {
       instr->instr.asm_tail_call_indirect.src = target;
+      instr->instr.asm_tail_call_indirect.num_reg_args = num_reg_args;
     } else {
       instr->instr.asm_indirect_call.src = target;
+      instr->instr.asm_indirect_call.num_reg_args = num_reg_args;
     }
   }
   return instr;
@@ -815,30 +821,45 @@ struct AsmProg* prog_to_asm(struct TACProg* tac_prog, bool emit_sections) {
 
 // Report whether func_name returns its value through a caller-provided buffer
 // whose address arrives in R1 and is spilled to BP-4 by the prologue.
-static bool func_returns_in_memory(struct Slice* func_name) {
+// Classify func_name's return convention: whether the result goes through a
+// caller buffer, and otherwise how many registers (R1, R2) carry it. A void
+// function returns in zero registers.
+static void classify_func_return(struct Slice* func_name, bool* return_in_memory,
+                                 size_t* num_return_regs) {
   struct SymbolEntry* sym_entry = symbol_table_get(global_symbol_table, func_name);
   if (sym_entry == NULL || sym_entry->type == NULL || sym_entry->type->type != FUN_TYPE) {
     asm_gen_error("top-level", func_name,
                   "missing function type information for %.*s",
                   (int)func_name->len, func_name->start);
   }
-  bool return_in_memory = false;
+  *return_in_memory = false;
+  *num_return_regs = 0;
   struct Type* ret_type = sym_entry->type->type_data.fun_type.return_type;
   if (ret_type != NULL && ret_type->type != VOID_TYPE) {
     struct Val ret_val;
     ret_val.val_type = VARIABLE;
     ret_val.val.var_name = func_name;
     ret_val.type = ret_type;
-    struct OperandList* ignored = NULL;
-    classify_return_val(&ret_val, &ignored, &return_in_memory);
+    struct OperandList* ret_regs = NULL;
+    classify_return_val(&ret_val, &ret_regs, return_in_memory);
+    if (!*return_in_memory) {
+      *num_return_regs = operand_list_length(ret_regs);
+    }
   }
+}
+
+// Return true if func_name returns its result through a caller buffer.
+static bool func_returns_in_memory(struct Slice* func_name) {
+  bool return_in_memory = false;
+  size_t num_return_regs = 0;
+  classify_func_return(func_name, &return_in_memory, &num_return_regs);
   return return_in_memory;
 }
 
 // Return true if codegen lowers op to a call to a runtime builtin (smul, sdiv,
 // umod, ...) because Dioptase has no single instruction for it. Must
 // agree with emit_binary_op in codegen.c.
-static bool alu_op_needs_builtin_call(enum ALUOp op) {
+bool alu_op_needs_builtin_call(enum ALUOp op) {
   switch (op) {
     case ALU_SMUL:
     case ALU_SDIV:
@@ -1016,11 +1037,11 @@ static struct AsmInstr* call_to_asm(struct Slice* func_name,
   struct Operand* target = callee_ptr != NULL ? tac_val_to_asm(callee_ptr) : NULL;
   if (emit_tail_call) {
     // Codegen tears down this frame and jumps; nothing follows in this function.
-    asm_emit(&out, asm_call(callee_label, target, true));
+    asm_emit(&out, asm_call(callee_label, target, true, reg_index));
     return out.head;
   }
 
-  asm_emit(&out, asm_call(callee_label, target, false));
+  asm_emit(&out, asm_call(callee_label, target, false, reg_index));
   if (stack_bytes > 0) {
     asm_emit(&out, asm_adjust_sp(ALU_ADD, (int)stack_bytes));
   }
@@ -1075,7 +1096,10 @@ struct AsmTopLevel* top_level_to_asm(struct TopLevel* tac_top) {
       asm_gen_error("top-level", func->name,
                     "function symbol not found in ASM symbol table");
     }
-    bool return_in_memory = func_returns_in_memory(func->name);
+    bool return_in_memory = false;
+    size_t num_return_regs = 0;
+    classify_func_return(func->name, &return_in_memory, &num_return_regs);
+    asm_top->top.asm_func.num_return_regs = num_return_regs;
 
     struct AsmList body = { NULL, NULL };
     // Empty when there are no params and no return buffer to spill.

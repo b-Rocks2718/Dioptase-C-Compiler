@@ -232,7 +232,7 @@ static void print_asm_alu_op(enum ALUOp op) {
 }
 
 // Print a single ASM instruction at a given indentation level.
-static void print_asm_instr(const struct AsmInstr* instr, unsigned tabs) {
+void print_asm_instr(const struct AsmInstr* instr, unsigned tabs) {
   if (instr == NULL) {
     return;
   }

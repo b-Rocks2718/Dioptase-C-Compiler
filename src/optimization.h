@@ -3,7 +3,7 @@
 
 #include <stdbool.h>
 #include "TAC.h"
-#include "cfg.h"
+#include "tac_cfg.h"
 
 // Select compiler optimization passes. Body passes operate on one function's
 // TAC/CFG; the remaining fields reserve switches for later pipeline stages.

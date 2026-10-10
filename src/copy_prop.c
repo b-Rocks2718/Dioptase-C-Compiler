@@ -3,7 +3,7 @@
 #include "slice_index.h"
 #include "checked_alloc.h"
 #include "exit_codes.h"
-#include "cfg.h"
+#include "tac_cfg.h"
 #include "arena.h"
 #include "AST.h"
 

@@ -2,7 +2,7 @@
 #define DEAD_CODE_ELIM_H
 
 #include "TAC.h"
-#include "cfg.h"
+#include "tac_cfg.h"
 
 // Performs dead code elimination on the given control flow graph (CFG).
 struct CFG* dead_code_elim(struct CFG* cfg);
