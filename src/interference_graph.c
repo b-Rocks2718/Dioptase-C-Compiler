@@ -171,7 +171,8 @@ static bool pseudo_is_allocatable(const struct Operand* opr, const struct SliceI
 
 // Adds a node for every register-allocatable pseudo in instrs, in
 // first-occurrence order, and records each one in ig->pseudo_ids. Pseudos
-// left out keep their memory home.
+// left out keep their memory home. Each node's spill_cost is set to the
+// number of operand slots naming its pseudo.
 static void add_pseudos(struct InterferenceGraph* ig, struct AsmInstr* instrs) {
   slice_index_init(&ig->pseudo_ids, 128);
 
@@ -187,11 +188,12 @@ static void add_pseudos(struct InterferenceGraph* ig, struct AsmInstr* instrs) {
         continue;
       }
       bool added = false;
-      slice_index_add(&ig->pseudo_ids, opr->op.pseudo.name, &added);
+      uint32_t id = slice_index_add(&ig->pseudo_ids, opr->op.pseudo.name, &added);
       if (added) {
-        union InterferenceNodeIdVariant id = { .pseudo = opr->op.pseudo.name };
-        append_node(ig, INTERFERENCE_PSEUDO, id);
+        union InterferenceNodeIdVariant node_id = { .pseudo = opr->op.pseudo.name };
+        append_node(ig, INTERFERENCE_PSEUDO, node_id);
       }
+      ig->nodes[NUM_ALLOCATABLE_REGS + id].spill_cost++;
     }
   }
 
@@ -220,34 +222,349 @@ void destroy_interference_graph(struct InterferenceGraph* ig) {
   free(ig);
 }
 
-// Adds interference edges between nodes in the interference graph based on the control flow graph.
-void add_interferences(struct InterferenceGraph* ig, struct AsmCFG* cfg) {
-  // conservative analysis:
-  //    if two vars are ever live at the same time, 
-  //    they interfere with each other
-  // more sophisticated analysis could use live ranges instead
+// ---------------------------------------------------------------------------
+// Liveness
+//
+// Live sets are Bitsets over interference node ids, so only allocatable
+// registers and register-candidate pseudos are tracked; memory-resident
+// pseudos, scratch and fixed-role registers, and immediates never constrain
+// allocation. The analysis is the standard backward one:
+//   live_out(B) = union of live_in(S) over successors S
+//   live_in(B)  = uses(B) | (live_out(B) - defs(B)), applied per instruction
+// Blocks only link forward, so each block is walked backward through an array
+// of its instruction pointers.
+// ---------------------------------------------------------------------------
 
-  // TODO: implement this
-  puts("todo: add interferences\n");
-  exit(1);
+// No interference node: the operand or register is not a register candidate.
+#define NO_NODE SIZE_MAX
+
+// r1-r8 carry register arguments (docs/abi.md).
+#define ABI_ARG_REGS 8
+
+// Bound on the nodes one instruction reads: each operand slot can contribute
+// its own value and a memory base register, and a call reads up to
+// ABI_ARG_REGS argument registers.
+#define MAX_INSTR_USES (2 * ASM_MAX_OPERAND_SLOTS + ABI_ARG_REGS)
+
+// Bound on the nodes one instruction writes: a call or builtin clobbers every
+// caller-saved allocatable register, and also writes its own destination.
+#define MAX_INSTR_DEFS (NUM_ALLOCATABLE_REGS + 1)
+
+// The interference nodes one instruction reads (uses) and writes (defs),
+// including the ABI's implicit effects of calls and returns.
+struct InstrEffect {
+  size_t uses[MAX_INSTR_USES];
+  size_t num_uses;
+  size_t defs[MAX_INSTR_DEFS];
+  size_t num_defs;
+  // defs[0..num_explicit_defs) are the instruction's own written operand; the
+  // rest are registers a call or builtin clobbers.
+  size_t num_explicit_defs;
+  // For a builtin Binary, its destination node: codegen writes it after the
+  // builtin returns, so it never overlaps the clobbered registers. NO_NODE
+  // otherwise.
+  size_t builtin_dst;
+  // For a Mov, its source node: a register-to-register copy does not make its
+  // source and destination interfere, which lets them share a register.
+  // NO_NODE for every other instruction.
+  size_t move_src;
+};
+
+// Append node to an effect list unless it is NO_NODE.
+static void effect_add(size_t* list, size_t* count, size_t capacity, size_t node) {
+  if (node == NO_NODE) {
+    return;
+  }
+  if (*count == capacity) {
+    fprintf(stderr, "Register allocation error: instruction effect list overflow "
+            "(capacity %zu) while computing liveness\n", capacity);
+    exit(BCC_EXIT_INTERNAL);
+  }
+  list[(*count)++] = node;
 }
 
-// Builds the interference graph for the given assembly instructions.
-struct InterferenceGraph* build_interference_graph(struct AsmInstr* instrs){
+// Node id for an allocatable register, or NO_NODE.
+static size_t reg_node_id(struct InterferenceGraph* ig, enum Reg reg) {
+  struct InterferenceNode* node = interference_graph_reg_node(ig, reg);
+  return node == NULL ? NO_NODE : (size_t)(node - ig->nodes);
+}
+
+// Node id for the value an operand names: an allocatable register or a
+// register-candidate pseudo. NO_NODE for everything else.
+static size_t operand_node_id(struct InterferenceGraph* ig, const struct Operand* opr) {
+  switch (opr->type) {
+    case OPERAND_REG:
+      return reg_node_id(ig, opr->op.reg.reg);
+    case OPERAND_PSEUDO: {
+      struct InterferenceNode* node = interference_graph_pseudo_node(ig, opr->op.pseudo.name);
+      return node == NULL ? NO_NODE : (size_t)(node - ig->nodes);
+    }
+    default:
+      return NO_NODE;
+  }
+}
+
+// Read R1..R(count), checking count against the ABI's argument registers.
+static void add_arg_reg_uses(struct InterferenceGraph* ig, struct InstrEffect* eff, size_t count,
+                             const char* what) {
+  if (count > ABI_ARG_REGS) {
+    fprintf(stderr, "Register allocation error: %s reads %zu argument registers; "
+            "the ABI has only r1-r%d\n", what, count, ABI_ARG_REGS);
+    exit(BCC_EXIT_INTERNAL);
+  }
+  for (size_t i = 0; i < count; i++) {
+    effect_add(eff->uses, &eff->num_uses, MAX_INSTR_USES, reg_node_id(ig, (enum Reg)(R1 + i)));
+  }
+}
+
+// Write every caller-saved allocatable register (r1-r19, docs/abi.md): a callee
+// may overwrite them, so nothing live across the call can occupy one.
+static void add_caller_saved_defs(struct InterferenceGraph* ig, struct InstrEffect* eff) {
+  for (size_t i = 0; i < NUM_ALLOCATABLE_REGS; i++) {
+    if (kAllocatableRegs[i] <= R19) {
+      effect_add(eff->defs, &eff->num_defs, MAX_INSTR_DEFS, i);
+    }
+  }
+}
+
+// Compute the nodes instr reads and writes. Explicit operands come from
+// asm_operand_slots; a Memory operand's base register is read whatever the
+// slot's role. Implicit effects follow the ABI:
+// - Call/IndirectCall: read the argument registers, clobber caller-saved ones.
+// - TailCall/TailCallIndirect: read the argument registers; nothing in this
+//   function runs afterwards, so their clobbers do not matter.
+// - Binary ops lowered to builtins (multiply, divide, modulo): clobber
+//   caller-saved registers like any call; codegen passes the operands in
+//   r1/r2 itself, after reading them.
+// - Ret: read the registers holding the function's return value.
+static void compute_instr_effect(struct InterferenceGraph* ig, const struct AsmFunc* func,
+                                 struct AsmInstr* instr, struct InstrEffect* eff) {
+  eff->num_uses = 0;
+  eff->num_defs = 0;
+  eff->builtin_dst = NO_NODE;
+  eff->move_src = NO_NODE;
+
+  struct OperandSlots slots = asm_operand_slots(instr);
+  for (size_t i = 0; i < slots.count; i++) {
+    const struct Operand* opr = *slots.slot[i].field;
+    if (opr == NULL) {
+      continue;
+    }
+    if (opr->type == OPERAND_MEMORY) {
+      effect_add(eff->uses, &eff->num_uses, MAX_INSTR_USES, reg_node_id(ig, opr->op.memory.base));
+    }
+    switch (slots.slot[i].role) {
+      case OPERAND_DEF:
+        effect_add(eff->defs, &eff->num_defs, MAX_INSTR_DEFS, operand_node_id(ig, opr));
+        break;
+      case OPERAND_USE:
+        effect_add(eff->uses, &eff->num_uses, MAX_INSTR_USES, operand_node_id(ig, opr));
+        break;
+      case OPERAND_ADDRESS:
+        break; // only the address is formed; the value is not read
+    }
+  }
+
+  eff->num_explicit_defs = eff->num_defs;
+
+  switch (instr->type) {
+    case ASM_MOV:
+      eff->move_src = operand_node_id(ig, instr->instr.asm_mov.src);
+      break;
+    case ASM_CALL:
+      add_arg_reg_uses(ig, eff, instr->instr.asm_call.num_reg_args, "Call");
+      add_caller_saved_defs(ig, eff);
+      break;
+    case ASM_INDIRECT_CALL:
+      add_arg_reg_uses(ig, eff, instr->instr.asm_indirect_call.num_reg_args, "IndirectCall");
+      add_caller_saved_defs(ig, eff);
+      break;
+    case ASM_TAIL_CALL:
+      add_arg_reg_uses(ig, eff, instr->instr.asm_tail_call.num_reg_args, "TailCall");
+      break;
+    case ASM_TAIL_CALL_INDIRECT:
+      add_arg_reg_uses(ig, eff, instr->instr.asm_tail_call_indirect.num_reg_args,
+                       "TailCallIndirect");
+      break;
+    case ASM_BINARY:
+      if (alu_op_needs_builtin_call(instr->instr.asm_binary.alu_op)) {
+        eff->builtin_dst = operand_node_id(ig, instr->instr.asm_binary.dst);
+        add_caller_saved_defs(ig, eff);
+      }
+      break;
+    case ASM_RET:
+      add_arg_reg_uses(ig, eff, func->num_return_regs, "Ret");
+      break;
+    default:
+      break;
+  }
+}
+
+// Add an edge between node and every node set in live, except skip.
+static void interfere_with_live(struct InterferenceGraph* ig, size_t node, struct Bitset live,
+                                size_t skip) {
+  for (size_t w = 0; w < live.word_count; w++) {
+    uint64_t bits = live.words[w];
+    for (size_t bit = 0; bits != 0; bit++, bits >>= 1) {
+      size_t other = w * BITSET_WORD_BITS + bit;
+      if ((bits & 1) != 0 && other != skip) {
+        interference_graph_add_edge(ig, node, other);
+      }
+    }
+  }
+}
+
+// Step live backward over one instruction: on entry it holds what is live
+// after instr, on return what is live before it. With add_edges, first record
+// that each node instr writes interferes with everything live after it, except
+// a Mov's destination with its source and a builtin's clobbers with its result.
+static void step_backward(struct InterferenceGraph* ig, const struct AsmFunc* func,
+                          struct AsmInstr* instr, struct Bitset live, bool add_edges) {
+  struct InstrEffect eff;
+  compute_instr_effect(ig, func, instr, &eff);
+  if (add_edges) {
+    for (size_t i = 0; i < eff.num_defs; i++) {
+      size_t skip = i < eff.num_explicit_defs ? eff.move_src : eff.builtin_dst;
+      interfere_with_live(ig, eff.defs[i], live, skip);
+    }
+  }
+  for (size_t i = 0; i < eff.num_defs; i++) {
+    bitset_reset(live, eff.defs[i]);
+  }
+  for (size_t i = 0; i < eff.num_uses; i++) {
+    bitset_set(live, eff.uses[i]);
+  }
+}
+
+// Number of instructions in an ASM block.
+static size_t block_length(const struct CFGNode* node) {
+  size_t count = 0;
+  for (const struct AsmInstr* instr = node->asm_head; instr != NULL; instr = instr->next) {
+    count++;
+    if (instr == node->asm_last) {
+      break;
+    }
+  }
+  return count;
+}
+
+// Walk a block backward, from live = its live-out set to live = its live-in
+// set. buf must hold at least block_length(node) pointers.
+static void walk_block_backward(struct InterferenceGraph* ig, const struct AsmFunc* func,
+                                const struct CFGNode* node, struct AsmInstr** buf,
+                                struct Bitset live, bool add_edges) {
+  size_t count = 0;
+  for (struct AsmInstr* instr = node->asm_head; instr != NULL; instr = instr->next) {
+    buf[count++] = instr;
+    if (instr == node->asm_last) {
+      break;
+    }
+  }
+  while (count > 0) {
+    step_backward(ig, func, buf[--count], live, add_edges);
+  }
+}
+
+// Solved liveness: block i's live-in set is
+// bitset_view(live_in_words, word_count, i). EXIT's set stays empty; what a
+// Ret or tail call reads is modeled on the instruction itself.
+struct Liveness {
+  uint64_t* live_in_words;
+  size_t word_count;
+  struct AsmInstr** block_buf; // scratch for walk_block_backward, sized to the largest block
+};
+
+// Set live to node's live-out set: the union of its successors' live-in sets.
+static void block_live_out(const struct Liveness* lv, const struct CFGNode* node, struct Bitset live) {
+  bitset_clear(live);
+  for (const struct CFGNodeEntry* succ = node->successors.head; succ != NULL; succ = succ->next) {
+    bitset_union(live, bitset_view(lv->live_in_words, lv->word_count, succ->node->index));
+  }
+}
+
+// Solve liveness to a fixed point with a FIFO worklist, seeded with every
+// block in reverse layout order since information flows backward. Sets only
+// grow, so the solution is the same in any visit order.
+static struct Liveness analyze_liveness(struct InterferenceGraph* ig, const struct AsmFunc* func,
+                                        struct CFG* cfg) {
+  struct Liveness lv;
+  lv.word_count = bitset_word_count(ig->num_nodes);
+  unsigned n = cfg->num_nodes;
+  lv.live_in_words = checked_calloc((size_t)n * lv.word_count, sizeof(uint64_t),
+                                    "Register allocation", "allocating block live-in sets");
+  size_t max_block = 1;
+  for (unsigned i = 0; i < n; i++) {
+    size_t len = block_length(cfg->nodes[i]);
+    if (len > max_block) {
+      max_block = len;
+    }
+  }
+  lv.block_buf = checked_calloc(max_block, sizeof(*lv.block_buf), "Register allocation",
+                                "allocating the block instruction buffer");
+
+  unsigned* queue = checked_calloc(n, sizeof(*queue), "Register allocation", "allocating the liveness worklist");
+  bool* queued = checked_calloc(n, sizeof(*queued), "Register allocation", "allocating the liveness worklist");
+  size_t head = 0;
+  size_t count = 0;
+  for (unsigned i = n - 1; i-- > 1; ) { // basic blocks only, last to first
+    queue[(head + count++) % n] = i;
+    queued[i] = true;
+  }
+
+  struct Bitset live = bitset_alloc(lv.word_count, "Register allocation", "computing block liveness");
+  while (count != 0) {
+    unsigned b = queue[head];
+    head = (head + 1) % n;
+    count--;
+    queued[b] = false;
+
+    struct CFGNode* block = cfg->nodes[b];
+    block_live_out(&lv, block, live);
+    walk_block_backward(ig, func, block, lv.block_buf, live, false);
+
+    struct Bitset old_in = bitset_view(lv.live_in_words, lv.word_count, b);
+    if (bitset_equal(old_in, live)) {
+      continue;
+    }
+    bitset_copy(old_in, live);
+    for (struct CFGNodeEntry* pred = block->predecessors.head; pred != NULL; pred = pred->next) {
+      unsigned p = pred->node->index;
+      if (pred->node->type == CFG_BASIC_BLOCK && !queued[p]) {
+        queue[(head + count++) % n] = p;
+        queued[p] = true;
+      }
+    }
+  }
+
+  bitset_free(&live);
+  free(queue);
+  free(queued);
+  return lv;
+}
+
+// Add an edge wherever a written node meets a live one, walking every block
+// backward from its solved live-out set.
+static void add_interferences(struct InterferenceGraph* ig, const struct AsmFunc* func,
+                              struct CFG* cfg, const struct Liveness* lv) {
+  struct Bitset live = bitset_alloc(lv->word_count, "Register allocation", "adding interferences");
+  for (unsigned i = 1; i + 1 < cfg->num_nodes; i++) {
+    block_live_out(lv, cfg->nodes[i], live);
+    walk_block_backward(ig, func, cfg->nodes[i], lv->block_buf, live, true);
+  }
+  bitset_free(&live);
+}
+
+// Builds the interference graph for func's body.
+struct InterferenceGraph* build_interference_graph(struct AsmFunc* func) {
   struct InterferenceGraph* ig = build_base_graph();
-  add_pseudos(ig, instrs);
+  add_pseudos(ig, func->body);
   allocate_edges(ig);
-  struct AsmCFG* cfg = build_asm_cfg(instrs);
-  analyze_liveness(cfg);
-  add_interferences(ig, cfg);
+  struct CFG* cfg = build_asm_cfg(func->body);
+  struct Liveness lv = analyze_liveness(ig, func, cfg);
+  add_interferences(ig, func, cfg, &lv);
+  free(lv.live_in_words);
+  free(lv.block_buf);
   return ig;
-}
-
-// Adds spill costs to the interference graph based on the given assembly instructions.
-void add_spill_costs(struct InterferenceGraph* ig, struct AsmInstr* instrs){
-  // TODO: implement this
-  puts("todo: add spill costs\n");
-  exit(1);
 }
 
 // Colors the interference graph, assigning registers to pseudos where possible.

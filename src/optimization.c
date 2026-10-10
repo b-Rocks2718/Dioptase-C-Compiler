@@ -3,7 +3,7 @@
 #include "exit_codes.h"
 #include "arena.h"
 #include "TAC.h"
-#include "cfg.h"
+#include "tac_cfg.h"
 #include "call_graph.h"
 #include "constant_fold.h"
 #include "dead_code_elim.h"

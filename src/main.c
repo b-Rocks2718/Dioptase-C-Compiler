@@ -17,7 +17,7 @@
 #include "label_resolution.h"
 #include "typechecking.h"
 #include "TAC.h"
-#include "cfg.h"
+#include "tac_cfg.h"
 #include "call_graph.h"
 #include "optimization.h"
 #include "asm_gen.h"

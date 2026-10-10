@@ -12,20 +12,19 @@ struct RegisterMap* build_register_map(struct InterferenceGraph* ig) {
   return NULL; // placeholder implementation
 }
 
-// Assigns physical registers to the given assembly instructions based on the register map.
-void assign_registers(struct AsmInstr* instrs, struct RegisterMap* reg_map) {
+// Assigns physical registers to func's body based on the register map.
+void assign_registers(struct AsmFunc* func, struct RegisterMap* reg_map) {
   // placeholder implementation
   puts("todo: assign regs\n");
   exit(1);
 }
 
 // Allocates registers for the body of a function based on the interference graph.
-void alloc_body_registers(struct AsmInstr* instrs) {
-  struct InterferenceGraph* ig = build_interference_graph(instrs);
-  add_spill_costs(ig, instrs);
+void alloc_body_registers(struct AsmFunc* func) {
+  struct InterferenceGraph* ig = build_interference_graph(func);
   color_graph(ig);
   struct RegisterMap* reg_map = build_register_map(ig);
-  assign_registers(instrs, reg_map);
+  assign_registers(func, reg_map);
   destroy_interference_graph(ig);
 }
 
@@ -36,8 +35,7 @@ void allocate_registers(struct AsmProg* prog) {
   for (struct AsmTopLevel* top = prog->head; top != NULL; top = top->next) {
     // allocate registers for the function if this top-level item is a function
     if (top->type == ASM_FUNC) {
-      struct AsmInstr* instrs = top->top.asm_func.body;
-      alloc_body_registers(instrs);
+      alloc_body_registers(&top->top.asm_func);
     }
   }
 }
