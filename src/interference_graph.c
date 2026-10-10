@@ -500,6 +500,13 @@ static struct Liveness analyze_liveness(struct InterferenceGraph* ig, const stru
   struct Liveness lv;
   lv.word_count = bitset_word_count(ig->num_nodes);
   unsigned n = cfg->num_nodes;
+  // build_cfg_with always adds ENTRY and EXIT; the worklist below indexes
+  // modulo n and seeds blocks from n - 2 down, so it depends on that.
+  if (n < 2) {
+    fprintf(stderr, "Register allocation error: CFG of function %.*s has %u nodes; "
+            "expected at least ENTRY and EXIT\n", (int)func->name->len, func->name->start, n);
+    exit(BCC_EXIT_INTERNAL);
+  }
   lv.live_in_words = checked_calloc((size_t)n * lv.word_count, sizeof(uint64_t),
                                     "Register allocation", "allocating block live-in sets");
   size_t max_block = 1;
