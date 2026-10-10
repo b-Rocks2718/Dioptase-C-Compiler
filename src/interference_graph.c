@@ -75,6 +75,16 @@ void interference_graph_add_edge(struct InterferenceGraph* ig, size_t a, size_t 
   ig->nodes[b].num_neighbors++;
 }
 
+void interference_graph_remove_edge(struct InterferenceGraph* ig, size_t a, size_t b) {
+  if (a == b || !bitset_test(ig->nodes[a].neighbors, b)) {
+    return;
+  }
+  bitset_reset(ig->nodes[a].neighbors, b);
+  bitset_reset(ig->nodes[b].neighbors, a);
+  ig->nodes[a].num_neighbors--;
+  ig->nodes[b].num_neighbors--;
+}
+
 // Allocate the adjacency matrix now that every node exists, point each node's
 // neighbors at its row, and make every register interfere with every other
 // register (distinct registers can never share a color).
@@ -150,9 +160,8 @@ static void collect_memory_pseudos(struct AsmInstr* instrs, struct SliceIndex* p
   }
 }
 
-// Return true if opr is a pseudo that may be assigned a register: a scalar
-// that fits one register, has automatic storage (statics become data labels),
-// and is not pinned to memory.
+// Return true if opr is a pseudo that may be assigned a register: 
+// a 32 bit scalar that has automatic storage and is not pinned to memory.
 static bool pseudo_is_allocatable(const struct Operand* opr, const struct SliceIndex* pinned) {
   if (opr == NULL || opr->type != OPERAND_PSEUDO) {
     return false;
@@ -168,7 +177,7 @@ static bool pseudo_is_allocatable(const struct Operand* opr, const struct SliceI
   if (entry == NULL || entry->type == NULL) {
     interference_pseudo_error("missing ASM symbol table entry", name);
   }
-  return entry->type->type != BYTE_ARRAY && asm_type_size(entry->type) <= REGISTER_BYTES;
+  return entry->type->type != BYTE_ARRAY && asm_type_size(entry->type) == REGISTER_BYTES;
 }
 
 // Adds a node for every register-allocatable pseudo in instrs, in
@@ -215,6 +224,13 @@ struct InterferenceNode* interference_graph_reg_node(struct InterferenceGraph* i
     }
   }
   return NULL;
+}
+
+// Remove a node from the interference graph, updating its neighbors accordingly.
+void interference_graph_remove_node(struct InterferenceGraph* ig, size_t a) {
+  for (size_t j = 0; j < ig->num_nodes; j++) {
+    interference_graph_remove_edge(ig, a, j);
+  }
 }
 
 void destroy_interference_graph(struct InterferenceGraph* ig) {

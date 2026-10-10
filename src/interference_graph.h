@@ -87,10 +87,17 @@ struct InterferenceNode* interference_graph_reg_node(struct InterferenceGraph* i
 struct InterferenceNode* interference_graph_pseudo_node(struct InterferenceGraph* ig,
                                                         const struct Slice* name);
 
+// Remove every edge of node a, leaving it isolated. The node keeps its id and
+// storage so that other nodes' ids stay valid.
+void interference_graph_remove_node(struct InterferenceGraph* ig, size_t a);
+                                                        
 // Record that nodes a and b interfere. Self-edges and repeated edges are
 // ignored; num_neighbors counts each distinct neighbor once.
 void interference_graph_add_edge(struct InterferenceGraph* ig, size_t a, size_t b);
 
+// Record that nodes a and b no longer interfere. Self-edges and absent edges are
+// ignored; num_neighbors counts each distinct neighbor once.
+void interference_graph_remove_edge(struct InterferenceGraph* ig, size_t a, size_t b);
 
 // Colors the interference graph, assigning registers to pseudos where possible.
 void color_graph(struct InterferenceGraph* ig);
