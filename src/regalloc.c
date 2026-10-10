@@ -1,10 +1,12 @@
 #include "regalloc.h"
 
 #include "arena.h"
+#include "bitset.h"
 #include "checked_alloc.h"
 #include "codegen.h"
 #include "exit_codes.h"
 #include "interference_graph.h"
+#include "union_find.h"
 
 #include <stdarg.h>
 #include <stdbool.h>
@@ -157,9 +159,200 @@ static void reserve_callee_save_slots(struct AsmFunc* func) {
   }
 }
 
+// Return the interference node that opr names, or NULL if opr is not a
+// register or pseudo that has a node in ig.
+static struct InterferenceNode* operand_node(struct InterferenceGraph* ig, const struct Operand* opr) {
+  if (opr->type == OPERAND_REG) {
+    return interference_graph_reg_node(ig, opr->op.reg.reg);
+  }
+  if (opr->type == OPERAND_PSEUDO) {
+    return interference_graph_pseudo_node(ig, opr->op.pseudo.name);
+  }
+  return NULL;
+}
+
+// Returns true if node1 and node2 are neighbors in the interference graph.
+static bool are_neighbors(struct InterferenceGraph* ig, struct InterferenceNode* node1, struct InterferenceNode* node2) {
+  return bitset_test(node1->neighbors, node2 - ig->nodes);
+}
+
+// Perform the Briggs test for coalescing: returns true if
+// two pseudos can be coalesced and the merged node
+// is guaranteed to be pruned
+static bool briggs_test(struct InterferenceGraph* ig, struct InterferenceNode* node1, struct InterferenceNode* node2) {
+  unsigned significant_neighbors = 0;
+
+  // we want to count the number of significant neighbors of a
+  // hypothetical merged node
+
+  // if # significant neighbors < NUM_ALLOCATABLE_REGS,
+  // then the nonsignificant neighbors will be pruned,
+  // leading to the merged node being pruned
+
+  // if # significant neighbors >= NUM_ALLOCATABLE_REGS,
+  // we cannot guarantee that the merged node will be pruned
+
+  // first count the significant neighbors of node1
+  for (unsigned i = 0; i < ig->num_nodes; i++) {
+    if (bitset_test(node1->neighbors, i)) {
+      struct InterferenceNode* neighbor = &ig->nodes[i];
+      if (neighbor->num_neighbors >= NUM_ALLOCATABLE_REGS) {
+        significant_neighbors++;
+      }
+    }
+  }
+  // then count the significant neighbors of node2 that are not already counted
+  for (unsigned i = 0; i < ig->num_nodes; i++) {
+    if (bitset_test(node2->neighbors, i)) {
+      struct InterferenceNode* neighbor = &ig->nodes[i];
+      if (neighbor->num_neighbors >= NUM_ALLOCATABLE_REGS &&
+          !are_neighbors(ig, node1, neighbor)) {
+        significant_neighbors++;
+      }
+    }
+  }
+
+  return significant_neighbors < NUM_ALLOCATABLE_REGS;
+}
+
+// Perform the George test for coalescing: 
+// returns true if a pseudo can be coalesced with a register 
+// without making graph coloring significantly harder
+static bool george_test(struct InterferenceGraph* ig, struct InterferenceNode* reg_node, struct InterferenceNode* pseudo_node) {
+  // more permissive than briggs test:
+  //   coalesce if every neighbor satisfies one of two conditions:
+  //     1. it has fewer than NUM_ALLOCATABLE_REGS neighbors, or
+  //     2. it is already connected to the register node
+  //   if the neighbor has fewer than NUM_ALLOCATABLE_REGS neighbors, 
+  //     the neighbor will eventually be pruned, meaning we haven't made the 
+  //     merged node harder to prune
+  //   if the neighbor is already connected to the register node,
+  //     it does not increase the difficulty of coloring the merged node
+
+  for (unsigned i = 0; i < ig->num_nodes; i++) {
+    if (bitset_test(pseudo_node->neighbors, i)) {
+      struct InterferenceNode* neighbor = &ig->nodes[i];
+      if (neighbor->num_neighbors < NUM_ALLOCATABLE_REGS) {
+        continue;
+      }
+      if (are_neighbors(ig, neighbor, reg_node)) {
+        continue;
+      }
+      return false;
+    }
+  }
+  return true;
+}
+
+// Determines whether two nodes in the interference graph can be coalesced
+// without making graph coloring significantly harder
+static bool can_coalesce(struct InterferenceGraph* ig, struct InterferenceNode* src, struct InterferenceNode* dst) {
+  if (briggs_test(ig, src, dst)) return true;
+  if (src->node_type == INTERFERENCE_REG) return george_test(ig, src, dst);
+  if (dst->node_type == INTERFERENCE_REG) return george_test(ig, dst, src);
+  return false;
+}
+
+// Update the interference graph after coalescing two nodes:
+// move all edges from to_merge to to_keep and isolate to_merge.
+static void update_interference_graph_after_coalesce(struct InterferenceGraph* ig, unsigned to_keep, unsigned to_merge) {
+  // to_merge's row is not modified by adding edges to to_keep, so it can be
+  // scanned directly while edges are added.
+  for (unsigned j = 0; j < ig->num_nodes; j++) {
+    if (bitset_test(ig->nodes[to_merge].neighbors, j)) {
+      interference_graph_add_edge(ig, to_keep, j);
+    }
+  }
+  interference_graph_remove_node(ig, to_merge);
+}
+
+// Attempt to coalesce move-related nodes in the interference graph.
+// Returns a union-find structure representing coalesced registers.
+static struct UnionFind coalesce(struct InterferenceGraph* ig, struct AsmFunc* func){
+  struct UnionFind coalesced_regs = uf_create(ig->num_nodes);
+  
+  for (struct AsmInstr* instr = func->body; instr != NULL; instr = instr->next) {
+    if (instr->type != ASM_MOV) continue;
+    struct Operand* src_op = instr->instr.asm_mov.src;
+    struct Operand* dst_op = instr->instr.asm_mov.dst;
+
+    // src and dst must each be a register or pseudo in the graph
+    struct InterferenceNode* src_node = operand_node(ig, src_op);
+    struct InterferenceNode* dst_node = operand_node(ig, dst_op);
+    if (src_node == NULL || dst_node == NULL) continue;
+
+    unsigned src_idx = uf_rep(&coalesced_regs, src_node - ig->nodes);
+    unsigned dst_idx = uf_rep(&coalesced_regs, dst_node - ig->nodes);
+    if (src_idx == dst_idx) continue;
+    src_node = &ig->nodes[src_idx];
+    dst_node = &ig->nodes[dst_idx];
+    if (are_neighbors(ig, src_node, dst_node)) continue;
+    if (!can_coalesce(ig, src_node, dst_node)) continue;
+
+    // keep the lower id so hard registers win over pseudos
+    unsigned to_keep = src_idx < dst_idx ? src_idx : dst_idx;
+    unsigned to_merge = src_idx < dst_idx ? dst_idx : src_idx;
+
+    uf_union(&coalesced_regs, to_keep, to_merge);
+    update_interference_graph_after_coalesce(ig, to_keep, to_merge);
+  }
+
+  return coalesced_regs;
+}
+
+// Returns true if no unions were performed in the given union-find structure.
+static bool none_coalesced(struct UnionFind uf) {
+  return uf.num_unions == 0;
+}
+
+// Rewrite every register or pseudo operand in func to the node that survives
+// coalescing for its set
+static void rewrite_coalesced(struct AsmFunc* func, struct InterferenceGraph* ig,
+                              struct UnionFind* coalesced_regs) {
+  for (struct AsmInstr* instr = func->body; instr != NULL; instr = instr->next) {
+    struct OperandSlots slots = asm_operand_slots(instr);
+    for (size_t i = 0; i < slots.count; i++) {
+      struct Operand* opr = *slots.slot[i].field;
+      if (opr == NULL) {
+        continue;
+      }
+      struct InterferenceNode* node = operand_node(ig, opr);
+      if (node == NULL) {
+        continue;
+      }
+      unsigned idx = (unsigned)(node - ig->nodes);
+      unsigned keep = uf_rep(coalesced_regs, idx);
+      if (keep == idx) {
+        continue;
+      }
+      const struct InterferenceNode* keep_node = &ig->nodes[keep];
+      if (keep_node->node_type == INTERFERENCE_REG) {
+        *slots.slot[i].field = make_reg_operand(keep_node->id.reg, opr->asm_type);
+      } else {
+        struct Operand* repl = arena_alloc(sizeof(*repl));
+        repl->type = OPERAND_PSEUDO;
+        repl->asm_type = opr->asm_type;
+        repl->op.pseudo.name = keep_node->id.pseudo;
+        *slots.slot[i].field = repl;
+      }
+    }
+  }
+}
+
 // Allocates registers for the body of a function based on the interference graph.
 void alloc_body_registers(struct AsmFunc* func) {
-  struct InterferenceGraph* ig = build_interference_graph(func);
+  struct InterferenceGraph* ig = NULL;
+  while (true) {
+    ig = build_interference_graph(func);
+    struct UnionFind coalesced_regs = coalesce(ig, func);
+    if (none_coalesced(coalesced_regs)) {
+      uf_destroy(&coalesced_regs);
+      break;
+    }
+    rewrite_coalesced(func, ig, &coalesced_regs);
+    destroy_interference_graph(ig);
+    uf_destroy(&coalesced_regs);
+  }
   color_graph(ig);
   struct RegisterMap* reg_map = build_register_map(ig, func);
   reserve_callee_save_slots(func);
