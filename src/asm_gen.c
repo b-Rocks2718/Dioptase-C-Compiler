@@ -3,6 +3,7 @@
 #include "arena.h"
 #include "typechecking.h"
 #include "unique_name.h"
+#include "math.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -305,6 +306,82 @@ static struct AsmInstr* asm_binary(enum ALUOp op, struct Operand* dst,
 static struct AsmInstr* asm_adjust_sp(enum ALUOp op, int bytes) {
   return asm_binary(op, reg_operand(SP, &kWordType), reg_operand(SP, &kWordType),
                     lit_operand(bytes, &kWordType));
+}
+
+// Number of bits in a Dioptase register; shift amounts and sign-bit
+// extraction in the signed divide/modulo sequences are relative to it.
+#define REG_BITS 32
+
+// Lower `dst = src1 <op> src2` to shifts and masks when op is a multiply,
+// divide, or modulo and the (right) operand is a positive power-of-two
+// literal. Returns NULL if the pattern does not apply, in which case the
+// caller emits a plain ASM_BINARY (which codegen turns into a builtin call).
+// Doing this here, before liveness and register allocation, keeps these
+// operations from being treated as calls that clobber r1-r8 and make the
+// function non-leaf. See alu_op_needs_builtin_call.
+//
+// Signed divide and modulo must truncate toward zero like C, so a bare `asr`
+// or `and` (which round toward negative infinity) is wrong for negative
+// dividends. They add a bias of 2^k - 1 to negative dividends first:
+//   bias = (x >> 31 arithmetic) >>> (32 - k)   // 2^k - 1 if x < 0 else 0
+//   x / 2^k = (x + bias) >> k (arithmetic)
+//   x % 2^k = ((x + bias) & (2^k - 1)) - bias
+static struct AsmInstr* strength_reduce_binary(struct Slice* func_name, enum ALUOp op,
+                                               struct Operand* dst, struct Operand* src1,
+                                               struct Operand* src2) {
+  bool commutes = op == ALU_SMUL || op == ALU_UMUL;
+  if (commutes && src1->type == OPERAND_LIT && src2->type != OPERAND_LIT) {
+    struct Operand* swap = src1;
+    src1 = src2;
+    src2 = swap;
+  }
+  if (src2->type != OPERAND_LIT || src1->type == OPERAND_LIT) {
+    return NULL;
+  }
+  int imm = src2->op.lit.value;
+  if (imm <= 0 || !is_power_of_two((size_t)imm)) {
+    return NULL;
+  }
+  int k = (int)log2_size((size_t)imm);
+  int mask = imm - 1;
+  struct AsmList out = { NULL, NULL };
+
+  switch (op) {
+    case ALU_SMUL:
+    case ALU_UMUL:
+      asm_emit(&out, asm_binary(ALU_LSL, dst, src1, lit_operand(k, &kWordType)));
+      return out.head;
+    case ALU_UDIV:
+      asm_emit(&out, asm_binary(ALU_LSR, dst, src1, lit_operand(k, &kWordType)));
+      return out.head;
+    case ALU_UMOD:
+      asm_emit(&out, asm_binary(ALU_AND, dst, src1, lit_operand(mask, &kWordType)));
+      return out.head;
+    case ALU_SDIV:
+    case ALU_SMOD: {
+      bool is_mod = op == ALU_SMOD;
+      if (k == 0) {
+        // x / 1 == x and x % 1 == 0.
+        asm_emit(&out, asm_mov(dst, is_mod ? lit_operand(0, &kWordType) : src1));
+        return out.head;
+      }
+      // dst may alias src1, so build the bias in a temp and only write dst last.
+      struct Operand* bias = make_asm_temp(func_name, &kWordType);
+      asm_emit(&out, asm_binary(ALU_ASR, bias, src1, lit_operand(REG_BITS - 1, &kWordType)));
+      asm_emit(&out, asm_binary(ALU_LSR, bias, bias, lit_operand(REG_BITS - k, &kWordType)));
+      struct Operand* sum = make_asm_temp(func_name, &kWordType);
+      asm_emit(&out, asm_binary(ALU_ADD, sum, src1, bias));
+      if (!is_mod) {
+        asm_emit(&out, asm_binary(ALU_ASR, dst, sum, lit_operand(k, &kWordType)));
+      } else {
+        asm_emit(&out, asm_binary(ALU_AND, sum, sum, lit_operand(mask, &kWordType)));
+        asm_emit(&out, asm_binary(ALU_SUB, dst, sum, bias));
+      }
+      return out.head;
+    }
+    default:
+      return NULL;
+  }
 }
 
 static struct AsmInstr* asm_get_address(struct Operand* dst, struct Operand* src) {
@@ -1258,6 +1335,12 @@ struct AsmInstr* instr_to_asm(struct Slice* func_name, struct TACInstr* tac_inst
     }
     case TACBINARY: {
       struct TACBinary* binary_instr = &tac_instr->instr.tac_binary;
+      struct AsmInstr* reduced = strength_reduce_binary(
+          func_name, binary_instr->alu_op, tac_val_to_asm(binary_instr->dst),
+          tac_val_to_asm(binary_instr->src1), tac_val_to_asm(binary_instr->src2));
+      if (reduced != NULL) {
+        return reduced;
+      }
       return asm_binary(binary_instr->alu_op, tac_val_to_asm(binary_instr->dst),
                         tac_val_to_asm(binary_instr->src1), tac_val_to_asm(binary_instr->src2));
     }
