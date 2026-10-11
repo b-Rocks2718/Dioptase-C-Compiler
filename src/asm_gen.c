@@ -312,10 +312,82 @@ static struct AsmInstr* asm_adjust_sp(enum ALUOp op, int bytes) {
 // extraction in the signed divide/modulo sequences are relative to it.
 #define REG_BITS 32
 
+// Most nonzero signed digits a multiply by a constant may expand to. Each
+// costs at most one shift and one add or subtract, so four digits (at most
+// seven ALU instructions) still beat a call to the smul/umul builtin, which
+// runs tens of instructions and also makes the function non-leaf.
+#define MAX_MUL_TERMS 4
+
+// Write `c` in non-adjacent form (NAF): signed binary digits d_i in
+// {-1, 0, +1}, no two adjacent ones nonzero, with c = sum d_i * 2^i. NAF has
+// the fewest nonzero digits of any signed binary form; for example
+// 30720 = 2^15 - 2^11 rather than four set bits. Fills shifts[] and signs[]
+// most significant digit first and returns the digit count, or
+// MAX_MUL_TERMS + 1 if there are more. The arithmetic is 64-bit because
+// rounding an odd value up can carry past bit 31.
+static int naf_terms(unsigned c, int shifts[MAX_MUL_TERMS], int signs[MAX_MUL_TERMS]) {
+  int low_shifts[MAX_MUL_TERMS];
+  int low_signs[MAX_MUL_TERMS];
+  int n = 0;
+  unsigned long long v = c;
+  for (int bit = 0; v != 0; ++bit, v >>= 1) {
+    if ((v & 1) == 0) {
+      continue;
+    }
+    if (n == MAX_MUL_TERMS) {
+      return MAX_MUL_TERMS + 1;
+    }
+    // Digit +1 when v = 1 (mod 4), else -1: either way the next bit is zero.
+    int digit = (v & 3) == 1 ? 1 : -1;
+    low_shifts[n] = bit;
+    low_signs[n] = digit;
+    ++n;
+    v = digit > 0 ? v - 1 : v + 1;
+  }
+  for (int i = 0; i < n; ++i) {
+    shifts[i] = low_shifts[n - 1 - i];
+    signs[i] = low_signs[n - 1 - i];
+  }
+  return n;
+}
+
+// Lower `dst = src1 * imm` for a positive literal that is not a power of two
+// to shifts and adds/subtracts of src1, one per NAF digit of imm. The leading
+// digit of a positive number is +1, so the sum starts from it. The low 32
+// bits of a product do not depend on signedness, so this serves smul and umul
+// alike. dst may alias src1, so partial sums live in temps and only the last
+// instruction writes dst. Returns NULL when imm has more than MAX_MUL_TERMS
+// digits; the caller then emits the builtin call.
+static struct AsmInstr* multiply_by_constant(struct Slice* func_name, struct Operand* dst,
+                                             struct Operand* src1, int imm) {
+  int shifts[MAX_MUL_TERMS];
+  int signs[MAX_MUL_TERMS];
+  int n = naf_terms((unsigned)imm, shifts, signs);
+  if (n > MAX_MUL_TERMS) {
+    return NULL;
+  }
+  struct AsmList out = { NULL, NULL };
+  struct Operand* sum = make_asm_temp(func_name, &kWordType);
+  asm_emit(&out, asm_binary(ALU_LSL, sum, src1, lit_operand(shifts[0], &kWordType)));
+  for (int i = 1; i < n; ++i) {
+    struct Operand* term = src1;
+    if (shifts[i] != 0) {
+      term = make_asm_temp(func_name, &kWordType);
+      asm_emit(&out, asm_binary(ALU_LSL, term, src1, lit_operand(shifts[i], &kWordType)));
+    }
+    struct Operand* next = i == n - 1 ? dst : make_asm_temp(func_name, &kWordType);
+    asm_emit(&out, asm_binary(signs[i] > 0 ? ALU_ADD : ALU_SUB, next, sum, term));
+    sum = next;
+  }
+  return out.head;
+}
+
 // Lower `dst = src1 <op> src2` to shifts and masks when op is a multiply,
 // divide, or modulo and the (right) operand is a positive power-of-two
-// literal. Returns NULL if the pattern does not apply, in which case the
-// caller emits a plain ASM_BINARY (which codegen turns into a builtin call).
+// literal, and a multiply by any other positive literal with few NAF digits
+// to shifts and adds (multiply_by_constant). Returns NULL if no pattern
+// applies, in which case the caller emits a plain ASM_BINARY (which codegen
+// turns into a builtin call).
 // Doing this here, before liveness and register allocation, keeps these
 // operations from being treated as calls that clobber r1-r8 and make the
 // function non-leaf. See alu_op_needs_builtin_call.
@@ -339,6 +411,9 @@ static struct AsmInstr* strength_reduce_binary(struct Slice* func_name, enum ALU
     return NULL;
   }
   int imm = src2->op.lit.value;
+  if (commutes && imm > 0 && !is_power_of_two((size_t)imm)) {
+    return multiply_by_constant(func_name, dst, src1, imm);
+  }
   if (imm <= 0 || !is_power_of_two((size_t)imm)) {
     return NULL;
   }
