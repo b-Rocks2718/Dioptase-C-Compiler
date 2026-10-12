@@ -36,12 +36,19 @@ static void write_reg(FILE* out, enum Reg reg) {
   }
 }
 
-// Write a label or immediate literal for operands.
-// out is the file to write to; label may be NULL; imm is the literal.
-// Emits label text if provided, otherwise a decimal literal.
+// Write `label`, `label + imm`, or `label - imm` when label is non-NULL (the
+// offset is omitted when zero), otherwise imm as a decimal literal.
 static void write_label_or_imm(FILE* out, const struct Slice* label, int imm) {
   if (label != NULL) {
     write_slice(out, label);
+    if (imm != 0) {
+      if (imm > 0) {
+        fprintf(out, " + %d", imm);
+      } else {
+        // Negate in unsigned arithmetic so INT_MIN does not overflow.
+        fprintf(out, " - %u", 0u - (unsigned)imm);
+      }
+    }
   } else {
     fprintf(out, "%d", imm);
   }
@@ -57,8 +64,10 @@ static void write_mem_operand(FILE* out, enum Reg base, int imm) {
 // Write a memory operand that may use a label for PC-relative addressing.
 static void write_mem_operand_label(FILE* out, enum Reg base, const struct Slice* label, int imm) {
   fputc('[', out);
-  write_reg(out, base);
-  fputs(", ", out);
+  if (base != R0) {
+    write_reg(out, base);
+    fputs(", ", out);
+  }
   write_label_or_imm(out, label, imm);
   fputc(']', out);
 }
@@ -110,11 +119,11 @@ static const struct {
   [MACHINE_SUB] = {"sub", FMT_ALU},
   [MACHINE_SUBB] = {"subb", FMT_ALU},
   [MACHINE_NOT] = {"not", FMT_REG2},
-  [MACHINE_LSL] = {"lsl", FMT_REG2},
-  [MACHINE_LSR] = {"lsr", FMT_REG2},
-  [MACHINE_ASR] = {"asr", FMT_REG2},
-  [MACHINE_ROTL] = {"rotl", FMT_REG2},
-  [MACHINE_ROTR] = {"rotr", FMT_REG2},
+  [MACHINE_LSL] = {"lsl", FMT_ALU},
+  [MACHINE_LSR] = {"lsr", FMT_ALU},
+  [MACHINE_ASR] = {"asr", FMT_ALU},
+  [MACHINE_ROTL] = {"rotl", FMT_ALU},
+  [MACHINE_ROTR] = {"rotr", FMT_ALU},
   [MACHINE_LSLC] = {"lslc", FMT_ALU},
   [MACHINE_LSRC] = {"lsrc", FMT_ALU},
   [MACHINE_EXTEND_B] = {"extend_b", FMT_REG2},
@@ -187,6 +196,7 @@ static const struct {
   [MACHINE_TNCD] = {"tncd", FMT_REG2},
   [MACHINE_SXTB] = {"sxtb", FMT_REG2},
   [MACHINE_SXTD] = {"sxtd", FMT_REG2},
+  [MACHINE_ADPC] = {"adpc", FMT_MOVI},
 };
 
 // Print an opcode from kMachineOps. Returns false if it is not in the table.

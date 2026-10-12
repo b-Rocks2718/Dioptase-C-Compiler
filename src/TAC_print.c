@@ -38,6 +38,17 @@ static void print_tac_val(const struct Val* val) {
   }
 }
 
+// Print the address operand of a Load or Store: `[ptr]`, or `[ptr + offset]`
+// when the access carries a nonzero byte offset.
+static void print_tac_address(const struct Val* ptr, int offset) {
+  printf("[");
+  print_tac_val(ptr);
+  if (offset != 0) {
+    printf(" + %d", offset);
+  }
+  printf("]");
+}
+
 // Print a TAC condition mnemonic.
 static void print_tac_condition(enum TACCondition cond) {
   switch (cond) {
@@ -365,28 +376,28 @@ void print_tac_instr(const struct TACInstr* instr, unsigned tabs) {
     case TACLOAD:
       printf("Load ");
       print_tac_val(instr->instr.tac_load.dst);
-      printf(", [");
-      print_tac_val(instr->instr.tac_load.src_ptr);
-      printf("]\n");
+      printf(", ");
+      print_tac_address(instr->instr.tac_load.src_ptr, instr->instr.tac_load.offset);
+      printf("\n");
       break;
     case TACVOLATILE_LOAD:
       printf("VolatileLoad ");
       print_tac_val(instr->instr.tac_load.dst);
-      printf(", [");
-      print_tac_val(instr->instr.tac_load.src_ptr);
-      printf("]\n");
+      printf(", ");
+      print_tac_address(instr->instr.tac_load.src_ptr, instr->instr.tac_load.offset);
+      printf("\n");
       break;
     case TACSTORE:
-      printf("Store [");
-      print_tac_val(instr->instr.tac_store.dst_ptr);
-      printf("], ");
+      printf("Store ");
+      print_tac_address(instr->instr.tac_store.dst_ptr, instr->instr.tac_store.offset);
+      printf(", ");
       print_tac_val(instr->instr.tac_store.src);
       printf("\n");
       break;
     case TACVOLATILE_STORE:
-      printf("VolatileStore [");
-      print_tac_val(instr->instr.tac_store.dst_ptr);
-      printf("], ");
+      printf("VolatileStore ");
+      print_tac_address(instr->instr.tac_store.dst_ptr, instr->instr.tac_store.offset);
+      printf(", ");
       print_tac_val(instr->instr.tac_store.src);
       printf("\n");
       break;

@@ -85,7 +85,7 @@ static bool emu_exec_full_validate_optimization_options(int argc, char** argv) {
     if (strcmp(arg, "-constant-fold") != 0 && strcmp(arg, "-dead-code") != 0 &&
         strcmp(arg, "-copy-prop") != 0 && strcmp(arg, "-dead-store") != 0 &&
         strcmp(arg, "-tail-call") != 0 && strcmp(arg, "-inline") != 0 &&
-        strcmp(arg, "-peephole") != 0 && strcmp(arg, "-reg-alloc") != 0 &&
+        strcmp(arg, "-reg-alloc") != 0 &&
         strcmp(arg, "-opt") != 0) {
       fprintf(stderr, "Full emulator exec tests: unsupported optimization flag '%s'\n", arg);
       return false;

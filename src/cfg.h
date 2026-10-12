@@ -2,7 +2,10 @@
 #define CFG_H
 
 #include "TAC.h"
+#include "slice.h"
 #include "stdbool.h"
+
+struct AsmInstr;
 
 // Distinguish synthetic entry/exit nodes from executable basic blocks.
 enum CFGNodeType {
@@ -23,7 +26,10 @@ struct CFGNodeList {
   struct CFGNodeEntry* tail;
 };
 
-// Represent one control-flow node with bidirectional edges and an optional TAC block.
+// Represent one control-flow node with bidirectional edges and an optional
+// instruction block. A TAC CFG (build_cfg, tac_cfg.h) stores copied instructions in body;
+// an ASM CFG (build_asm_cfg) stores the inclusive range asm_head..asm_last of
+// the function's own instruction list. The unused representation stays empty.
 struct CFGNode {
   enum CFGNodeType type;
   unsigned index; // position in cfg->nodes; see cfg_number_nodes
@@ -34,6 +40,8 @@ struct CFGNode {
   struct CFGNodeList successors;
 
   struct TACInstrList body; // basic-block instructions; empty for entry/exit
+  struct AsmInstr* asm_head; // first instruction of an ASM block, or NULL
+  struct AsmInstr* asm_last; // last instruction of an ASM block, or NULL
 
   bool marked; // used for marking nodes during traversals
 };
@@ -45,14 +53,42 @@ struct CFG {
   unsigned num_nodes;
 };
 
-// Partition a TAC function body into basic blocks and connect its control-flow edges.
-struct CFG* build_cfg(struct TACInstr* body);
+// Control-flow role of one instruction: everything CFG construction and
+// printing need to know about it.
+enum CFGInstrKind {
+  CFG_INSTR_OTHER,     // falls through to the next instruction
+  CFG_INSTR_LABEL,     // starts a block; jumps name it
+  CFG_INSTR_JUMP,      // ends a block; goes only to its target label
+  CFG_INSTR_COND_JUMP, // ends a block; goes to its target label or falls through
+  CFG_INSTR_RETURN,    // ends a block; goes to EXIT
+  CFG_INSTR_TAIL_CALL, // ends a block; goes to EXIT
+};
 
-// Print an ASCII CFG visualization, including TAC and labeled outgoing edges.
-void print_cfg(const struct CFG* cfg);
+// Adapter between the IR-independent CFG code and one instruction IR.
+// Instructions are passed as const void* pointing at that IR's instruction type.
+struct CFGInstrOps {
+  // Next instruction in a function body, or NULL at the end.
+  const void* (*next)(const void* instr);
+  // Control-flow role of instr. For labels and jumps, *label receives the
+  // label's (or jump target's) name; it is left unchanged otherwise.
+  enum CFGInstrKind (*classify)(const void* instr, const struct Slice** label);
+  // Add instr to the end of a basic block's body.
+  void (*append)(struct CFGNode* block, const void* instr);
+  // First and last instruction of a node's body, or NULL when it is empty.
+  const void* (*block_first)(const struct CFGNode* node);
+  const void* (*block_last)(const struct CFGNode* node);
+  // Print a non-empty basic block's instructions, indented one level.
+  void (*print_block)(const struct CFGNode* node);
+};
 
-// Rebuild a linear TAC body from the CFG's current basic blocks.
-struct TACInstrList rebuild_body(struct CFG* cfg);
+// Partition body into basic blocks and connect their control-flow edges. A
+// block starts at a label or after a block-ending instruction. Exits on a
+// jump to a label no block starts with.
+struct CFG* build_cfg_with(const void* body, const struct CFGInstrOps* ops);
+
+// Print a CFG built with ops: each block's instructions, its labeled outgoing
+// edges, and an ASCII visualization.
+void print_cfg_with(const struct CFG* cfg, const struct CFGInstrOps* ops);
 
 // Append node at the end of list. An empty list has both head and tail NULL.
 void cfg_node_list_append(struct CFGNodeList* list, struct CFGNode* node);
@@ -73,9 +109,5 @@ void cfg_number_nodes(struct CFG* cfg);
 
 // Clear traversal marks on every CFG node.
 void reset_marks(struct CFG* cfg);
-
-// After removing blocks from the CFG, nodes may contain dangling edges. 
-// Repair the CFG to maintain consistency. Removes empty blocks as a side effect.
-struct CFG* repair_cfg(struct CFG* cfg);
 
 #endif // CFG_H

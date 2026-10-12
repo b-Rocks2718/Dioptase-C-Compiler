@@ -18,6 +18,8 @@ static struct CFGNode* make_start_node(void) {
   node->successors.head = NULL;
   node->successors.tail = NULL;
   node->body = tac_instr_list(NULL);
+  node->asm_head = NULL;
+  node->asm_last = NULL;
   node->marked = false;
   return node;
 }
@@ -32,6 +34,8 @@ static struct CFGNode* make_exit_node(void) {
   node->successors.head = NULL;
   node->successors.tail = NULL;
   node->body = tac_instr_list(NULL);
+  node->asm_head = NULL;
+  node->asm_last = NULL;
   node->marked = false;
   return node;
 }
@@ -46,22 +50,10 @@ static struct CFGNode* make_basic_block_node(void) {
   node->successors.head = NULL;
   node->successors.tail = NULL;
   node->body = tac_instr_list(NULL);
+  node->asm_head = NULL;
+  node->asm_last = NULL;
   node->marked = false;
   return node;
-}
-
-// Add a detached copy of an instruction to a basic block node.
-static void append_instr(struct CFGNode* block, const struct TACInstr* instr) {
-  if (block->type != CFG_BASIC_BLOCK) {
-    fprintf(stderr,
-            "CFG error: cannot append TAC instruction type %d to CFG node type %d; "
-            "expected a basic block\n",
-            instr->type, block->type);
-    exit(BCC_EXIT_INTERNAL);
-  }
-
-  struct TACInstr* instr_copy = copy_instr(instr);
-  concat_TAC_instrs(&block->body, tac_instr_list(instr_copy));
 }
 
 // Allocate an empty CFGNodeList.
@@ -152,45 +144,45 @@ static struct CFG* make_cfg_from_basic_blocks(struct CFGNodeList* list,
   return cfg;
 }
 
-// Partition a sequence of TAC instructions into basic blocks. The returned CFG
+// Partition a sequence of instructions into basic blocks. The returned CFG
 // contains entry and exit nodes, but its nodes have not yet been linked.
-static struct CFG* partition_into_basic_blocks(const struct TACInstr* body) {
+static struct CFG* partition_into_basic_blocks(const void* body, const struct CFGInstrOps* ops) {
   struct CFGNodeList* list = make_cfg_node_list();
 
   struct CFGNode* cur_block = make_basic_block_node();
 
   // loop over function body
   unsigned num_blocks = 0;
-  for (const struct TACInstr* instr = body; instr != NULL; instr = instr->next) {
-    switch (instr->type) {
-      case TACLABEL:
+  for (const void* instr = body; instr != NULL; instr = ops->next(instr)) {
+    const struct Slice* label = NULL;
+    switch (ops->classify(instr, &label)) {
+      case CFG_INSTR_LABEL:
         // start a new basic block and add the label to it
-        if (cur_block->body.head != NULL) {
+        if (ops->block_first(cur_block) != NULL) {
           cfg_node_list_append(list, cur_block);
           num_blocks++;
           cur_block = make_basic_block_node();
         }
-        append_instr(cur_block, instr);
+        ops->append(cur_block, instr);
         break;
-      case TACJUMP:
-      case TACCOND_JUMP:
-      case TACRETURN:
-      case TACTAIL_CALL:
-      case TACTAIL_CALL_INDIRECT:
+      case CFG_INSTR_JUMP:
+      case CFG_INSTR_COND_JUMP:
+      case CFG_INSTR_RETURN:
+      case CFG_INSTR_TAIL_CALL:
         // append jump/return/tail call to current block, then begin a new one
-        append_instr(cur_block, instr);
+        ops->append(cur_block, instr);
         cfg_node_list_append(list, cur_block);
         num_blocks++;
         cur_block = make_basic_block_node();
         break;
-      default:
+      case CFG_INSTR_OTHER:
         // most instructions just get added to the current block
-        append_instr(cur_block, instr);
+        ops->append(cur_block, instr);
         break;
     }
   }
 
-  if (cur_block->body.head != NULL) {
+  if (ops->block_first(cur_block) != NULL) {
     cfg_node_list_append(list, cur_block);
     num_blocks++;
   }
@@ -198,33 +190,27 @@ static struct CFG* partition_into_basic_blocks(const struct TACInstr* body) {
   return make_cfg_from_basic_blocks(list, num_blocks);
 }
 
-// find the basic block that is the target of a jump instruction
-// returns NULL on failure (this should never happen)
-static struct CFGNode* find_target_of_jump(const struct CFG* cfg,
-                                           const struct TACInstr* jump_instr) {
-  const struct Slice* target_label = NULL;
-
-  switch (jump_instr->type) {
-    case TACJUMP:
-      target_label = jump_instr->instr.tac_jump.label;
-      break;
-    case TACCOND_JUMP:
-      target_label = jump_instr->instr.tac_cond_jump.label;
-      break;
-    default:
-      return NULL;
+// Return the label node starts with, or NULL if it does not start with one.
+// Labels only ever begin a block, so the first instruction is the only one
+// that can be a jump target.
+static const struct Slice* block_leading_label(const struct CFGNode* node,
+                                               const struct CFGInstrOps* ops) {
+  const void* first = ops->block_first(node);
+  const struct Slice* label = NULL;
+  if (first == NULL || ops->classify(first, &label) != CFG_INSTR_LABEL) {
+    return NULL;
   }
+  return label;
+}
 
+// Return the first block (in layout order) that starts with label, or NULL.
+// A linear scan; link_cfg uses a LabelIndex instead.
+static struct CFGNode* find_block_with_label(const struct CFG* cfg, const struct CFGInstrOps* ops,
+                                             const struct Slice* label) {
   for (unsigned i = 0; i < cfg->num_nodes; i++) {
-    struct CFGNode* node = cfg->nodes[i];
-    if (node->body.head != NULL) {
-      // need only check first instruction of the block
-      // labels cannot appear in the middle of a basic block, only at the beginning
-      struct TACInstr* instr = node->body.head;
-      if (instr->type == TACLABEL &&
-          compare_slice_to_slice(instr->instr.tac_label.label, target_label)) {
-        return node;
-      }
+    const struct Slice* leading = block_leading_label(cfg->nodes[i], ops);
+    if (leading != NULL && compare_slice_to_slice(leading, label)) {
+      return cfg->nodes[i];
     }
   }
   return NULL;
@@ -237,9 +223,9 @@ struct LabelIndex {
   struct CFGNode** blocks; // blocks[id]: first block that starts with the label
 };
 
-// Index every block that begins with a label. Like find_target_of_jump, the
+// Index every block that begins with a label. Like find_block_with_label, the
 // first block (in layout order) with a given label wins.
-static struct LabelIndex label_index_build(const struct CFG* cfg) {
+static struct LabelIndex label_index_build(const struct CFG* cfg, const struct CFGInstrOps* ops) {
   struct LabelIndex index;
   slice_index_init(&index.ids, cfg->num_nodes);
   index.blocks = calloc(cfg->num_nodes == 0 ? 1 : cfg->num_nodes, sizeof(*index.blocks));
@@ -250,27 +236,22 @@ static struct LabelIndex label_index_build(const struct CFG* cfg) {
     exit(BCC_EXIT_INTERNAL);
   }
   for (unsigned i = 0; i < cfg->num_nodes; i++) {
-    struct CFGNode* node = cfg->nodes[i];
-    struct TACInstr* head = node->body.head;
-    if (head == NULL || head->type != TACLABEL) {
+    const struct Slice* label = block_leading_label(cfg->nodes[i], ops);
+    if (label == NULL) {
       continue;
     }
     bool added = false;
-    uint32_t id = slice_index_add(&index.ids, head->instr.tac_label.label, &added);
+    uint32_t id = slice_index_add(&index.ids, label, &added);
     if (added) {
-      index.blocks[id] = node;
+      index.blocks[id] = cfg->nodes[i];
     }
   }
   return index;
 }
 
-// Return the block whose leading label is the jump's target, or NULL.
-static struct CFGNode* label_index_find_target(const struct LabelIndex* index,
-                                               const struct TACInstr* jump_instr) {
-  const struct Slice* target_label = jump_instr->type == TACJUMP
-                                         ? jump_instr->instr.tac_jump.label
-                                         : jump_instr->instr.tac_cond_jump.label;
-  uint32_t id = slice_index_get(&index->ids, target_label);
+// Return the block that starts with label, or NULL.
+static struct CFGNode* label_index_find(const struct LabelIndex* index, const struct Slice* label) {
+  uint32_t id = slice_index_get(&index->ids, label);
   return id == SLICE_INDEX_NONE ? NULL : index->blocks[id];
 }
 
@@ -281,10 +262,10 @@ static void label_index_free(struct LabelIndex* index) {
 }
 
 // Link basic blocks and populate their CFG edges.
-static struct CFG* link_cfg(struct CFG* cfg) {
+static struct CFG* link_cfg(struct CFG* cfg, const struct CFGInstrOps* ops) {
   struct CFGNode* start_node = cfg->nodes[0];
   struct CFGNode* exit_node = cfg->nodes[cfg->num_nodes - 1];
-  struct LabelIndex labels = label_index_build(cfg);
+  struct LabelIndex labels = label_index_build(cfg, ops);
 
   // link ENTRY to first basic block
   link_nodes(start_node, cfg->nodes[1]);
@@ -293,36 +274,35 @@ static struct CFG* link_cfg(struct CFG* cfg) {
   for (unsigned i = 1; i < cfg->num_nodes - 1; i++) {
     struct CFGNode* cur = cfg->nodes[i];
     struct CFGNode* next = cfg->nodes[i + 1];
-    if (cur->body.head != NULL) {
-      struct TACInstr* last_instr = cur->body.last;
-      switch (last_instr->type) {
-        case TACCOND_JUMP: // link to next and jump target
-          link_nodes(cur, next);
-          /* fall through */
-        case TACJUMP: { // link to only jump target
-          struct CFGNode* target = label_index_find_target(&labels, last_instr);
-          if (target != NULL) {
-            link_nodes(cur, target);
-          } else {
-            const struct Slice* label = last_instr->type == TACJUMP
-                                            ? last_instr->instr.tac_jump.label
-                                            : last_instr->instr.tac_cond_jump.label;
-            fprintf(stderr, "CFG error: cannot resolve jump target label '");
-            fwrite(label->start, sizeof(char), label->len, stderr);
-            fprintf(stderr, "' while linking basic block %u\n", i);
-            exit(BCC_EXIT_INTERNAL);
-          }
-          break;
+    const void* last_instr = ops->block_last(cur);
+    if (last_instr == NULL) {
+      continue;
+    }
+    const struct Slice* label = NULL;
+    switch (ops->classify(last_instr, &label)) {
+      case CFG_INSTR_COND_JUMP: // link to next and jump target
+        link_nodes(cur, next);
+        /* fall through */
+      case CFG_INSTR_JUMP: { // link to only jump target
+        struct CFGNode* target = label_index_find(&labels, label);
+        if (target != NULL) {
+          link_nodes(cur, target);
+        } else {
+          fprintf(stderr, "CFG error: cannot resolve jump target label '");
+          fwrite(label->start, sizeof(char), label->len, stderr);
+          fprintf(stderr, "' while linking basic block %u\n", i);
+          exit(BCC_EXIT_INTERNAL);
         }
-        case TACRETURN: // link to only exit
-        case TACTAIL_CALL:
-        case TACTAIL_CALL_INDIRECT:
-          link_nodes(cur, exit_node);
-          break;
-        default: // link to only next basic block
-          link_nodes(cur, next);
-          break;
+        break;
       }
+      case CFG_INSTR_RETURN: // link to only exit
+      case CFG_INSTR_TAIL_CALL:
+        link_nodes(cur, exit_node);
+        break;
+      case CFG_INSTR_LABEL:
+      case CFG_INSTR_OTHER: // link to only next basic block
+        link_nodes(cur, next);
+        break;
     }
   }
 
@@ -330,10 +310,9 @@ static struct CFG* link_cfg(struct CFG* cfg) {
   return cfg;
 }
 
-// build a CFG for the body of a TAC function
-struct CFG* build_cfg(struct TACInstr* body) {
-  struct CFG* cfg = partition_into_basic_blocks(body);
-  return link_cfg(cfg);
+struct CFG* build_cfg_with(const void* body, const struct CFGInstrOps* ops) {
+  struct CFG* cfg = partition_into_basic_blocks(body, ops);
+  return link_cfg(cfg, ops);
 }
 
 // Return the array index of a node, or cfg->num_nodes when it is not registered
@@ -380,18 +359,21 @@ static void print_cfg_node_name(const struct CFG* cfg, const struct CFGNode* nod
 // following block, in which case duplicate-edge suppression leaves one edge
 // carrying both meanings.
 static const char* cfg_edge_kind(const struct CFG* cfg,
+                                 const struct CFGInstrOps* ops,
                                  const struct CFGNode* parent,
                                  const struct CFGNode* child) {
   if (parent->type == CFG_ENTRY) {
     return "entry";
   }
-  if (parent->type != CFG_BASIC_BLOCK || parent->body.last == NULL) {
+  const void* last_instr = parent->type == CFG_BASIC_BLOCK ? ops->block_last(parent) : NULL;
+  if (last_instr == NULL) {
     return "edge";
   }
 
-  switch (parent->body.last->type) {
-    case TACCOND_JUMP: {
-      const struct CFGNode* target = find_target_of_jump(cfg, parent->body.last);
+  const struct Slice* label = NULL;
+  switch (ops->classify(last_instr, &label)) {
+    case CFG_INSTR_COND_JUMP: {
+      const struct CFGNode* target = find_block_with_label(cfg, ops, label);
       unsigned parent_index = cfg_node_index(cfg, parent);
       const struct CFGNode* fallthrough =
           parent_index + 1 < cfg->num_nodes ? cfg->nodes[parent_index + 1] : NULL;
@@ -408,16 +390,17 @@ static const char* cfg_edge_kind(const struct CFG* cfg,
       }
       return "edge";
     }
-    case TACJUMP:
+    case CFG_INSTR_JUMP:
       return "jump";
-    case TACRETURN:
+    case CFG_INSTR_RETURN:
       return "return";
-    case TACTAIL_CALL:
-    case TACTAIL_CALL_INDIRECT:
+    case CFG_INSTR_TAIL_CALL:
       return "tail call";
-    default:
+    case CFG_INSTR_LABEL:
+    case CFG_INSTR_OTHER:
       return "fallthrough";
   }
+  return "edge";
 }
 
 // ASCII visualization of the CFG
@@ -913,10 +896,10 @@ static void print_cfg_ascii_graph(const struct CFG* cfg) {
                         rank_has_self_edge, edges);
 }
 
-// Print an ASCII representation of a CFG. Blocks appear in source order, TAC
+// Print an ASCII representation of a CFG. Blocks appear in source order,
 // instructions are indented below them, and labeled arrows name all outgoing
 // edges. Backedges remain easy to spot because block names use stable indices.
-void print_cfg(const struct CFG* cfg) {
+void print_cfg_with(const struct CFG* cfg, const struct CFGInstrOps* ops) {
   if (cfg == NULL) {
     printf("CFG <null>\n");
     return;
@@ -940,14 +923,10 @@ void print_cfg(const struct CFG* cfg) {
     }
 
     if (node->type == CFG_BASIC_BLOCK) {
-      if (node->body.head == NULL) {
+      if (ops->block_first(node) == NULL) {
         printf("    <empty block>\n");
       } else {
-        for (const struct TACInstr* instr = node->body.head;
-             instr != NULL;
-             instr = instr->next) {
-          print_tac_instr(instr, 1);
-        }
+        ops->print_block(node);
       }
     }
 
@@ -959,7 +938,7 @@ void print_cfg(const struct CFG* cfg) {
            edge != NULL;
            edge = edge->next) {
         printf("      %s-- %s --> ", edge->next == NULL ? "+" : "|",
-               cfg_edge_kind(cfg, node, edge->node));
+               cfg_edge_kind(cfg, ops, node, edge->node));
         print_cfg_node_name(cfg, edge->node);
         printf("\n");
       }
@@ -968,55 +947,6 @@ void print_cfg(const struct CFG* cfg) {
   }
 
   print_cfg_ascii_graph(cfg);
-}
-
-// Rebuild a detached TAC function body from basic blocks in layout order. The
-// copies keep CFG block lists independent, so rebuilding does not consume or
-// otherwise mutate the graph.
-struct TACInstrList rebuild_body(struct CFG* cfg) {
-  if (cfg == NULL || cfg->nodes == NULL) {
-    fprintf(stderr,
-            "CFG error: cannot rebuild a TAC body from a null or uninitialized CFG\n");
-    exit(BCC_EXIT_INTERNAL);
-  }
-
-  struct TACInstrList rebuilt = tac_instr_list(NULL);
-
-  // add instructions from each basic block in layout order
-  for (unsigned i = 0; i < cfg->num_nodes; i++) {
-    struct CFGNode* node = cfg->nodes[i];
-    if (node == NULL || node->type != CFG_BASIC_BLOCK || node->body.head == NULL) {
-      continue;
-    }
-    if (node->body.last == NULL) {
-      fprintf(stderr,
-              "CFG error: cannot rebuild basic block %u because its non-empty "
-              "body has no last instruction\n",
-              i);
-      exit(BCC_EXIT_INTERNAL);
-    }
-
-    struct TACInstr* instr = node->body.head;
-    // add each instruction from a basic block
-    while (true) {
-      struct TACInstr* instr_copy = copy_instr(instr);
-      concat_TAC_instrs(&rebuilt, tac_instr_list(instr_copy));
-
-      if (instr == node->body.last) {
-        break;
-      }
-      instr = instr->next;
-      if (instr == NULL) {
-        fprintf(stderr,
-                "CFG error: cannot rebuild basic block %u because its last "
-                "instruction is not reachable from its body\n",
-                i);
-        exit(BCC_EXIT_INTERNAL);
-      }
-    }
-  }
-
-  return rebuilt;
 }
 
 // Record each node's position in cfg->nodes in its index field.
@@ -1035,17 +965,4 @@ void reset_marks(struct CFG* cfg) {
     struct CFGNode* block = cfg->nodes[i];
     block->marked = false;
   }
-}
-
-// After removing blocks from the CFG, nodes may contain dangling edges. 
-// Repair the CFG to maintain consistency. Removes empty blocks as a side effect.
-struct CFG* repair_cfg(struct CFG* cfg){
-  if (cfg == NULL) return NULL;
-
-  // rebuild_body does not use CFG edges, 
-  // so this is safe even if the CFG has dangling edges.
-  struct TACInstrList instrs = rebuild_body(cfg);
-
-  // instrs is now valid, so we can safely rebuild the CFG from it
-  return build_cfg(instrs.head);
 }

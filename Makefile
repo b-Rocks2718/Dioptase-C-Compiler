@@ -2,7 +2,9 @@
 CC 				:= gcc
 # Compiler flags exercised by optimized execution tests and WACC *-opt targets.
 OPT_TEST_FLAGS ?= -opt
-CFLAGS_COMMON ?= -Wall
+# -Wenum-conversion catches passing one enum type where another is expected
+# (e.g. an ALUOp where a MachineInstrType belongs); GCC and Clang both accept it.
+CFLAGS_COMMON ?= -Wall -Wenum-conversion
 OPT_DEBUG := -O0
 OPT_RELEASE := -O3
 DEBUG_INFO := -g

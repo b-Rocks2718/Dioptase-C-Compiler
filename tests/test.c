@@ -8,11 +8,11 @@ int next_collatz(int x) {
 }
 
 int main() {
-  int a0 = 37;
-  int a1 = next_collatz(a0); // 37 -> 112
-  int a2 = next_collatz(a1); // 112 -> 56
-  int a3 = next_collatz(a2); // 56 -> 28
-  int a4 = next_collatz(a3); // 28 -> 14
-  int a5 = next_collatz(a4); // 14 -> 7
-  return a5;
+  int c0 = 101;
+  int c1 = next_collatz(c0);
+  int c2 = next_collatz(c1);
+  int c3 = next_collatz(c2);
+  int c4 = next_collatz(c3);
+  int c5 = next_collatz(c4);
+  return c5;
 }
