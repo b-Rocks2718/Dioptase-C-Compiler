@@ -58,11 +58,6 @@ Optimizations are disabled by default. The following passes are currently implem
 -dead-store           dead-store elimination
 -tail-call            tail-call optimization
 -inline               function inlining
-```
-
-The following optimization flag is also accepted, but the optimization is not yet implemented:
-
-```text
 -reg-alloc            register allocation
 ```
 
